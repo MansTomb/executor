@@ -25,9 +25,16 @@ export type WorkerFramework = AppFramework;
 /**
  * What the compiling host contributes. `registry` replaces the public npm registry. A host has no
  * framework of its own: every source declares the `apps` release it uses in `dependencies.apps`.
+ * `apps` supplies the package files of one declared release, so a test deployment can build apps
+ * against its own unpublished framework. Any other declared release installs from the registry.
  */
 export interface WorkerHost {
   readonly registry?: string;
+  readonly apps?: {
+    readonly version: string;
+    /** Package-relative paths and contents, as in the published archive. */
+    readonly files: Effect.Effect<Readonly<Record<string, string>>, RuntimeBuildFailed>;
+  };
 }
 
 const frameworkExports = [
@@ -146,7 +153,7 @@ export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
     const filesystem = new InMemoryFileSystem(
       Object.fromEntries(files.map((file) => [file.path, file.content])),
     );
-    const dependencies = yield* workerDependencies(filesystem, host.registry);
+    const dependencies = yield* workerDependencies(filesystem, host);
     if (!(yield* dependencies.framework))
       return yield* new RuntimeAppsDependencyMissing({ version: apps.version });
     const selected = yield* selectedFramework(filesystem);

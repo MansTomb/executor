@@ -1,4 +1,7 @@
-/** Declared authorization parameters reach the sign-in URL; protocol parameters stay host-owned. */
+/**
+ * Declared authorization parameters and a declared URL's own query reach the sign-in URL;
+ * protocol parameters stay host-owned. A declared scope separator joins the requested scopes.
+ */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
@@ -39,7 +42,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
               appsManifest,
             ],
           });
-        const start = (config: object, client?: object) =>
+        const start = (config: object, client?: object, scope = "read") =>
           Effect.gen(function* () {
             const deployed = yield* deploy(config);
             expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
@@ -69,7 +72,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
               expect(url.searchParams.getAll(key)).toEqual([value]);
             expect(url.searchParams.get("response_type")).toBe("code");
             expect(url.searchParams.get("redirect_uri")).toBe(signIn.redirectUri);
-            expect(url.searchParams.get("scope")).toBe("read");
+            expect(url.searchParams.getAll("scope")).toEqual([scope]);
             expect(url.searchParams.get("state")).toMatch(/.{16,}/);
             expect(url.searchParams.get("code_challenge")).toMatch(/.{32,}/);
             expect(url.searchParams.get("code_challenge_method")).toBe("S256");
@@ -98,7 +101,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           { clientId: "synthetic-declared-client", clientSecret: "synthetic-client-secret" },
         );
         expect(`${declared.url.origin}${declared.url.pathname}`).toBe(`${issuer.origin}/authorize`);
-        expect(declared.url.searchParams.get("tenant")).toBe("fixture");
+        expect(declared.url.searchParams.getAll("tenant")).toEqual(["fixture"]);
         expect(declared.url.searchParams.get("client_id")).toBe("synthetic-declared-client");
 
         // Complete the discovered sign-in: the extras change nothing after authorization.
@@ -138,29 +141,72 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           )).body,
         ).toMatchObject({ accounts: { service: account.id } });
 
-        // A declaration cannot replace a host-owned protocol parameter. The same declaration
-        // without the reserved key deploys, so the reserved key alone causes the rejection.
-        for (const [config, reserved] of [
-          [{ discover: `${issuer.origin}/mcp`, scopes: ["read"] }, { state: "fixed" }],
+        // Linear reads comma-separated scopes. The declared separator joins them on the sign-in
+        // request, which the service receives as sent; registration keeps RFC 7591's spaces.
+        const commaScopes = yield* start(
+          {
+            discover: `${issuer.origin}/mcp`,
+            scopes: ["read", "write"],
+            resource: null,
+            scopeSeparator: ",",
+            authorizationParams: extras,
+          },
+          undefined,
+          "read,write",
+        );
+        expect((yield* issuer.metrics).lastRegistration?.scope).toBe("read write");
+        const consent = yield* Effect.scoped(
+          HttpClient.withScope(http).get(commaScopes.url.href),
+        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+        expect(consent.status).toBe(302);
+        expect((yield* issuer.metrics).authorizationScope).toBe("read,write");
+
+        // A declaration cannot replace a host-owned protocol parameter, in `authorizationParams`
+        // or in a declared URL's query, and names each parameter once. Each rejected
+        // declaration has an accepted twin that differs only in the offending parameter.
+        const endpoints = (query: string) => ({
+          authorizationUrl: `${issuer.origin}/authorize${query}`,
+          tokenUrl: `${issuer.origin}/token`,
+          scopes: ["read"],
+        });
+        for (const [rejectedConfig, acceptedConfig] of [
           [
             {
-              authorizationUrl: `${issuer.origin}/authorize`,
-              tokenUrl: `${issuer.origin}/token`,
+              discover: `${issuer.origin}/mcp`,
               scopes: ["read"],
+              authorizationParams: { ...extras, state: "fixed" },
             },
-            { redirect_uri: "https://redirect.example.test/callback" },
+            { discover: `${issuer.origin}/mcp`, scopes: ["read"], authorizationParams: extras },
+          ],
+          [
+            {
+              ...endpoints(""),
+              authorizationParams: {
+                ...extras,
+                redirect_uri: "https://redirect.example.test/callback",
+              },
+            },
+            { ...endpoints(""), authorizationParams: extras },
+          ],
+          [
+            { ...endpoints("?tenant=fixture&state=fixed"), authorizationParams: extras },
+            { ...endpoints("?tenant=fixture"), authorizationParams: extras },
+          ],
+          [
+            {
+              ...endpoints("?tenant=fixture"),
+              authorizationParams: { ...extras, tenant: "other" },
+            },
+            { ...endpoints("?tenant=fixture"), authorizationParams: extras },
           ],
         ] as const) {
-          const rejected = yield* deploy({
-            ...config,
-            authorizationParams: { ...extras, ...reserved },
-          });
+          const rejected = yield* deploy(rejectedConfig);
           expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
           expect(rejected.body).toMatchObject({
             _tag: "DeploymentBuildFailed",
             reason: "App build failed",
           });
-          const accepted = yield* deploy({ ...config, authorizationParams: extras });
+          const accepted = yield* deploy(acceptedConfig);
           expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
           const app = yield* body(Resource, accepted);
           yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie);

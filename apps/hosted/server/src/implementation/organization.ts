@@ -2,7 +2,12 @@ import type { AuthContext } from "@better-auth/core";
 import type { Principal } from "../contracts/auth.ts";
 import { type Profile } from "@executor-js/sdk/core";
 import { accountOAuthRedirectUri } from "./auth.ts";
-import { CurrentUsage, observeProductOperation } from "../contracts/product-analytics.ts";
+import {
+  CurrentUsage,
+  isReadMethod,
+  observeProductOperation,
+  traceProductRead,
+} from "../contracts/product-analytics.ts";
 import { RequiredAction, CurrentAuthorization } from "../contracts/authorization.ts";
 import {
   fullAuthority,
@@ -186,16 +191,20 @@ export const requireOrganizationLive = Layer.effect(
     const api = yield* ApiAuthentication;
     return (response, { endpoint, group }) =>
       withOrganizationRequest(
-        () =>
-          observeProductOperation(
-            { area: group.identifier, operation: endpoint.identifier, method: endpoint.method },
-            response,
-            (result) => ({
-              status_code: result.status,
-              ok: result.status < 400,
-              outcome: result.status < 400 ? "success" : "failure",
-            }),
-          ),
+        () => {
+          const operation = {
+            area: group.identifier,
+            operation: endpoint.identifier,
+            method: endpoint.method,
+          };
+          return isReadMethod(endpoint.method)
+            ? traceProductRead(operation, response)
+            : observeProductOperation(operation, response, (result) => ({
+                status_code: result.status,
+                ok: result.status < 400,
+                outcome: result.status < 400 ? "success" : "failure",
+              }));
+        },
         Context.getOrUndefined(endpoint.annotations, RequiredAction),
       ).pipe(
         Effect.provideService(Authentication, auth),

@@ -485,10 +485,19 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
               reloadTrace.data.filter((row) => row.span.operationName === "runtime.cloud.query"),
               "Notification registration does not repeat an unchanged initial query",
             ).toHaveLength(1);
-            expect(
-              loads,
-              "A warm query does not load or transfer its retained server build",
-            ).toHaveLength(0);
+            // The managed Worker serves every request from one isolate. Real Cloudflare requests
+            // may enter a new isolate, which may decode the cached build but must not refetch it.
+            if (target.metadata.mode === "attached")
+              for (const row of loads)
+                expect(
+                  row.span.tags["executor.build.cache"],
+                  "A warm query in a new isolate decodes its cached server build",
+                ).toBe("hit");
+            else
+              expect(
+                loads,
+                "A warm query does not load or transfer its retained server build",
+              ).toHaveLength(0);
             expect(
               reloadTrace.data.some((row) => row.span.operationName === "storage.blob.get"),
               "Warm queries must not reread the server bundle from R2",

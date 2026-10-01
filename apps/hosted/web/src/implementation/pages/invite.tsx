@@ -15,9 +15,19 @@ export const inviteSearch = (search: Record<string, unknown>) => ({
 export function InvitePage({ invitation }: { readonly invitation: string }) {
   const accept = useAtomSet(acceptInvitationAtom, { mode: "promiseExit" });
   const state = useAtomValue(acceptInvitationAtom);
-  const [joined, setJoined] = useState<OrganizationId>();
+  const [joined, setJoined] = useState<{
+    readonly organization: OrganizationId;
+    readonly alreadyMember?: { readonly name: string } | undefined;
+  }>();
   const [error, setError] = useState<string | null>(null);
-  if (joined) return <OrganizationDestination organization={joined} />;
+  if (joined?.alreadyMember)
+    return (
+      <AlreadyMember
+        name={joined.alreadyMember.name}
+        onContinue={() => setJoined({ organization: joined.organization })}
+      />
+    );
+  if (joined) return <OrganizationDestination organization={joined.organization} />;
   return (
     <LoginFrame title="Join an organization">
       <div className="flex flex-col gap-6 text-center">
@@ -43,6 +53,28 @@ export function InvitePage({ invitation }: { readonly invitation: string }) {
             {error}
           </p>
         )}
+      </div>
+    </LoginFrame>
+  );
+}
+
+/** The invitation was accepted earlier; say so instead of joining again. */
+function AlreadyMember({
+  name,
+  onContinue,
+}: {
+  readonly name: string;
+  readonly onContinue: () => void;
+}) {
+  return (
+    <LoginFrame title="You're already in this organization">
+      <div className="flex flex-col gap-6 text-center">
+        <p className="text-sm leading-6 text-balance text-muted-foreground">
+          You've already joined {name} with this invitation.
+        </p>
+        <Button className="min-h-10 w-full" onClick={onContinue}>
+          Continue
+        </Button>
       </div>
     </LoginFrame>
   );

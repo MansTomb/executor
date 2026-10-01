@@ -12,7 +12,7 @@ import { HostedApi } from "../contracts/api.ts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { ApiAuthentication, CurrentPrincipal } from "../contracts/auth.ts";
 import { hostedOrganizationHandlers } from "./organization.ts";
-import { hostedAccountHandlers } from "./accounts.ts";
+import { hostedAccountHandlers, hostedOAuthCallbackHandlers } from "./accounts.ts";
 import { hostedAppDataHandlers } from "./app-data.ts";
 import { hostedWebhookSetupHandlers } from "./webhook-setup.ts";
 import { hostedWorkflowHandlers } from "./workflows.ts";
@@ -74,6 +74,7 @@ export const hostedHandlers = Layer.mergeAll(
   hostedAppHandlers,
   hostedSkillHandlers,
   hostedAccountHandlers,
+  hostedOAuthCallbackHandlers,
   hostedToolHandlers,
   hostedAppDataHandlers,
   hostedMcpConnectionHandlers,

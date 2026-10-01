@@ -1,17 +1,26 @@
 /** Vitest hooks own isolated servers and cleanup; the test deadline owns scenario work. */
 import { Clock, Effect, Exit, FileSystem, Layer, Scope } from "effect";
+import { randomBytes } from "node:crypto";
 import { beforeEach, type TestContext } from "vitest";
 import { prepareScenario, startScenario } from "../sdk/scenario.ts";
+import { createScenario } from "../sdk/session.ts";
 import { RuntimeLive, Target } from "./platform.ts";
 import { Actors } from "./actors.ts";
 import { prepareManagementApp } from "./management-app.ts";
 import { SessionClients } from "./api.ts";
 import { scenarios, type TestPlan } from "../test-plan.ts";
 
+/** An extra Testing SDK scenario acquired by setup. The test may close its scope early. */
+export interface SdkScenarioFixture {
+  readonly scenario: Effect.Success<ReturnType<typeof createScenario>>;
+  readonly scope: Scope.Closeable;
+}
+
 interface ScenarioLifetime {
   readonly target: typeof Target.Service;
   readonly scope: Scope.Closeable;
   readonly actors: typeof Actors.Service | undefined;
+  readonly sdkScenarios: ReadonlyArray<SdkScenarioFixture>;
   readonly completed: (exit: Exit.Exit<unknown, unknown>) => void;
 }
 
@@ -78,13 +87,13 @@ export const installScenarioLifecycle = () =>
           const plan: typeof TestPlan.Type | undefined = Object.values(scenarios).find(
             (scenario) => scenario.title === context.task.name,
           );
-          // The CLI test exercises creation and removal itself. An unused outer
-          // server would compete with the server whose lifecycle it verifies.
-          const target = yield* plan?.fixtures === "cli"
-            ? prepareScenario(base, context.task.name)
-            : startScenario(base, context.task.name, undefined, plan?.serverEnvironment);
-          let actors: typeof Actors.Service | undefined;
-          if (plan?.fixtures === "actors") {
+          const primary = Effect.gen(function* () {
+            // The CLI test exercises creation and removal itself. An unused outer
+            // server would compete with the server whose lifecycle it verifies.
+            const target = yield* plan?.fixtures === "cli"
+              ? prepareScenario(base, context.task.name)
+              : startScenario(base, context.task.name, undefined, plan?.serverEnvironment);
+            if (plan?.fixtures !== "actors") return { target, actors: undefined };
             const fixtures = yield* Layer.buildWithScope(
               Actors.layer.pipe(
                 Layer.provideMerge(SessionClients.layer),
@@ -92,20 +101,38 @@ export const installScenarioLifecycle = () =>
               ),
               scope,
             );
-            const provisioned = yield* Actors.pipe(Effect.provideContext(fixtures));
-            actors = provisioned;
+            const actors = yield* Actors.pipe(Effect.provideContext(fixtures));
             if (plan.managementProfiles !== undefined)
               yield* Effect.forEach(
                 plan.managementProfiles,
-                (role) => prepareManagementApp(provisioned[role], provisioned.organization.id),
+                (role) => prepareManagementApp(actors[role], actors.organization.id),
                 { concurrency: 3, discard: true },
               ).pipe(Effect.provideContext(fixtures));
-          }
+            return { target, actors };
+          });
+          // Each extra scenario owns a child scope, so a test can end it while the case continues.
+          const extra = Effect.forEach(
+            plan?.sdkScenarios ?? [],
+            (label) =>
+              Effect.gen(function* () {
+                const child = yield* Scope.fork(scope);
+                const scenario = yield* createScenario(base, {
+                  id: randomBytes(16).toString("hex"),
+                  label,
+                }).pipe(Scope.provide(child));
+                return { scenario, scope: child };
+              }),
+            { concurrency: 2 },
+          );
+          const [{ target, actors }, sdkScenarios] = yield* Effect.all([primary, extra], {
+            concurrency: 2,
+          });
           readyAt = yield* Clock.currentTimeMillis;
           context.executorScenario = {
             target,
             scope,
             actors,
+            sdkScenarios,
             completed: (exit) => {
               outcome = exit;
               completedAt = Date.now();

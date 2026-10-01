@@ -316,6 +316,7 @@ export function AppDetailPage({
                       key={context.key}
                       app={context.app}
                       profile={context.profile}
+                      label={context.label}
                       accounts={overview.accounts}
                       selected={tool}
                     />

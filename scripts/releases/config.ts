@@ -1,6 +1,17 @@
 /** One release identity shared by builders, publishers, infrastructure and install links. */
 import { Schema } from "effect";
+import {
+  ReleaseVersion,
+  releaseChannel,
+  type ReleaseChannel,
+} from "@executor-js/utils/release-version";
 import manifest from "../../apps/cli/package.json" with { type: "json" };
+
+export {
+  compareReleaseVersions,
+  ReleaseVersion,
+  type ReleaseChannel,
+} from "@executor-js/utils/release-version";
 
 /** Conservative compressed archive budget, checked before npm receives any upload. */
 export const npmArchiveBudgetBytes = 180 * 1024 * 1024;
@@ -53,11 +64,8 @@ export const platforms = [
 /** A supported native build target. */
 export type Platform = (typeof platforms)[number];
 
-/** Reject arbitrary tags and unexpected prerelease channels before creating artifacts. */
-export const ReleaseVersion = Schema.String.check(Schema.isPattern(/^2\.\d+\.\d+(?:-beta\.\d+)?$/));
-
 const version = Schema.decodeUnknownSync(ReleaseVersion)(manifest.version);
-const channel = version.includes("-beta.") ? "beta" : "latest";
+const channel = releaseChannel(version);
 const repository = "UsefulSoftwareCo/executor";
 const tag = `executor@${version}`;
 const nodeEngine = Schema.decodeUnknownSync(
@@ -84,6 +92,25 @@ export const release = {
     executableName: "executor-v2",
   },
 } as const;
+
+/**
+ * Executor 1 reads GitHub's release list in the same public repository, so v2
+ * never uses its feed file names. One published prerelease holds the current
+ * update metadata per channel, pointing at the versioned release assets.
+ */
+export const desktopUpdateFeed = {
+  tag: "executor-v2-desktop-updates",
+  url: `https://github.com/${repository}/releases/download/executor-v2-desktop-updates`,
+  channel: (channel: ReleaseChannel) => `executor-v2-${channel}`,
+} as const;
+
+/** electron-updater's metadata file name for one channel on one platform. */
+export const desktopUpdateFile = (target: Platform, channel: ReleaseChannel): string => {
+  const name = desktopUpdateFeed.channel(channel);
+  if (target.platform === "darwin") return `${name}-mac.yml`;
+  if (target.platform === "win32") return `${name}.yml`;
+  return target.arch === "x64" ? `${name}-linux.yml` : `${name}-linux-${target.arch}.yml`;
+};
 
 /** Immutable npm version for one native runtime, aliased by the launcher package. */
 export const platformVersion = (target: Platform): string =>

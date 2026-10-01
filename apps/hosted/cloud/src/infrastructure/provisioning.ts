@@ -16,6 +16,7 @@ import { appDataSupervisors } from "./app-data.ts";
 import { cloudEmail } from "./email.ts";
 import { cloudWelcomeEmails } from "./welcome-email.ts";
 import { AppDomainCoordinator } from "./app-domains.ts";
+import { AppDomainController } from "./app-domain-controller-worker.ts";
 import { billingLive } from "../implementation/billing.ts";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { cloudAnalytics } from "../implementation/product-analytics.ts";
@@ -29,7 +30,7 @@ export class Provisioning extends Cloudflare.Workflow<Provisioning>()(
       yield* cloudArtifactsTokensLive,
     );
     const emails = yield* cloudWelcomeEmails((yield* cloudEmail.pipe(Effect.orDie)).welcome);
-    const domains = yield* AppDomainCoordinator;
+    const domains = yield* AppDomainCoordinator.from(AppDomainController);
     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive.pipe(Effect.orDie)));
     const analytics = yield* cloudAnalytics;
     const services: ProvisioningServices = {

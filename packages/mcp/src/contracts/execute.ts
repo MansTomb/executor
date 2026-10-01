@@ -29,7 +29,7 @@ export const defaultMcpRuntimeLimits = McpRuntimeLimits.make({
   maxCodeChars: 65_536,
   maxExecutions: 64,
   discoveryConcurrency: 8,
-  // Together well inside the default 30 s execution budget, which leaves the program time to run.
+  // Together well inside the default 5 minute execution budget, which leaves the program time to run.
   discoveryWaitMs: 10_000,
   discoveryIdleMs: 5_000,
 });
@@ -173,7 +173,7 @@ export const McpLimits = Schema.Struct({
 export type McpLimits = typeof McpLimits.Type;
 /** Default interpreter budgets; each product may supply different limits. */
 export const defaultMcpLimits: McpLimits = {
-  timeoutMs: 30_000,
+  timeoutMs: 5 * 60_000,
   maxToolCalls: 100,
   maxOutputBytes: 65_536,
 };

@@ -1,5 +1,9 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
-import { CurrentUsage, observeProductOperation } from "../contracts/product-analytics.ts";
+import {
+  CurrentUsage,
+  observeProductOperation,
+  traceProductRead,
+} from "../contracts/product-analytics.ts";
 import { McpSchema } from "effect/unstable/ai";
 import { authorizeTool, authorizeApp } from "./authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
@@ -39,11 +43,21 @@ export const hostedMcpBackend = Effect.gen(function* () {
     Context.add(GroupDatabase, database),
     Context.add(CurrentUserId, user),
   );
-  const observe = <A, E, R>(operation: string, work: Effect.Effect<A, E, R>) =>
+  // Discovery reads are traced only; clients repeat them on every session and poll.
+  const observe = <A, E, R>(
+    operation: string,
+    work: Effect.Effect<A, E, R>,
+    kind: "read" | "operation" = "operation",
+  ) =>
     Effect.gen(function* () {
       const current = yield* CurrentUsage;
       const client = yield* Effect.serviceOption(McpSchema.McpServerClient);
-      return yield* observeProductOperation({ area: "mcp", operation }, work).pipe(
+      const properties = { area: "mcp", operation };
+      return yield* (
+        kind === "read"
+          ? traceProductRead(properties, work)
+          : observeProductOperation(properties, work)
+      ).pipe(
         Effect.provideService(CurrentUsage, {
           ...current,
           source: "mcp",
@@ -83,8 +97,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
     }).pipe(Effect.provideContext(context)),
   );
   const backend = {
-    listSkills: (input) => observe("listSkills", listAppSkills(input)),
-    readSkill: (input) => observe("readSkill", readAppSkill(input)),
+    listSkills: (input) => observe("listSkills", listAppSkills(input), "read"),
+    readSkill: (input) => observe("readSkill", readAppSkill(input), "read"),
     authorizeElicitation: (input) =>
       Effect.gen(function* () {
         const owner = yield* currentOwner;
@@ -115,7 +129,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
           const requested = new Set(input.ids);
           return apps.filter((app) => requested.has(app.id));
         }),
-        (work) => observe("listApps", work),
+        (work) => observe("listApps", work, "read"),
       ),
     listTargets: (input) =>
       Effect.gen(function* () {
@@ -126,8 +140,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
         const profiles = (yield* discoveryProfiles).filter((profile) => profile.app === input.app);
         const accounts = yield* discoveryAccounts;
         return appTargets(app, profiles, accounts);
-      }).pipe((work) => observe("listTargets", work)),
-    listTools: (input, options) => observe("listTools", listTools(input, options)),
+      }).pipe((work) => observe("listTargets", work, "read")),
+    listTools: (input, options) => observe("listTools", listTools(input, options), "read"),
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         const owner = yield* currentOwner;

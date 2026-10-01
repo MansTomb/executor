@@ -98,6 +98,14 @@ export const CompleteConnectionOAuth = Schema.Struct({
   ...GetAccountConnection.fields,
   callbackUrl: Schema.RedactedFromValue(HttpUrl),
 });
+/**
+ * The callback's state identifies the pending sign-in, so a return that lost its browser context
+ * can still find its connection. The host must authorize the returned owner and connection.
+ */
+export const FindConnectionOAuth = Schema.Struct({
+  owner: Schema.optional(OwnerId),
+  callbackUrl: Schema.RedactedFromValue(HttpUrl),
+});
 /** Unknown IDs and mismatched owners have the same result. */
 export const AccountConnectionNotFound = UserFacingError.define({
   tag: "AccountConnectionNotFound",
@@ -240,6 +248,16 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
         OAuthSetupFailed,
       ],
     }),
+  )
+  .add(
+    HttpApiEndpoint.post("findOAuth", "/v1/account-connections/oauth/find", {
+      payload: FindConnectionOAuth,
+      success: AccountConnection,
+      error: [...errors, CredentialsError, OAuthCompletionFailed],
+    }).annotate(
+      OpenApi.Description,
+      "Find the connection whose pending OAuth sign-in issued the callback's state, for example when the provider's link opened in another browser tab. Hosts must authorize the returned owner and connection before completing it.",
+    ),
   )
   .add(
     HttpApiEndpoint.post("completeOAuth", "/v1/account-connections/oauth/complete", {

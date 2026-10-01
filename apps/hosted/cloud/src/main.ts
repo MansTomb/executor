@@ -4,7 +4,7 @@ import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import { ExecutorCloudApi, executorCloudApiDocument } from "./contracts/api.ts";
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
 import { cloudAppUiBase } from "./contracts/app-ui.ts";
-import { AppDomainCoordinatorLive, cloudAppDomains } from "./infrastructure/app-domains.ts";
+import { cloudAppDomains } from "./infrastructure/app-domains.ts";
 import { AppRepositoryRecovery, WorkflowHost } from "@executor-js/sdk/core";
 import { AppWorkflows } from "./infrastructure/workflows.ts";
 import { cloudDataSteps } from "./infrastructure/data-steps.ts";
@@ -47,6 +47,11 @@ import { cloudMcp, McpSessionsLive } from "./infrastructure/mcp.ts";
 import { cloudApi } from "./implementation/api.ts";
 import { billingLive } from "./implementation/billing.ts";
 import { cloudSchedules, ScheduleCoordinatorLive } from "./infrastructure/schedules.ts";
+import {
+  cloudBackgroundJobs,
+  selfBinding,
+  type BackgroundJob,
+} from "./infrastructure/background-jobs.ts";
 import { cloudEgress, cloudExecutor } from "./infrastructure/executor.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
 import {
@@ -60,13 +65,14 @@ import { cloudEntryApi, cloudEntryDocument, resolveCloudEntry } from "./implemen
 import { browserReturnTo } from "@executor-js/hosted-server/browser/contracts";
 import { HttpServerRequest } from "effect/unstable/http";
 import { homepage } from "./implementation/homepage.ts";
+import { openAiAppsChallenge } from "./implementation/openai-apps-challenge.ts";
 import {
   cloudDashboard,
   dashboardPageRoutes,
   organizationRoot,
 } from "./implementation/dashboard.ts";
 import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
-import dashboardRoutes from "@executor-js/hosted-cloud-web/routes";
+import dashboardRoutes from "@executor-js/hosted-cloud-web/routes" with { type: "json" };
 import { postHogBindings } from "./infrastructure/posthog.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
 import { sentryWorkerBuild } from "./infrastructure/sentry-build.ts";
@@ -104,6 +110,8 @@ export default Api.make(
         ...(yield* telemetryBindings),
         ...analytics.env,
         CLOUDFLARE_ACCOUNT_ID: yield* Config.String("CLOUDFLARE_ACCOUNT_ID"),
+        // Cron Triggers reach the placed fetch handler through this binding.
+        [selfBinding]: Cloudflare.Workers.Self,
         ...sentry.env,
         ...(yield* billingBindings),
       },
@@ -188,71 +196,98 @@ export default Api.make(
       Effect.withSpan("job.provisioning.dispatch"),
       Effect.catch(() => Effect.logWarning("Provisioning outbox unavailable")),
     );
-    yield* Cloudflare.Workers.cron("* * * * *", () =>
-      dispatchOrganizationRemovals.pipe(
-        Effect.provide(Layer.merge(executor, removals)),
-        Effect.scoped,
-        Effect.catch(() => Effect.logWarning("Organization removal journal unavailable")),
-        lifetime.background,
-      ),
+    const organizationRemovals = dispatchOrganizationRemovals.pipe(
+      Effect.provide(Layer.merge(executor, removals)),
+      Effect.scoped,
+      Effect.catch(() => Effect.logWarning("Organization removal journal unavailable")),
     );
-    yield* Cloudflare.Workers.cron("* * * * *", () => dispatch.pipe(lifetime.background));
-    const dataSteps = yield* cloudDataSteps;
-    yield* Cloudflare.Workers.cron("* * * * *", () =>
-      dataSteps.pipe(
-        Effect.provide(executor),
-        reportErrors,
-        Effect.scoped,
-        Effect.catch(() => Effect.logWarning("Data steps unavailable")),
-        lifetime.background,
-      ),
+    // Jobs are queued by triggers on users, teams and members. Only auth and dashboard API
+    // writes change those rows, so only their requests start the jobs at once. MCP, telemetry
+    // and the other routes skip the extra connection and query. Cron recovers any lost dispatch.
+    // Streamed responses close their HTTP scope before delivering EOF. Dispatch has its own
+    // scope and must not hold that EOF until background work finishes.
+    const dispatchAfterWrites = <E, R>(
+      handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+    ) =>
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+          const execution = yield* Cloudflare.WorkerExecutionContext;
+          yield* Effect.addFinalizer(() =>
+            execution.waitUntil(
+              dispatch.pipe(lifetime.background, Effect.timeoutOption("10 seconds"), Effect.asVoid),
+            ),
+          );
+        }
+        return yield* handler;
+      });
+    const dataSteps = (yield* cloudDataSteps).pipe(
+      Effect.provide(executor),
+      reportErrors,
+      Effect.scoped,
+      Effect.catch(() => Effect.logWarning("Data steps unavailable")),
     );
-    yield* Cloudflare.Workers.cron("* * * * *", () =>
-      Effect.flatten(AppRepositoryRecovery).pipe(
-        Effect.provide(executor),
-        reportErrors,
-        Effect.scoped,
-        Effect.withSpan("job.repository.recover"),
-        Effect.catch(() => Effect.logWarning("App repository recovery failed")),
-        lifetime.background,
-      ),
+    const repositoryRecovery = Effect.flatten(AppRepositoryRecovery).pipe(
+      Effect.provide(executor),
+      reportErrors,
+      Effect.scoped,
+      Effect.withSpan("job.repository.recover"),
+      Effect.catch(() => Effect.logWarning("App repository recovery failed")),
     );
     const appDomains = yield* cloudAppDomains;
     const appUi = hostedAppUi(
       appAddresses(auth.origin, yield* cloudAppUiBase.pipe(Effect.orDie)),
       appDomains.status,
     );
-    const mcp = yield* cloudMcp;
+    // Session objects run in this isolate and share its executor and MCP identity.
+    const mcp = yield* cloudMcp.pipe(
+      Effect.provide(McpSessionsLive({ executor, identity: auth.mcpIdentity })),
+    );
     const meter = yield* BillingMeter.pipe(Effect.provide(billing));
-    // One established schedule owns both independent background jobs. Each job
-    // reports its own failure so a workflow problem cannot prevent email delivery.
-    yield* Cloudflare.Workers.cron("*/5 * * * *", () =>
-      Effect.all(
-        [
-          welcomeEmails.deliver,
-          Effect.flatten(HostedExecutor).pipe(
-            Effect.flatMap((sdk) => sdk[WorkflowHost].reconcile),
-            Effect.provide(executor),
-            reportErrors,
-            Effect.scoped,
-            Effect.withSpan("job.workflow.reconcile"),
-            Effect.catch(() => Effect.logWarning("Workflow queue reconciliation failed")),
-          ),
-        ],
-        { concurrency: 2, discard: true },
-      ).pipe(lifetime.background),
+    // Each job reports its own failure, so a workflow problem cannot prevent email delivery.
+    const workflowReconcile = Effect.flatten(HostedExecutor).pipe(
+      Effect.flatMap((sdk) => sdk[WorkflowHost].reconcile),
+      Effect.provide(executor),
+      reportErrors,
+      Effect.scoped,
+      Effect.withSpan("job.workflow.reconcile"),
+      Effect.catch(() => Effect.logWarning("Workflow queue reconciliation failed")),
     );
     // Membership changes sync seats through durable provisioning jobs. This daily
     // pass only repairs what those jobs cannot see, such as edits made in Autumn.
-    yield* Cloudflare.Workers.cron("17 4 * * *", () =>
-      meter.reconcileSeats.pipe(
-        reportErrors,
-        Effect.scoped,
-        Effect.withSpan("job.billing.reconcile"),
-        Effect.catch(() => Effect.logError("Billing seat reconciliation failed")),
-        lifetime.background,
-      ),
+    const billingReconcile = meter.reconcileSeats.pipe(
+      reportErrors,
+      Effect.scoped,
+      Effect.withSpan("job.billing.reconcile"),
+      Effect.catch(() => Effect.logError("Billing seat reconciliation failed")),
     );
+    const jobs = yield* cloudBackgroundJobs;
+    yield* jobs.schedule(
+      "* * * * *",
+      "organization-removal",
+      "provisioning",
+      "data-steps",
+      "repository-recovery",
+      "schedule-wake",
+    );
+    yield* jobs.schedule(
+      "*/5 * * * *",
+      "welcome-emails",
+      "workflow-reconcile",
+      "app-domain-heartbeat",
+    );
+    yield* jobs.schedule("17 4 * * *", "billing-reconcile");
+    const backgroundJobs = {
+      "organization-removal": organizationRemovals,
+      provisioning: dispatch,
+      "data-steps": dataSteps,
+      "repository-recovery": repositoryRecovery,
+      "schedule-wake": schedules.wake,
+      "app-domain-heartbeat": appDomains.heartbeat,
+      "welcome-emails": welcomeEmails.deliver,
+      "workflow-reconcile": workflowReconcile,
+      "billing-reconcile": billingReconcile,
+    } satisfies Record<BackgroundJob, unknown>;
 
     const onboarding = yield* cloudOnboarding.pipe(Effect.orDie);
     const egress = yield* cloudEgress;
@@ -267,7 +302,7 @@ export default Api.make(
       Layer.provide(appUi.dashboard),
       Layer.provide(requestServices(auth.appSessions).layer),
       HttpRouter.provideRequest(catalogLive(document.document, egress)),
-      Layer.provide(schedules),
+      Layer.provide(schedules.layer),
       Layer.provide(billing),
       Layer.provide(removals),
       Layer.provide(onboarding),
@@ -297,7 +332,7 @@ export default Api.make(
       HttpRouter.add("GET", "/openapi.json", apiRequest),
       ...Object.values(ExecutorCloudApi.groups).flatMap((group) =>
         Object.values(group.endpoints).map((endpoint) =>
-          HttpRouter.add(endpoint.method, endpoint.path, apiRequest),
+          HttpRouter.add(endpoint.method, endpoint.path, dispatchAfterWrites(apiRequest)),
         ),
       ),
     );
@@ -322,6 +357,7 @@ export default Api.make(
     const routes = Layer.mergeAll(
       HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
       HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
+      jobs.route((job) => backgroundJobs[job]),
       authoringRoutes,
       ...(["login", "login/sso", "create"] as const).map((page) =>
         HttpRouter.add(
@@ -368,12 +404,13 @@ export default Api.make(
         "/api/auth/organization/list",
         auth.handler.pipe(Effect.flatMap(hideRemovedOrganizations), Effect.provide(executor)),
       ),
-      HttpRouter.add("*", "/api/auth/*", auth.handler),
+      HttpRouter.add("*", "/api/auth/*", dispatchAfterWrites(auth.handler)),
       HttpRouter.add("*", "/api/email/unsubscribe", welcomeEmails.unsubscribe),
       HttpRouter.add("GET", "/api/oauth/callback", hostedOAuthCallback).pipe(
         HttpRouter.provideRequest(auth.identity),
       ),
       mcpRoutes,
+      HttpRouter.add("GET", "/.well-known/openai-apps-challenge", openAiAppsChallenge),
       Layer.mergeAll(
         HttpRouter.add("GET", "/api/mcp/approvals/:requestId", mcp.approvals),
         HttpRouter.add("POST", "/api/mcp/approvals/:requestId", mcp.approvals),
@@ -390,21 +427,7 @@ export default Api.make(
       Effect.provideService(Layer.CurrentMemoMap, memoMap),
     );
     return {
-      fetch: Effect.gen(function* () {
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        // Streamed responses close their HTTP scope before delivering EOF.
-        // Dispatch has its own scope and must not hold that EOF until background work finishes.
-        // Cron recovers dispatch if the request ends before this finalizer runs.
-        if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
-          const execution = yield* Cloudflare.WorkerExecutionContext;
-          yield* Effect.addFinalizer(() =>
-            execution.waitUntil(
-              dispatch.pipe(lifetime.background, Effect.timeoutOption("10 seconds"), Effect.asVoid),
-            ),
-          );
-        }
-        return yield* handle;
-      }).pipe(
+      fetch: handle.pipe(
         Effect.tapCause(reportCloudFailure),
         Effect.catchTag("AuthenticationUnavailable", () =>
           Effect.succeed(HttpServerResponse.empty({ status: 503 })),
@@ -427,9 +450,7 @@ export default Api.make(
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
-        McpSessionsLive,
         ScheduleCoordinatorLive,
-        AppDomainCoordinatorLive,
         cloudAuthDatabase,
         cloudTelemetry,
         Cloudflare.Workers.CronEventSourceLive,

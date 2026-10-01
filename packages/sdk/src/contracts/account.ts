@@ -73,6 +73,11 @@ export type AccountHealth = typeof AccountHealth.Type;
 export const CredentialCheck = Schema.Struct({
   status: AccountCheckStatus,
   info: Schema.NullOr(AccountInfo),
+  /**
+   * The message of an error the app's check threw, bounded and with the checked credentials
+   * replaced. Present only when a failing check threw one.
+   */
+  message: Schema.optionalKey(Schema.String),
 });
 export type CredentialCheck = typeof CredentialCheck.Type;
 

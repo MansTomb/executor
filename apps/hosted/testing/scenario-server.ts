@@ -38,6 +38,18 @@ const Setup = Schema.Struct({
   databaseUsername: Schema.NonEmptyString,
 });
 const Id = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));
+const TransportCause = Schema.Struct({
+  code: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]*$/))),
+  cause: Schema.optional(Schema.Unknown),
+});
+/** A socket, TLS or DNS failure's code, such as `ECONNRESET`; never its message, which can name the request. */
+const transportCode = (cause: unknown, depth = 0): string | undefined => {
+  if (depth > 3) return undefined;
+  const parsed = Schema.decodeUnknownOption(TransportCause)(cause);
+  return Option.isNone(parsed)
+    ? undefined
+    : (parsed.value.code ?? transportCode(parsed.value.cause, depth + 1));
+};
 // Preserve all 128 bits in at most 27 characters, including the prefix.
 const organizationSlug = (id: string) => `s-${BigInt(`0x${id}`).toString(36)}`;
 const Request = Schema.Struct({ id: Id, label: Schema.NonEmptyString });
@@ -347,7 +359,14 @@ const main = Effect.gen(function* () {
             scenario: id,
             phase: cleanupPhase,
             error: error._tag,
-            ...(error._tag === "HttpClientError" ? { reason: error.reason._tag } : {}),
+            ...(error._tag === "HttpClientError"
+              ? {
+                  reason: error.reason._tag,
+                  ...(error.reason._tag === "TransportError"
+                    ? { code: transportCode(error.reason.cause) ?? "unknown" }
+                    : {}),
+                }
+              : {}),
             ...(cleanupCause === undefined ? {} : { cause: cleanupCause }),
           }),
         ),

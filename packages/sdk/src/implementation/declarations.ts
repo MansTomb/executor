@@ -148,24 +148,37 @@ export const makeDeclarations = (options: {
   const recall = (app: string, id: string) =>
     options.durable === undefined ? Effect.succeed(undefined) : options.durable.get(app, id);
   /**
-   * Keep a result beyond this process, after its readers have it when the host allows. `entry`
-   * runs only when the host keeps results beyond this process.
+   * Keep a result beyond this process, in the calling fiber. `entry` runs only when the host keeps
+   * results beyond this process. Background work calls this directly: a host refuses new
+   * background work once the request that started it is closing, which is when most background
+   * evaluations finish.
    */
   const persist = <E>(
     app: string,
     id: string,
     entry: Effect.Effect<DurableEntry & { readonly until: number }, E>,
-  ) =>
-    Effect.gen(function* () {
-      const durable = options.durable;
-      if (durable === undefined) return;
-      const write = entry.pipe(
-        Effect.flatMap((kept) => durable.set(app, id, kept)),
-        Effect.catchCause(() => Effect.logWarning("Durable declaration write failed")),
-      );
-      if (options.background === undefined) return yield* write;
-      yield* options.background(write);
-    });
+  ): Effect.Effect<void> => {
+    const durable = options.durable;
+    if (durable === undefined) return Effect.void;
+    return entry.pipe(
+      Effect.flatMap((kept) => durable.set(app, id, kept)),
+      Effect.catchCause(() => Effect.logWarning("Durable declaration write failed")),
+    );
+  };
+  /**
+   * Keep a result a request evaluated beyond this process, after its readers have it when the
+   * host runs background work.
+   */
+  const persistAfterReply = <E>(
+    app: string,
+    id: string,
+    entry: Effect.Effect<DurableEntry & { readonly until: number }, E>,
+  ): Effect.Effect<void> => {
+    const write = persist(app, id, entry);
+    return options.durable === undefined || options.background === undefined
+      ? write
+      : options.background(write).pipe(Effect.asVoid);
+  };
   return {
     key,
     authorize,
@@ -200,24 +213,33 @@ export const makeDeclarations = (options: {
           return yield* evaluated;
         }
         const id = yield* key(command, state);
-        const load = Effect.gen(function* () {
+        /** Evaluate and keep the result in this process; `kept` is what to keep beyond it. */
+        const evaluation = Effect.gen(function* () {
           const value = yield* evaluated;
-          if (policy.retain !== undefined && !policy.retain(value)) return value;
+          if (policy.retain !== undefined && !policy.retain(value))
+            return { value, kept: undefined };
           const json = yield* Schema.encodeEffect(JsonText)(value).pipe(
             Effect.mapError(() => new StorageError()),
           );
           yield* options.cache.set(id, { kind: "json", app: state.app.id, at: started, json });
-          yield* persist(
-            state.app.id,
-            id,
-            Effect.succeed({
-              at: started,
-              json,
-              until: started + declarationFreshness.maxStaleMillis,
-            }),
-          );
-          return value;
+          const kept = { at: started, json, until: started + declarationFreshness.maxStaleMillis };
+          return { value, kept };
         });
+        /** A reader's evaluation, kept beyond this process after the reply. */
+        const load = evaluation.pipe(
+          Effect.tap(({ kept }) =>
+            kept === undefined
+              ? Effect.void
+              : persistAfterReply(state.app.id, id, Effect.succeed(kept)),
+          ),
+          Effect.map(({ value }) => value),
+        );
+        /** A background refresh already outlives the reply, so it keeps its result itself. */
+        const refreshed = evaluation.pipe(
+          Effect.flatMap(({ kept }) =>
+            kept === undefined ? Effect.void : persist(state.app.id, id, Effect.succeed(kept)),
+          ),
+        );
         const current = (entry: KeptEntry | undefined, now: number) =>
           entry?.kind === "json" && now - entry.at < declarationFreshness.maxStaleMillis
             ? entry
@@ -267,7 +289,7 @@ export const makeDeclarations = (options: {
                   };
                   options.cache.begin(id, refresh);
                   const accepted = yield* background(
-                    load.pipe(
+                    refreshed.pipe(
                       Effect.timeout(declarationFreshness.refreshMillis),
                       Effect.catchCause(() => Effect.logWarning("Declaration refresh failed")),
                       Effect.asVoid,

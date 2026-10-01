@@ -40,10 +40,12 @@ import {
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import {
+  OrganizationSlug,
   OrganizationReference,
   OrganizationForbidden,
   RequireOrganization,
 } from "./organization.ts";
+import { AuthenticationUnavailable, RequireUser } from "./auth.ts";
 
 const params = { organization: OrganizationReference };
 const app = { ...params, app: AppId };
@@ -223,3 +225,33 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
     }).annotate(RequiredAction, "manage"),
   )
   .middleware(RequireOrganization);
+
+/** Where a provider's callback returns: the connection it completes and the page that follows. */
+export const HostedOAuthCallback = Schema.Struct({
+  /** Dashboard state is keyed by the organization's route reference, its slug. */
+  organizationSlug: OrganizationSlug,
+  connection: AccountConnectionId,
+  app: Schema.NullOr(AppId),
+  profile: Schema.optional(ProfileId),
+  redirectUri: HttpUrl,
+  reconnect: Schema.Boolean,
+});
+export type HostedOAuthCallback = typeof HostedOAuthCallback.Type;
+/**
+ * The callback's OAuth state finds its pending connection, so the sign-in can finish in any tab
+ * or browser where the connection's creator is signed in. Completion repeats every check.
+ */
+export const HostedOAuthCallbacks = HttpApiGroup.make("oauthCallback")
+  .add(
+    HttpApiEndpoint.post("resolve", "/api/oauth/callback/resolve", {
+      payload: Schema.Struct({ callbackUrl: Schema.RedactedFromValue(HttpUrl) }),
+      success: HostedOAuthCallback,
+      error: [
+        ...connectionErrors,
+        CredentialsError,
+        OAuthCompletionFailed,
+        AuthenticationUnavailable,
+      ],
+    }),
+  )
+  .middleware(RequireUser);

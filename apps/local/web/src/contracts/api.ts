@@ -248,9 +248,12 @@ const toolLists = Atom.family((key: ToolKey) =>
     AsyncResult.map((page) => page.tools),
   ),
 );
-/** Shared browser view for the selected profile. */
+/** The selected profile's tools alone, for pickers that do not group them. */
 export const toolListAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
   toolLists(new ToolKey(key));
+/** Shared browser view for the selected profile, with the routers that group its tools. */
+export const toolCatalogAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
+  toolQueries(new ToolKey(key));
 class ToolDetailKey extends Data.Class<
   ConstructorParameters<typeof ToolKey>[0] & { readonly tool: string }
 > {}

@@ -1,7 +1,7 @@
 import { EmptyState } from "./empty-state.tsx";
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 import { useState, type ReactNode } from "react";
-import type { Tool, ToolSummary } from "@executor-js/sdk";
+import type { Tool, ToolRouter, ToolSummary } from "@executor-js/sdk";
 import { Option } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -12,7 +12,7 @@ import {
   SourceCodeIcon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
-import type { Query, QueryProps } from "../../contracts/dashboard.ts";
+import type { Query, QueryProps, ToolCatalog } from "../../contracts/dashboard.ts";
 import { QueryResult, useQuery } from "./context.tsx";
 import { CopyButton } from "./code.tsx";
 import { humanize, SchemaSection } from "./tool-schema.tsx";
@@ -25,6 +25,7 @@ import { cn } from "../lib/utils.ts";
 /**
  * Stable list/inspector layout. Hosts choose navigation and any tool execution controls.
  * The list carries no schemas; the selected tool's schemas are read through detail.
+ * A group that is a router, such as one MCP server, shows the router's title and description.
  * On phones the inspector fills the section and the list opens as a panel over it.
  */
 export function ToolBrowser<E>({
@@ -35,7 +36,7 @@ export function ToolBrowser<E>({
   onSelect,
   renderAction,
   empty,
-}: QueryProps<readonly ToolSummary[], E> & {
+}: QueryProps<ToolCatalog, E> & {
   /** Undefined when the tool left the catalog after the list was read. */
   readonly detail: (tool: ToolSummary) => Query<Tool | undefined, E>;
   readonly selected: string | undefined;
@@ -48,7 +49,10 @@ export function ToolBrowser<E>({
   const [search, setSearch] = useState("");
   const [listOpen, setListOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
-  const tools = Option.isSome(data) ? data.value : [];
+  const tools = Option.isSome(data) ? data.value.tools : [];
+  const routers = new Map(
+    (Option.isSome(data) ? data.value.routers : []).map((router) => [router.path, router]),
+  );
   const filtered = tools.filter((tool) =>
     `${tool.name} ${tool.description}`.toLowerCase().includes(search.toLowerCase()),
   );
@@ -66,9 +70,9 @@ export function ToolBrowser<E>({
       <HugeiconsIcon icon={SidebarLeft01Icon} size={18} aria-hidden />
     </Button>
   );
-  const tree = buildTree(filtered);
+  const tree = buildTree(filtered, routers);
   // Labels come from the whole catalog so searching does not change a tool's title.
-  const { leafLabels } = treeIndex(buildTree(tools));
+  const { leafLabels } = treeIndex(buildTree(tools, routers));
   const groups = groupKeys(tree);
   const allCollapsed = groups.length > 0 && groups.every((key) => collapsed.has(key));
   const list = (toggle?: ReactNode) => (
@@ -379,6 +383,7 @@ type ToolNode =
       readonly kind: "group";
       readonly key: string;
       readonly label: string;
+      readonly description: string | undefined;
       readonly children: readonly ToolNode[];
       readonly size: number;
     }
@@ -389,15 +394,24 @@ interface Entry {
   readonly segments: readonly string[];
 }
 
+/** Routers by path, which is the dotted prefix their tools' names share. */
+type Routers = ReadonlyMap<string, ToolRouter>;
+
 /**
  * Group tools by the dotted parts of their names, keeping catalog order. Within a level, a
  * `prefix_` shared by several tools becomes a group too, e.g. `accounts_connect` and
- * `accounts_rename` under Accounts.
+ * `accounts_rename` under Accounts. A tool that repeats its group's name as a prefix, like
+ * MCP servers that namespace every tool (`planetscale.planetscale_list_databases`), drops the
+ * repeat instead of nesting a second group with the same name. A dotted group is a router and
+ * takes its metadata.
  */
-function buildTree(tools: readonly ToolSummary[]): readonly ToolNode[] {
+function buildTree(tools: readonly ToolSummary[], routers: Routers): readonly ToolNode[] {
   return nest(
     tools.map((tool) => ({ tool, segments: tool.name.split(".") })),
     "",
+    "",
+    "",
+    routers,
   );
 }
 
@@ -406,22 +420,43 @@ const underscorePrefix = (segment: string) => {
   return at > 0 && at < segment.length - 1 ? segment.slice(0, at) : undefined;
 };
 
-function nest(entries: readonly Entry[], parent: string): readonly ToolNode[] {
+/** Removes a leading `name_` that only repeats the enclosing group's name. */
+const withoutGroupPrefix = (entry: Entry, group: string): Entry => {
+  const [only, ...rest] = entry.segments;
+  if (only === undefined || rest.length > 0) return entry;
+  const prefix = underscorePrefix(only);
+  return prefix !== undefined && prefix.toLowerCase() === group.toLowerCase()
+    ? { tool: entry.tool, segments: [only.slice(prefix.length + 1)] }
+    : entry;
+};
+
+/** `path` is the enclosing router's path, or undefined inside a `prefix_` group. */
+function nest(
+  nested: readonly Entry[],
+  parent: string,
+  parentGroup: string,
+  path: string | undefined,
+  routers: Routers,
+): readonly ToolNode[] {
+  const entries =
+    parentGroup === "" ? nested : nested.map((e) => withoutGroupPrefix(e, parentGroup));
   const shared = new Map<string, number>();
   for (const entry of entries) {
     const prefix = entry.segments.length === 1 ? underscorePrefix(entry.segments[0]!) : undefined;
     if (prefix !== undefined) shared.set(prefix, (shared.get(prefix) ?? 0) + 1);
   }
-  const order: Array<{ readonly group: string } | { readonly entry: Entry }> = [];
+  const order: Array<
+    { readonly group: string; readonly router: boolean } | { readonly entry: Entry }
+  > = [];
   const groups = new Map<string, Entry[]>();
   for (const entry of entries) {
     const [head = "", ...rest] = entry.segments;
     const prefix = rest.length === 0 ? underscorePrefix(head) : undefined;
     const split =
       rest.length > 0
-        ? { group: head, segments: rest }
+        ? { group: head, segments: rest, router: true }
         : prefix !== undefined && (shared.get(prefix) ?? 0) > 1
-          ? { group: prefix, segments: [head.slice(prefix.length + 1)] }
+          ? { group: prefix, segments: [head.slice(prefix.length + 1)], router: false }
           : undefined;
     if (split === undefined) {
       order.push({ entry });
@@ -430,7 +465,7 @@ function nest(entries: readonly Entry[], parent: string): readonly ToolNode[] {
     const members = groups.get(split.group);
     if (members === undefined) {
       groups.set(split.group, [{ tool: entry.tool, segments: split.segments }]);
-      order.push({ group: split.group });
+      order.push({ group: split.group, router: split.router });
     } else members.push({ tool: entry.tool, segments: split.segments });
   }
   return order.map((item): ToolNode => {
@@ -438,11 +473,19 @@ function nest(entries: readonly Entry[], parent: string): readonly ToolNode[] {
       return { kind: "tool", tool: item.entry.tool, label: humanize(item.entry.segments[0]!) };
     const members = groups.get(item.group) ?? [];
     const key = parent === "" ? item.group : `${parent}/${item.group}`;
+    const routerPath =
+      item.router && path !== undefined
+        ? path === ""
+          ? item.group
+          : `${path}.${item.group}`
+        : undefined;
+    const router = routerPath === undefined ? undefined : routers.get(routerPath);
     return {
       kind: "group",
       key,
-      label: humanize(item.group),
-      children: nest(members, key),
+      label: router?.title ?? humanize(item.group),
+      description: router?.description,
+      children: nest(members, key, item.group, routerPath, routers),
       size: members.length,
     };
   });
@@ -507,6 +550,14 @@ function ToolTree({
                 {node.size}
               </span>
             </button>
+            {node.description !== undefined && !collapsed.has(node.key) && (
+              <p
+                title={node.description}
+                className="mb-1 ml-[22px] line-clamp-2 pr-2 text-xs leading-normal text-muted-foreground"
+              >
+                {node.description}
+              </p>
+            )}
             {!collapsed.has(node.key) && (
               <ToolTree
                 nodes={node.children}

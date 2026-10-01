@@ -1,12 +1,12 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Schema, Scope } from "effect";
-import { randomBytes } from "node:crypto";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { scenarioLifetime } from "../support/lifecycle.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";
-import { createScenario, populations, seedOrganization } from "../sdk/index.ts";
+import { populations, seedOrganization } from "../sdk/index.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Summary = Schema.Struct({
@@ -24,11 +24,11 @@ layer(HostedLive, { excludeTestServices: true })("Testing SDK", (it) => {
           actors = yield* Actors,
           api = yield* Api,
           evidence = yield* Evidence;
-        const child = yield* Scope.fork(yield* Effect.scope);
-        const other = yield* createScenario(target, {
-          id: randomBytes(16).toString("hex"),
-          label: "Overlapping organization",
-        }).pipe(Scope.provide(child));
+        // Setup created the overlapping scenario; this case seeds, isolates and fails it.
+        const [overlap] = scenarioLifetime(context).sdkScenarios;
+        if (overlap === undefined)
+          return yield* Effect.die(new Error("The test plan declares the overlapping scenario"));
+        const { scenario: other, scope: child } = overlap;
         if (other.actors === undefined)
           return yield* Effect.die(new Error("Hosted scenario requires actors"));
         expect(other.actors.organization.id).not.toBe(actors.organization.id);

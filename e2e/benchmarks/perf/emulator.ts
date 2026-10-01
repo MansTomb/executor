@@ -57,7 +57,7 @@ export const parseSpec = (segment: string): Option.Option<EmulatorSpec> => {
     if (!/^\d{1,6}$/.test(rest)) return Option.none();
     const value = Number(rest);
     if (letter === "t" && value >= 1 && value <= 20000) spec = { ...spec, tools: value };
-    else if (letter === "l" && value <= 120000) spec = { ...spec, latencyMs: value };
+    else if (letter === "l" && value <= 600000) spec = { ...spec, latencyMs: value };
     else if (letter === "j" && value <= 60000) spec = { ...spec, jitterMs: value };
     else if (letter === "s" && value <= 120000) spec = { ...spec, listMs: value };
     else if (letter === "c" && value <= 120000) spec = { ...spec, coldMs: value };

@@ -38,7 +38,12 @@ export { McpClientLimits, defaultMcpClientLimits } from "./mcp.ts";
 export * from "./webhook-protocol.ts";
 
 export { AccountId, HttpUrl } from "./schema.ts";
-export { OAuthClientAuth, OAuthSecretClientAuth } from "./provider.ts";
+export {
+  OAuthClientAuth,
+  OAuthSecretClientAuth,
+  OAuthTokenRequestFormat,
+  OAuthTokenResponse,
+} from "./provider.ts";
 
 /**
  * The host protocol this framework speaks and its wire schemas. A later protocol replaces this

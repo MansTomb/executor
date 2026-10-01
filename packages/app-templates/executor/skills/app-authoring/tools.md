@@ -56,7 +56,9 @@ tools: router({
 }),
 ```
 
-These tools are `health`, `issues.list` and `issues.close`. Keys start with a
+These tools are `health`, `issues.list` and `issues.close`. A tool named `health`
+is an ordinary query; checking that an account works is the provider's `health`
+function ([accounts.md](accounts.md#check-an-account)). Keys start with a
 letter or `_` and contain no dots; `__proto__`, `constructor` and `prototype` are
 reserved. Mount each mutation at one path. Router options are `title`,
 `description`, `instructions`, `icons` and `tags` (tag name to description).

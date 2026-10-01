@@ -14,8 +14,14 @@ import { useContext, useEffect, useRef, useState } from "react";
 import { Button } from "@executor-js/ui/components/button";
 import { CopyButton } from "@executor-js/ui/dashboard/code";
 import { ConnectionStatusPage } from "../components/connection-status.tsx";
-import { appError, completeOAuthAtom, PendingOAuth } from "../../contracts/apps.ts";
+import {
+  appError,
+  completeOAuthAtom,
+  PendingOAuth,
+  resolveOAuthCallbackAtom,
+} from "../../contracts/apps.ts";
 import { accountToNameAtom } from "../../contracts/accounts.ts";
+import type { HostedError } from "../../contracts/errors.ts";
 
 /** The SDK decides recovery for every completion reason; `setup` means the connection itself ended. */
 type Recovery = Exclude<OAuthCompletionRecovery, "cancelled"> | "setup";
@@ -30,78 +36,117 @@ type CallbackState =
       readonly fixPrompt?: string | undefined;
     };
 
-/** Complete provider OAuth in the same browser session that started it. */
+/**
+ * Complete provider OAuth in whichever tab or browser the provider opened. Some services sign in
+ * through an emailed link, so the callback cannot rely on the starting tab's session storage: the
+ * server finds the pending connection from the callback's state and checks that the signed-in
+ * user created it. The starting tab's context only adds its manual-client retry hint.
+ */
 export function OAuthCallbackPage() {
   const navigate = useNavigate();
   const registry = useContext(RegistryContext);
   const started = useRef(false);
   const [state, setState] = useState<CallbackState>({ status: "connecting" });
-  const [pending] = useState(() =>
+  const [stored] = useState(() =>
     Schema.decodeUnknownOption(Schema.fromJsonString(PendingOAuth))(
       sessionStorage.getItem("executor:hosted:oauth"),
     ),
   );
+  const [pending, setPending] = useState(stored);
   useEffect(() => {
     if (started.current) return;
     started.current = true;
     const callbackSearch = window.location.search;
     window.history.replaceState(null, "", "/oauth/callback");
-    if (Option.isNone(pending)) {
+    if (!new URLSearchParams(callbackSearch).has("state")) {
       // oxlint-disable-next-line react/set-state-in-effect -- one-time callback handling on mount
       setState({
         status: "failed",
-        message:
-          "This sign-in has expired or was started in another tab. Open the app and connect again.",
+        message: "This sign-in has ended. Open the app and connect again.",
         recovery: "setup",
       });
       return;
     }
-    const callback = new URL(pending.value.redirectUri);
-    callback.search = callbackSearch;
-    const { organization, organizationSlug, connection, app, profile, reconnect } = pending.value;
+    /** Map a failed step to the SDK's recovery for its reason. */
+    const fail = (cause: Cause.Cause<HostedError>) => {
+      const error = Cause.findErrorOption(cause);
+      const completion = Option.filter(error, Schema.is(OAuthCompletionFailed));
+      const recovery = Option.match(completion, {
+        onSome: (failure) => oauthCompletionRecovery[failure.reason],
+        onNone: () =>
+          Option.exists(
+            error,
+            (value) =>
+              Schema.is(AccountConnectionClosed)(value) ||
+              Schema.is(AccountConnectionTargetChanged)(value),
+          )
+            ? ("setup" as const)
+            : ("restart" as const),
+      });
+      if (recovery === "cancelled") {
+        sessionStorage.removeItem("executor:hosted:oauth");
+        setState({
+          status: "cancelled",
+          message: "No account was connected. You can return to the app and try again.",
+        });
+        return;
+      }
+      setState({
+        status: "failed",
+        message: appError(cause),
+        recovery,
+        fixPrompt: Option.match(error, {
+          onSome: (value) =>
+            recovery === "configuration" && UserFacingError.is(value) && value.agentFixable
+              ? `While connecting an account in Executor.\n\n${value.fixPrompt}`
+              : undefined,
+          onNone: () => undefined,
+        }),
+      });
+    };
     void (async () => {
+      const received = new URL("/oauth/callback", window.location.origin);
+      received.search = callbackSearch;
+      registry.set(resolveOAuthCallbackAtom, Redacted.make(received.href));
+      const resolved = await Effect.runPromiseExit(
+        AtomRegistry.getResult(registry, resolveOAuthCallbackAtom, { suspendOnWaiting: true }),
+      );
+      if (Exit.isFailure(resolved)) {
+        // Only the member who started a connection may finish it.
+        if (
+          Option.exists(
+            Cause.findErrorOption(resolved.cause),
+            (error) => error._tag === "OrganizationForbidden",
+          )
+        )
+          return setState({
+            status: "failed",
+            message:
+              "Another Executor user started this sign-in. Sign in as that user and open the link again.",
+            recovery: "setup",
+          });
+        return fail(resolved.cause);
+      }
+      const { organizationSlug, connection, app, profile, reconnect } = resolved.value;
+      // The organization's pages key their state by the route's slug reference.
+      const organization = organizationSlug;
+      const context = {
+        ...resolved.value,
+        organization,
+        manualClient: Option.exists(
+          stored,
+          (value) => value.connection === connection && value.manualClient === true,
+        ),
+      };
+      setPending(Option.some(context));
+      const callback = new URL(context.redirectUri);
+      callback.search = callbackSearch;
       const mutation = completeOAuthAtom({ organization, connection });
       registry.set(mutation, { callbackUrl: Redacted.make(callback.href), app });
       const result = await Effect.runPromiseExit(
         AtomRegistry.getResult(registry, mutation, { suspendOnWaiting: true }),
       );
-      if (Exit.isFailure(result)) {
-        const error = Cause.findErrorOption(result.cause);
-        const completion = Option.filter(error, Schema.is(OAuthCompletionFailed));
-        const recovery = Option.match(completion, {
-          onSome: (failure) => oauthCompletionRecovery[failure.reason],
-          onNone: () =>
-            Option.exists(
-              error,
-              (value) =>
-                Schema.is(AccountConnectionClosed)(value) ||
-                Schema.is(AccountConnectionTargetChanged)(value),
-            )
-              ? ("setup" as const)
-              : ("restart" as const),
-        });
-        if (recovery === "cancelled") {
-          sessionStorage.removeItem("executor:hosted:oauth");
-          setState({
-            status: "cancelled",
-            message: "No account was connected. You can return to the app and try again.",
-          });
-          return;
-        }
-        setState({
-          status: "failed",
-          message: appError(result.cause),
-          recovery,
-          fixPrompt: Option.match(error, {
-            onSome: (value) =>
-              recovery === "configuration" && UserFacingError.is(value) && value.agentFixable
-                ? `While connecting an account in Executor.\n\n${value.fixPrompt}`
-                : undefined,
-            onNone: () => undefined,
-          }),
-        });
-        return;
-      }
+      if (Exit.isFailure(result)) return fail(result.cause);
       sessionStorage.removeItem("executor:hosted:oauth");
       // Reconnects keep their name; a new account is named on the page that follows.
       if (!reconnect) registry.set(accountToNameAtom, { organization, account: result.value.id });
@@ -118,7 +163,7 @@ export function OAuthCallbackPage() {
           search: { account: result.value.id },
         });
     })();
-  }, [registry, navigate, pending]);
+  }, [registry, navigate, stored]);
   return (
     <ConnectionStatusPage
       status={state.status}

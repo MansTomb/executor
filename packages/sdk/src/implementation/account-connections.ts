@@ -6,14 +6,15 @@ import {
   type GetAccountConnection,
   type SubmitAccountConnection,
 } from "../contracts/account-connection.ts";
-import { AccountNotFound } from "../contracts/account.ts";
+import { Account, AccountNotFound } from "../contracts/account.ts";
 import { AuthMethodInvalid, Provider, ProviderNotFound } from "../contracts/provider.ts";
 import { StorageError, AccountConnectionId } from "../contracts/shared.ts";
 import { StoredConnectionTarget, type Credentials } from "../contracts/storage.ts";
 import { makeAccounts, ownedAccount } from "./accounts.ts";
 import {
-  openConnection,
+  type ConnectionRow,
   readConnection,
+  requireOpen,
   finishConnection,
   lockConnection,
 } from "./connection-state.ts";
@@ -35,33 +36,41 @@ export const makeAccountConnections = (
         Effect.mapError(() => new StorageError()),
       );
     });
+  const describe = (
+    row: Pick<ConnectionRow, "id" | "owner" | "target" | "createdAt" | "expiresAt" | "state">,
+    provider: Provider,
+    reconnectAccount: Account | null,
+  ) => ({
+    id: row.id,
+    owner: row.owner,
+    provider,
+    reconnectAccount,
+    target:
+      row.target === null
+        ? null
+        : {
+            app: row.target.app,
+            requirement: row.target.requirement,
+            name: row.target.name,
+            profile: row.target.profile,
+          },
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+    state: row.state,
+  });
   const get = (input: typeof GetAccountConnection.Type) =>
     Effect.gen(function* () {
       const row = yield* readConnection(db, input);
-      return {
-        id: row.id,
-        owner: row.owner,
-        provider: yield* provider(row.provider),
-        reconnectAccount:
-          row.reconnectAccount === null
-            ? null
-            : yield* makeAccounts(db, credentials, crypto, lifecycle).get({
-                account: row.reconnectAccount,
-                owner: row.owner,
-              }),
-        target:
-          row.target === null
-            ? null
-            : {
-                app: row.target.app,
-                requirement: row.target.requirement,
-                name: row.target.name,
-                profile: row.target.profile,
-              },
-        createdAt: row.createdAt,
-        expiresAt: row.expiresAt,
-        state: row.state,
-      };
+      return describe(
+        row,
+        yield* provider(row.provider),
+        row.reconnectAccount === null
+          ? null
+          : yield* makeAccounts(db, credentials, crypto, lifecycle).get({
+              account: row.reconnectAccount,
+              owner: row.owner,
+            }),
+      );
     });
   return {
     get,
@@ -71,12 +80,15 @@ export const makeAccountConnections = (
           input.target === undefined
             ? { provider: input.provider, snapshot: null }
             : yield* captureConnectionTarget(db, input.target);
-        const resolved = destination.provider;
-        yield* provider(resolved);
+        const resolved = yield* provider(destination.provider);
+        let reconnectAccount: Account | null = null;
         if (input.account !== undefined) {
           const account = yield* ownedAccount(db, { account: input.account, owner: input.owner });
-          if (account.provider !== resolved)
+          if (account.provider !== resolved.id)
             return yield* new AccountNotFound({ account: input.account });
+          reconnectAccount = yield* Schema.decodeUnknownEffect(Account)(account).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
         }
         const id = AccountConnectionId.make(
           `con_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
@@ -85,21 +97,25 @@ export const makeAccountConnections = (
         const target = yield* Schema.encodeEffect(Schema.NullOr(StoredConnectionTarget))(
           destination.snapshot,
         ).pipe(Effect.mapError(() => new StorageError()));
+        const created = {
+          id,
+          owner: input.owner,
+          target: destination.snapshot,
+          createdAt: new Date(now),
+          expiresAt: new Date(now + 30 * 60_000),
+          state: { status: "pending" as const },
+        };
         yield* query(() =>
           db.create("accountConnections", {
-            id,
-            owner: input.owner,
-            provider: resolved,
+            ...created,
+            provider: resolved.id,
             target,
             reconnectAccount: input.account ?? null,
-            state: { status: "pending" },
             oauthAttempt: null,
             revision: id,
-            createdAt: new Date(now),
-            expiresAt: new Date(now + 30 * 60_000),
           }),
         );
-        return yield* get({ connection: id });
+        return describe(created, resolved, reconnectAccount);
       }).pipe(Effect.withSpan("sdk.connections.create")),
     cancel: (input: typeof GetAccountConnection.Type) =>
       transaction(db, (tx) =>
@@ -120,7 +136,7 @@ export const makeAccountConnections = (
         Effect.gen(function* () {
           const saved = yield* lockConnection(tx, input, crypto);
           if (saved.state.status === "completed") return saved.state.account;
-          const row = yield* openConnection(tx, input);
+          const row = yield* requireOpen(input, saved);
           const accounts = makeAccounts(tx, credentials, crypto, lifecycle);
           let account;
           if (row.reconnectAccount !== null) {
@@ -144,7 +160,7 @@ export const makeAccountConnections = (
               fields: input.fields,
             });
           if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
-          yield* finishConnection(tx, input, account);
+          yield* finishConnection(tx, row, account);
           return account;
         }),
       ).pipe(Effect.withSpan("sdk.connections.submit")),

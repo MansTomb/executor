@@ -23,6 +23,7 @@ import { chromium } from "playwright";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { appsManifest, withApps } from "../support/apps-release.ts";
+import { containerNpmRegistry } from "../support/npm-registry.ts";
 
 for (const mode of ["explicit", "local", "railway"] as const)
   it.live(`released image keeps login and encrypted credentials across restart (${mode})`, () =>
@@ -36,6 +37,7 @@ for (const mode of ["explicit", "local", "railway"] as const)
         const architecture = yield* Config.String("EXECUTOR_E2E_DOCKER_ARCH");
         const version = yield* Config.NonEmptyString("EXECUTOR_E2E_DOCKER_VERSION");
         const id = `executor-release-${randomBytes(8).toString("hex")}`;
+        const registry = yield* containerNpmRegistry;
         const run = (args: readonly string[], env: Record<string, string> = {}) =>
           processes.string(
             ChildProcess.make("docker", args, {
@@ -156,6 +158,7 @@ for (const mode of ["explicit", "local", "railway"] as const)
               "--volume",
               `${id}:/app/data`,
               ...Object.keys(environment).flatMap((name) => ["--env", name]),
+              ...registry.docker,
               containerImage,
             ],
             environment,
@@ -899,6 +902,7 @@ it.live("released image serves management tools at a tailnet origin with private
           { includeStderr: args[0] === "logs" },
         );
       const id = `selfhost-e2e-${randomBytes(6).toString("hex")}`;
+      const registry = yield* containerNpmRegistry;
       // Shared CGNAT space, the same range Tailscale assigns. Vary the subnet per run.
       const subnet = `100.64.${64 + (randomBytes(1).readUInt8(0) % 190)}`;
       const address = `${subnet}.10`;
@@ -952,6 +956,7 @@ it.live("released image serves management tools at a tailnet origin with private
             `127.0.0.1:${port}:${containerPort}`,
             // EXECUTOR_APPS_ALLOW_PRIVATE_FETCH stays unset: the default is under test.
             ...Object.keys(environment).flatMap((name) => ["--env", name]),
+            ...registry.docker,
             image,
           ],
           environment,
@@ -1224,6 +1229,7 @@ it.live(
             }),
         );
         const containerPort = 8080;
+        const registry = yield* containerNpmRegistry;
         /** Start the image with an app Worker limit, or none, in its own container. */
         const start = (limit: string | undefined) =>
           Effect.gen(function* () {
@@ -1248,6 +1254,7 @@ it.live(
                   "--publish",
                   `127.0.0.1:${port}:${containerPort}`,
                   ...Object.keys(environment).flatMap((name) => ["--env", name]),
+                  ...registry.docker,
                   image,
                 ],
                 environment,
@@ -1448,6 +1455,7 @@ const workflowServer = (source: string) =>
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
     const id = `executor-release-${randomBytes(8).toString("hex")}`;
+    const registry = yield* containerNpmRegistry;
     const run = (args: readonly string[], env: Record<string, string> = {}) =>
       processes.string(ChildProcess.make("docker", args, { env, extendEnv: true }));
     const port = yield* driver(
@@ -1484,6 +1492,7 @@ const workflowServer = (source: string) =>
           "--publish",
           `127.0.0.1:${port}:8080`,
           ...Object.keys(environment).flatMap((name) => ["--env", name]),
+          ...registry.docker,
           image,
         ],
         environment,

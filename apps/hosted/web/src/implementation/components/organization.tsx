@@ -325,8 +325,13 @@ export function OrganizationBoundary({
   useEffect(() => {
     if (!rejectedResume || resume === undefined) return;
     forgetOrganization(resume.userId, resume.organization);
+    // `/` resumes from the memory the document was served with. Forget that copy too, or `/`
+    // would reopen the rejected organization and never reach the chooser.
+    const saved = registry.get(lastOrganizationAtom);
+    if (saved?.user === resume.userId && saved.organization === resume.organization)
+      registry.set(lastOrganizationAtom, null);
     void navigate({ to: "/", replace: true });
-  }, [rejectedResume, resume, navigate]);
+  }, [rejectedResume, resume, navigate, registry]);
   useEffect(() => {
     if (
       !AsyncResult.isSuccess(access) ||

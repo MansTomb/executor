@@ -79,12 +79,15 @@ const failure = (error: UiUnauthorized | UiForbidden | UiFailed) =>
     Schema.is(UiUnauthorized)(error) ? 401 : Schema.is(UiForbidden)(error) ? 403 : 422,
   );
 
-/** Build handlers only. The host chooses their route table, origin base, runtime, and Better Auth store. */
-export const hostedAppUi = (
+/**
+ * Build handlers only. The host chooses their route table, origin base, runtime, and Better Auth
+ * store. Domain status runs inside the location request and may use that request's services.
+ */
+export const hostedAppUi = <R = never>(
   addresses: ReturnType<typeof appAddresses>,
   domainStatus: (
     team: Pick<AppUiTarget, "slug"> & { readonly id: AppUiTarget["organization"] },
-  ) => Effect.Effect<"ready" | "pending" | "failed", UiFailed | AppUiAddressInvalid> = () =>
+  ) => Effect.Effect<"ready" | "pending" | "failed", UiFailed | AppUiAddressInvalid, R> = () =>
     Effect.succeed("ready"),
 ) => {
   const requestOrigin = Effect.gen(function* () {

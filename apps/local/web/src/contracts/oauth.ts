@@ -1,12 +1,11 @@
 /** Typed browser OAuth operations. Client secrets and callback URLs stay redacted in Atom state. */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
-import { Data, Effect, Schema, type Redacted } from "effect";
+import { Data, Effect, Option, Schema, type Redacted } from "effect";
 import { Atom } from "effect/unstable/reactivity";
 import {
   AppId,
   AccountId,
-  AccountConnectionId,
   ProfileId,
   type ProviderId,
   type OAuthClientInput,
@@ -53,19 +52,14 @@ export const startOAuthAtom = DashboardClient.runtime.fn(
 export const oauthCallbackAtom = Atom.make<Redacted.Redacted<string> | undefined>(undefined).pipe(
   Atom.keepAlive,
 );
-/** Safe navigation intent; the server separately owns provider, owner and credential identity. */
+/** Safe navigation intent; the server finds the connection from the callback's OAuth state. */
 /** An app connection returns to the same account selection after provider consent. */
 export const OAuthAppReturn = Schema.Struct({
-  connection: AccountConnectionId,
   app: AppId,
   slot: Schema.NonEmptyString,
   profile: Schema.optional(ProfileId),
 });
-export const OAuthReturn = Schema.Union([
-  OAuthAppReturn,
-  Schema.Struct({ connection: AccountConnectionId, account: AccountId }),
-  Schema.Struct({ connection: AccountConnectionId }),
-]);
+export const OAuthReturn = Schema.Union([OAuthAppReturn, Schema.Struct({ account: AccountId })]);
 /** Finish once per document load, even if React remounts the page. */
 export const completeOAuthAtom = DashboardClient.runtime
   .atom((get) =>
@@ -73,19 +67,15 @@ export const completeOAuthAtom = DashboardClient.runtime
       const callbackUrl = get.once(oauthCallbackAtom);
       if (callbackUrl === undefined) return undefined;
       const client = yield* DashboardClient;
-      const saved = sessionStorage.getItem("executor.oauth.return");
-      const target =
-        saved === null
-          ? undefined
-          : yield* Schema.decodeUnknownEffect(Schema.fromJsonString(OAuthReturn))(saved);
-      if (target === undefined) return undefined;
-      const savedAccount = yield* client.dashboard.completeOAuth({
-        payload: { connection: target.connection, callbackUrl },
-      });
+      // A provider link opened in another tab has no saved return; it still completes.
+      const target = Schema.decodeUnknownOption(Schema.fromJsonString(OAuthReturn))(
+        sessionStorage.getItem("executor.oauth.return"),
+      );
+      const savedAccount = yield* client.dashboard.completeOAuth({ payload: { callbackUrl } });
       accountCredentialsChanged(get, savedAccount);
-      if (Schema.is(OAuthAppReturn)(target)) {
-        invalidate(get, appAtom(target.app));
-        get.refresh(toolsAtom({ app: target.app }));
+      if (Option.isSome(target) && Schema.is(OAuthAppReturn)(target.value)) {
+        invalidate(get, appAtom(target.value.app));
+        get.refresh(toolsAtom({ app: target.value.app }));
       }
       return savedAccount;
     }),

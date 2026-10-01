@@ -1,3 +1,86 @@
+## Local source with the CLI
+
+Use this path when you can run shell commands and `executor apps --help` works.
+If the command is missing, or it has no `skills` subcommand, install the
+current release. It needs Node.js 24.14.0 or newer:
+
+```sh
+npm i -g executor@beta --include=optional
+```
+
+The `beta` tag is required. The `latest` tag installs the previous Executor,
+which has no `apps` command. Installing globally changes the user's machine,
+so ask first if that has not been approved.
+
+Keep one directory per app with `index.ts` and `package.json` at its root. The
+CLI sends the whole directory, skipping `.git`, `node_modules` and `.DS_Store`.
+Keep scratch files out of it; files missing from the directory are deleted
+from the app.
+
+Read these docs with
+`executor apps skills --app executor --name app-authoring --file deploy.md`.
+
+Commands target the local server at `http://127.0.0.1:4312` by default. It
+reads the local API key from `EXECUTOR_API_KEY`. If that variable is unset, ask
+the user to set it; do not search files for it. For hosted Executor, run
+`executor apps login --host https://v2.executor.sh` once. It signs in through
+the browser. Then pass the same `--host` to every command.
+
+Start by creating the app without `--files`. The host saves a minimal starter
+whose `package.json` pins the `apps` version it runs. Then fetch the source into
+a directory. The same fetch works for any existing app, and
+`executor apps list` shows app IDs:
+
+```sh
+executor apps create --name "Hello"        # prints the app, including its id
+executor apps source --app <app-id> > /tmp/source.json
+jq -r .revision.commit /tmp/source.json    # the commit your edits are based on
+node -e 'const fs=require("fs"),p=require("path");for(const f of JSON.parse(fs.readFileSync(0)).files){const t=p.join(process.argv[1],f.path);fs.mkdirSync(p.dirname(t),{recursive:true});fs.writeFileSync(t,f.content)}' ./hello < /tmp/source.json
+```
+
+If you already have complete source with a pinned `package.json`, use
+`executor apps create --name "Hello" --files ./hello` instead.
+
+Each iteration saves the directory as a commit and deploys it:
+
+```sh
+executor apps commit --app <app-id> --files ./hello \
+  --expected <last-commit> --message "Add search" | jq -r .revision.commit
+executor apps deploy --app <app-id> --commit <new-commit>
+```
+
+`--expected` is the commit your edits are based on. If someone else saved in
+between, the commit is rejected. Read the source again and reconcile before
+retrying. A commit alone does not change the running app.
+
+On hosted Executor you can also use Git. `executor apps git --app <app-id>`
+prints the clone URL. Configure the credential helper for the clone:
+
+```sh
+git -c credential.helper='!executor apps credential' -c credential.useHttpPath=true clone <url>
+```
+
+Pushes save source but do not deploy it. Deploy the pushed commit with
+`executor apps deploy --app <app-id> --commit "$(git rev-parse HEAD)"`.
+
+Type-check locally before deploying. A deploy compiles the app and reports
+build errors, but it does not type-check. The framework is published to npm as
+`apps` under the `beta` tag. The `latest` tag and the `1.0.0-beta` versions are
+unrelated packages, so install only the exact version pinned in `package.json`,
+never `apps@latest` or an unpinned `apps`:
+
+```sh
+cd hello
+npm install --no-package-lock
+npx -p typescript tsc --noEmit --strict --skipLibCheck \
+  --module nodenext --moduleResolution nodenext --target es2022 index.ts
+```
+
+Add a `tsconfig.json` with JSX settings when the app has React UI files.
+`node_modules` is never uploaded. Keep lockfiles out of the directory. Verify
+the running behavior as described in [SKILL.md](SKILL.md). After a deploy,
+start a new `execute` to discover the app's tools.
+
 ## Deploy through MCP
 
 MCP exposes `skills` for these docs and `execute` for programs. Model and browser modes also
@@ -131,7 +214,9 @@ edit, replace only the affected file content and retain the other files. Check
 that the expected text exists before applying a text replacement. Do not print
 the entire app and retype it to change one style or operation.
 
-For locally authored files, generate the `{ path, content }` array with a local
+If you have a shell and the CLI, use the local CLI path above instead of
+serializing files into tool calls. Otherwise, for locally authored files,
+generate the `{ path, content }` array with a local
 script and JSON serialization. Insert that serialized value as JavaScript data
 in the `execute` payload; keep it out of shell interpolation. JSON handles
 quotes, backticks, newlines and literal `${...}` without changing the source.

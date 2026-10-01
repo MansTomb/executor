@@ -365,17 +365,20 @@ export const makeProfileSetup = (
                   limit: limit - intent.length,
                 }),
               );
-        // Setup that failed on its accounts cannot succeed while one of them must reconnect: every
-        // attempt would evaluate the app and repeat its webhook registrations only to fail again.
-        // Wait for the reconnect instead, checking stored state once per retry delay. Any other
-        // problem is left to reconciliation, which records it.
+        // Setup that failed on its accounts cannot succeed while one of them must reconnect or a
+        // required account is unselected: every attempt would evaluate the app, or fail before it,
+        // only to record the same failure. Wait instead, checking stored state once per retry
+        // delay; selecting an account saves new intent, which runs at once. Any other problem is
+        // left to reconciliation, which records it.
         const ready = yield* Effect.filter(retries, (row) =>
           row.failure !== "accounts" || row.lease !== null
             ? Effect.succeed(true)
             : resources.accountNeedingReconnect({ app: row.app, profile: row.id }).pipe(
-                Effect.catch(() => Effect.succeed(undefined)),
-                Effect.flatMap((account) =>
-                  account === undefined
+                Effect.map((account) => account !== undefined),
+                Effect.catchIf(Schema.is(AccountRequired), () => Effect.succeed(true)),
+                Effect.catch(() => Effect.succeed(false)),
+                Effect.flatMap((waiting) =>
+                  !waiting
                     ? Effect.succeed(true)
                     : query(() =>
                         db.updateMany("profiles", {

@@ -1,4 +1,7 @@
-/** Local-only account provisioning. This command installs no HTTP route or production plugin. */
+/**
+ * Account provisioning for local dev stacks and running test stages. This command installs no HTTP
+ * route or production plugin; production cannot be targeted.
+ */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Pool } from "pg";
@@ -25,6 +28,7 @@ import {
   readLocalSecrets,
   readLocalSession,
 } from "../cloud/scripts/local-development.ts";
+import { TestStageUnavailable, testStageAuthority } from "../cloud/scripts/test-stage-authority.ts";
 import { dataDirectory } from "../self-host/src/contracts/config.ts";
 import { devOrigin } from "../../../scripts/dev-host.ts";
 import {
@@ -36,22 +40,34 @@ import {
 } from "./accounts.ts";
 
 /**
+ * With --stage, every setting comes from that running test stage's shared Alchemy state.
  * With BETTER_AUTH_URL set, every target setting is explicit. Without it, the command targets this
  * checkout's zero-configuration dev stack: cloud's running session and generated secrets, or
  * self-host's data directory and the signing secret its first boot stored there.
  */
-const targetSettings = (host: "self-host" | "cloud") =>
+const targetSettings = (host: "self-host" | "cloud", stage: Option.Option<string>) =>
   Effect.gen(function* () {
+    if (Option.isSome(stage)) {
+      if (host !== "cloud")
+        return yield* new TestStageUnavailable({ reason: "--stage requires --host cloud" });
+      const authority = yield* testStageAuthority(stage.value);
+      return {
+        origin: authority.origin,
+        secret: authority.secret,
+        database: authority.databaseUrl,
+        stage: Option.some(authority),
+      };
+    }
     const explicitOrigin = yield* Config.String("BETTER_AUTH_URL").pipe(Config.option);
     if (Option.isSome(explicitOrigin)) {
       const secret = yield* Config.Redacted("BETTER_AUTH_SECRET");
       if (host === "self-host") {
         // Do not silently select the shared preview's default directory.
         yield* Config.NonEmptyString("EXECUTOR_DATA_DIR");
-        return { origin: explicitOrigin.value, secret, database: undefined };
+        return { origin: explicitOrigin.value, secret, database: undefined, stage: Option.none() };
       }
       const database = yield* Config.Redacted("DATABASE_URL");
-      return { origin: explicitOrigin.value, secret, database };
+      return { origin: explicitOrigin.value, secret, database, stage: Option.none() };
     }
     if (host === "self-host") {
       const fs = yield* FileSystem.FileSystem;
@@ -70,6 +86,7 @@ const targetSettings = (host: "self-host" | "cloud") =>
         origin: devOrigin("self-host"),
         secret: Redacted.make(secret.trim()),
         database: undefined,
+        stage: Option.none(),
       };
     }
     const session = yield* readLocalSession;
@@ -81,11 +98,16 @@ const targetSettings = (host: "self-host" | "cloud") =>
         Redacted.make(secrets.databasePassword),
         session.databasePort,
       ),
+      stage: Option.none(),
     };
   });
 
 const command = Command.make("test-account", {
   host: Flag.Literals("host", ["self-host", "cloud"]),
+  stage: Flag.String("stage").pipe(
+    Flag.withDescription("Running test stage slug, such as ssr-0928; reads its shared state"),
+    Flag.optional,
+  ),
   name: Flag.String("name").pipe(Flag.withDefault("agent")),
   organization: Flag.String("organization").pipe(Flag.withDefault("agent-tests")),
   role: Flag.Literals("role", ["owner", "admin", "member"]).pipe(Flag.withDefault("owner")),
@@ -101,8 +123,11 @@ const command = Command.make("test-account", {
           Config.withDefault("development"),
           Effect.flatMap(Schema.decodeUnknownEffect(Schema.Literals(["development", "test"]))),
         );
-        const target = yield* targetSettings(args.host);
-        const origin = yield* Schema.decodeUnknownEffect(TestOrigin)(target.origin);
+        const target = yield* targetSettings(args.host, args.stage);
+        // A stage origin is derived from its slug; every other target must be loopback.
+        const origin = Option.isSome(target.stage)
+          ? target.stage.value.origin
+          : yield* Schema.decodeUnknownEffect(TestOrigin)(target.origin);
         const secret = yield* Schema.decodeUnknownEffect(
           Schema.Redacted(Schema.String.check(Schema.isMinLength(32))),
         )(target.secret);
@@ -149,7 +174,9 @@ const command = Command.make("test-account", {
               ),
             )
           : Effect.gen(function* () {
-              const url = yield* Schema.decodeUnknownEffect(LocalDatabaseUrl)(target.database);
+              const url = Option.isSome(target.stage)
+                ? target.stage.value.databaseUrl
+                : yield* Schema.decodeUnknownEffect(LocalDatabaseUrl)(target.database);
               const pool = yield* Effect.acquireRelease(
                 Effect.try({
                   try: () => new Pool({ connectionString: Redacted.value(url), max: 2 }),
@@ -171,6 +198,14 @@ const command = Command.make("test-account", {
                   lock.query("SELECT pg_advisory_lock(hashtext('executor-test-accounts'))"),
                 catch: () => new TestAccountFailed({ stage: "database" }),
               });
+              if (Option.isSome(target.stage)) {
+                const current = yield* Effect.tryPromise({
+                  try: () => lock.query("SELECT current_database() AS name"),
+                  catch: () => new TestAccountFailed({ stage: "database" }),
+                });
+                if (current.rows[0]?.name !== target.stage.value.databaseName)
+                  return yield* new TestAccountFailed({ stage: "database" });
+              }
               // The command owns this pool; closing it releases the session-level lock on every exit.
               return yield* provision(pool);
             });
@@ -190,9 +225,9 @@ NodeRuntime.runMain(
       CliError.isCliError(error)
         ? Effect.fail(error)
         : Console.error(
-            error instanceof LocalDevelopmentUnavailable
+            error instanceof LocalDevelopmentUnavailable || Schema.is(TestStageUnavailable)(error)
               ? error.message
-              : "Test account setup failed. Use NODE_ENV=development or test, this checkout's dev stack or explicit loopback settings, matching fixture role/organization, and a new output file. Stop self-host before opening its PGlite directory.",
+              : "Test account setup failed. Use NODE_ENV=development or test, this checkout's dev stack, a running test stage with the test-stage credentials, or explicit loopback settings, matching fixture role/organization, and a new output file. Stop self-host before opening its PGlite directory.",
           ).pipe(
             Effect.andThen(
               Effect.sync(() => {

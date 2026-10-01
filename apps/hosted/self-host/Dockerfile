@@ -13,7 +13,7 @@ COPY apps ./apps
 COPY playground ./playground
 COPY e2e/viewer/package.json ./e2e/viewer/package.json
 RUN bun install --frozen-lockfile --filter @executor-js/hosted-self-host --filter @executor-js/hosted-self-host-web --filter @executor-js/telemetry --filter apps --filter @executor-js/app-live-inbox
-RUN bun run --cwd packages/telemetry build:motel --workerd
+RUN bun run --cwd packages/telemetry build:motel
 RUN bun run --cwd apps/hosted/self-host/web build
 RUN bun run --cwd packages/apps build
 RUN bun run --cwd apps/hosted/self-host package:runtime

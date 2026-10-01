@@ -7,6 +7,7 @@ import { sessionAtom } from "@executor-js/hosted-web/contracts/auth";
 import { AsyncResult } from "effect/unstable/reactivity";
 import { Schema, Option } from "effect";
 import { useEffect } from "react";
+import type { SupportLink } from "@executor-js/ui/dashboard/support-dialog";
 import { dashboardReplay, replayPageAllowed } from "./analytics-replay.ts";
 
 // The PostHog SDK is a browser-global singleton; these mirror its state for this document.
@@ -209,6 +210,20 @@ export const capturePageview = (pathname: string) => {
   if (started)
     posthog.capture("$pageview", {
       ...pageContext(pathname, location.search),
+    });
+};
+
+/** Record that the support dialog opened. */
+export const captureSupportOpened = () => {
+  if (started) posthog.capture("support_opened", pageContext(location.pathname, location.search));
+};
+
+/** Record which fixed support channel was followed. */
+export const captureSupportLinkClicked = (label: SupportLink) => {
+  if (started)
+    posthog.capture("support_link_clicked", {
+      label,
+      ...pageContext(location.pathname, location.search),
     });
 };
 

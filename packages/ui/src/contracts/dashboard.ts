@@ -11,6 +11,8 @@ import type {
   Provider,
   ProviderDefinition,
   SelectedAccounts,
+  ToolRouter,
+  ToolSummary,
 } from "@executor-js/sdk";
 import type { CatalogImport } from "@executor-js/catalog/contracts";
 import type {
@@ -20,6 +22,12 @@ import type {
 import type { Atom, AsyncResult } from "effect/unstable/reactivity";
 import { Schema, type Cause } from "effect";
 import type { ComponentType, ReactNode } from "react";
+
+/** An app's live tools with the routers that group them, such as one MCP server each. */
+export interface ToolCatalog {
+  readonly tools: readonly ToolSummary[];
+  readonly routers: readonly ToolRouter[];
+}
 
 /** Display metadata may be absent in a host that has not exposed provider/status details yet. */
 export type AccountSummary = Account & {

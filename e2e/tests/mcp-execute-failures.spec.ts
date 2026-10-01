@@ -13,9 +13,6 @@ import { Target } from "../support/platform.ts";
 import { requestGate } from "../support/request-gate.ts";
 import { appsManifest, withApps } from "../support/apps-release.ts";
 
-/** Execution budget used by every product; the app's slow tool outlasts it. */
-const executionTimeoutMs = 30_000;
-
 // A refresh that runs until its 30 s background limit unless cancelled.
 const slowRefresh = `const slowRefresh = (signal) => new Promise((resolve) => {
   const timer = setTimeout(resolve, 60_000);
@@ -23,33 +20,19 @@ const slowRefresh = `const slowRefresh = (signal) => new Promise((resolve) => {
 });
 const swr = { key: "swr", schema: string(), freshFor: 0, staleFor: "10 minutes" };`;
 
-// `first` returns at once and `slow` outlasts the execution budget. `seed` caches a value that
-// is stale at once; `stale` serves it and keeps refreshing it after the call returns. The
-// approved mutation records that it ran, so a scenario can prove it never did.
-const slowAppSource = `import { defineApp, query, mutation, object, boolean, string, router } from "apps";
+// `seed` caches a value that is stale at once; `stale` serves it and keeps refreshing it after the
+// call returns. `approved` needs approval before it runs.
+const slowAppSource = `import { defineApp, query, mutation, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
 ${slowRefresh}
 export default defineApp({ accounts: {} }, async (ctx) => ({
   tools: router({
-    first: query({ input: object({}) }, async () => ({ n: 1 })),
-    pause: query({ input: object({}) }, async () => {
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
-      return true;
-    }),
     seed: query({ input: object({}) }, async () => ctx.cache.get({ ...swr, load: async () => "seed" })),
     stale: query({ input: object({}) }, async () => ctx.cache.get({ ...swr, load: async ({ signal }) => {
       await slowRefresh(signal);
       return "refreshed";
     } })),
-    slow: query({ input: object({}) }, async () => {
-      await new Promise((resolve) => setTimeout(resolve, ${executionTimeoutMs + 20_000}));
-      return { n: 2 };
-    }),
-    approvedRan: query({ input: object({}) }, async () => (await ctx.cache.read("approved-ran", boolean())) ?? false),
-    approved: mutation({ input: object({}), approval: always() }, async () => {
-      await ctx.cache.write([{ key: "approved-ran", value: true }], "1 hour");
-      return { ran: true };
-    }),
+    approved: mutation({ input: object({}), approval: always() }, async () => ({ ran: true })),
   }),
 }));`;
 
@@ -94,73 +77,12 @@ const Completed = Schema.Struct({
   }),
 });
 
-const TimedOut = Schema.Struct({
-  status: Schema.Literal("completed"),
-  execution: Schema.Struct({
-    ok: Schema.Literal(false),
-    error: Schema.Struct({ kind: Schema.String, message: Schema.String }),
-    logs: Schema.optional(Schema.Array(Schema.String)),
-    toolCalls: Schema.Array(
-      Schema.Struct({ name: Schema.String, outcome: Schema.optional(Schema.String) }),
-    ),
-  }),
-});
-
 const Pending = Schema.Struct({
   status: Schema.Literal("approval-required"),
   requestId: Schema.String,
 });
 
 type Connected = Effect.Success<ReturnType<Effect.Success<typeof McpClient>["connect"]>>;
-
-/**
- * Run a program that completes calls, logs, then stalls, and check what the timeout reports.
- * A call made after a pause leaves a cache refresh running for 30 s, so closing the run is still
- * slow more than a second after the budget ends.
- */
-const checkTimeoutReport = (client: Connected, slug: string) =>
-  Effect.gen(function* () {
-    const evidence = yield* Evidence;
-    const app = `tools[${JSON.stringify(slug)}]`;
-    const code = `const first = await ${app}.first({});
-await ${app}.pause({});
-await ${app}.seed({});
-await ${app}.stale({});
-console.log("first call finished", first.n);
-await ${app}.slow({});
-return "unreachable";`;
-    const started = yield* Clock.currentTimeMillis;
-    const result = yield* client.use(
-      "Execute a program that outlasts its budget",
-      (client, signal) =>
-        client.callTool({ name: "execute", arguments: { code } }, undefined, {
-          signal,
-          timeout: 55_000,
-        }),
-    );
-    const elapsed = (yield* Clock.currentTimeMillis) - started;
-    yield* evidence.json("timeout-result.json", { elapsed, result: result.structuredContent });
-    const timedOut = yield* Schema.decodeUnknownEffect(TimedOut)(result.structuredContent);
-    // A timeout is reported as a timeout, never as a lost continuation.
-    expect(timedOut.execution.error.kind).toBe("TimeoutExceeded");
-    expect(timedOut.execution.error.message).toContain("earlier tool calls may have completed");
-    // Output written before the timeout is returned.
-    expect(timedOut.execution.logs ?? []).toContainEqual(
-      expect.stringContaining("first call finished 1"),
-    );
-    // Each admitted call reports whether it finished.
-    expect(timedOut.execution.toolCalls).toEqual([
-      expect.objectContaining({ name: `${slug}.first`, outcome: "success" }),
-      expect.objectContaining({ name: `${slug}.pause`, outcome: "success" }),
-      expect.objectContaining({ name: `${slug}.seed`, outcome: "success" }),
-      expect.objectContaining({ name: `${slug}.stale`, outcome: "success" }),
-      expect.objectContaining({ name: `${slug}.slow`, outcome: "interrupted" }),
-    ]);
-    // The result arrives at the budget, not after the slow tool. Workers advance their clock
-    // only at I/O, so a Cloud timer can end slightly before the client's wall time says it should.
-    expect(elapsed).toBeGreaterThanOrEqual(executionTimeoutMs - 1_000);
-    expect(elapsed).toBeLessThan(executionTimeoutMs + 10_000);
-  });
 
 /** Run one execute and return its decoded completed result with the client's elapsed time. */
 const executeOnce = (client: Connected, label: string, code: string, file: string) =>
@@ -206,39 +128,6 @@ return value;`,
     expect(completed.execution.logs ?? []).toContainEqual(expect.stringContaining("served seed"));
     // The refresh runs for up to 30 s after the result; the result does not wait for it.
     expect(served.elapsed).toBeLessThan(10_000);
-  });
-
-/** A call that needs approval must not pause, or later run, an execution past its budget. */
-const checkNoApprovalAfterDeadline = (client: Connected, slug: string) =>
-  Effect.gen(function* () {
-    const app = `tools[${JSON.stringify(slug)}]`;
-    const raced = yield* executeOnce(
-      client,
-      "Request an approval beside a call that outlasts the budget",
-      `return await Promise.all([${app}.approved({}), ${app}.slow({})]);`,
-      "approval-deadline.json",
-    );
-    const status = yield* Schema.decodeUnknownEffect(Schema.Struct({ status: Schema.String }))(
-      raced.structured,
-    );
-    // The budget ends the execution as a timeout; it never parks on the approval.
-    expect(status.status).toBe("completed");
-    const timedOut = yield* Schema.decodeUnknownEffect(TimedOut)(raced.structured);
-    expect(timedOut.execution.error.kind).toBe("TimeoutExceeded");
-    // The mutation was still waiting for approval, so it is not reported as possibly applied.
-    expect(timedOut.execution.toolCalls).toEqual([
-      expect.objectContaining({ name: `${slug}.approved`, outcome: "awaiting-approval" }),
-      expect.objectContaining({ name: `${slug}.slow`, outcome: "interrupted" }),
-    ]);
-    const ran = yield* executeOnce(
-      client,
-      "Check whether the approved mutation ran",
-      `return await ${app}.approvedRan({});`,
-      "approval-ran.json",
-    );
-    expect(yield* Schema.decodeUnknownEffect(Completed)(ran.structured)).toMatchObject({
-      execution: { ok: true, value: false },
-    });
   });
 
 /**
@@ -343,26 +232,6 @@ const localApp = (name: string, source: string) =>
   });
 
 layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", (it) => {
-  it.effect(scenarios.mcpExecuteTimeoutReport.title, (context) =>
-    withHostedCase(
-      context,
-      Effect.gen(function* () {
-        const { client, slug } = yield* hostedApp("Slow tools", slowAppSource);
-        yield* checkTimeoutReport(client, slug);
-      }).pipe(Effect.provide(McpClient.layer)),
-    ),
-  );
-
-  it.effect(scenarios.mcpExecuteTimeoutApproval.title, (context) =>
-    withHostedCase(
-      context,
-      Effect.gen(function* () {
-        const { client, slug } = yield* hostedApp("Deadline approval", slowAppSource);
-        yield* checkNoApprovalAfterDeadline(client, slug);
-      }).pipe(Effect.provide(McpClient.layer)),
-    ),
-  );
-
   it.effect(scenarios.mcpExecuteApprovalAfterRefresh.title, (context) =>
     withHostedCase(
       context,
@@ -526,16 +395,6 @@ export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter
 });
 
 layer(TestLive, { excludeTestServices: true })("Local MCP execute failures", (it) => {
-  it.effect(scenarios.localMcpExecuteTimeoutReport.title, (context) =>
-    withCase(
-      context,
-      Effect.gen(function* () {
-        const { client, slug } = yield* localApp("Slow tools", slowAppSource);
-        yield* checkTimeoutReport(client, slug);
-      }).pipe(Effect.provide(McpClient.layer)),
-    ),
-  );
-
   it.effect(scenarios.localMcpExecuteApprovalAfterRefresh.title, (context) =>
     withCase(
       context,

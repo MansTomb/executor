@@ -4,7 +4,12 @@ import type { UrlPolicy } from "@executor-js/utils/url-policy";
 import { AuthMethodName } from "./provider.ts";
 import { AccountConnectionId } from "./shared.ts";
 import { Schema } from "effect";
-import { OAuthClientAuth, OAuthSecretClientAuth } from "apps/contracts";
+import {
+  OAuthClientAuth,
+  OAuthSecretClientAuth,
+  OAuthTokenRequestFormat,
+  OAuthTokenResponse,
+} from "apps/contracts";
 import { Account } from "./account.ts";
 export { OAuthClientAuth } from "apps/contracts";
 import type { HttpClient } from "effect/unstable/http";
@@ -847,12 +852,20 @@ export const OAuthAttempt = Schema.Struct({
   /** The saved client this attempt used, so a rejection can discard exactly that version. */
   savedClient: Schema.optionalKey(OAuthSavedClientRef),
   resource: Schema.optional(HttpUrl),
+  /** Token request encoding and nested grant location, as the provider declared them. */
+  tokenRequestFormat: Schema.optional(OAuthTokenRequestFormat),
+  tokenResponse: Schema.optional(OAuthTokenResponse),
   response: JsonObject,
 });
 export type OAuthAttempt = typeof OAuthAttempt.Type;
 /** Private refresh context. Access-token projections are stored separately on the account. */
 const grantFields = {
   resource: Schema.optional(HttpUrl),
+  /**
+   * Token request encoding frozen at sign-in, so renewal sends what the service accepted. Grants
+   * saved before it was retained use the form encoding.
+   */
+  tokenRequestFormat: Schema.optional(OAuthTokenRequestFormat),
   response: JsonObject,
   expiresAt: Schema.optional(Schema.Number),
   fields: JsonObject,
@@ -874,6 +887,8 @@ export const OAuthGrant = Schema.Union([
      * before this field keep a fixed server issuer, which every ID token must already match.
      */
     idTokenIssuer: Schema.optional(Schema.NonEmptyString),
+    /** Nested grant location frozen at sign-in; renewals read the same member. */
+    tokenResponse: Schema.optional(OAuthTokenResponse),
   }),
   Schema.Struct({
     ...grantFields,
@@ -881,6 +896,8 @@ export const OAuthGrant = Schema.Union([
     server: OAuthTokenServer,
     client: OAuthConfidentialRegistration,
     scopes: Schema.Array(Schema.String),
+    /** Joins `scopes` on each exchange. Grants saved before it was retained use a space. */
+    scopeSeparator: Schema.optional(Schema.NonEmptyString),
   }),
 ]);
 export type OAuthGrant = typeof OAuthGrant.Type;

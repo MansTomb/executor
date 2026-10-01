@@ -1,5 +1,10 @@
 import { apiKeys, apiKeyManagement } from "./api-keys.ts";
-import { CurrentUsage, observeProductOperation } from "../contracts/product-analytics.ts";
+import {
+  CurrentUsage,
+  isReadMethod,
+  observeProductOperation,
+  traceProductRead,
+} from "../contracts/product-analytics.ts";
 import { RequireOrganization } from "../contracts/organization.ts";
 import { explicitOrganizationAuth } from "./organization-auth.ts";
 import { mcpOAuthPlugins } from "./mcp-oauth.ts";
@@ -129,17 +134,20 @@ export const requireUserLive = Layer.effect(
         }
         const principal = yield* auth.current(new Headers(request.headers));
         if (principal === null) return yield* Effect.fail(new Unauthorized());
+        const operation = {
+          area: group.identifier,
+          operation: endpoint.identifier,
+          method: endpoint.method,
+        };
         const tracked = endpoint.middlewares.has(RequireOrganization)
           ? response
-          : observeProductOperation(
-              { area: group.identifier, operation: endpoint.identifier, method: endpoint.method },
-              response,
-              (result) => ({
+          : isReadMethod(endpoint.method)
+            ? traceProductRead(operation, response)
+            : observeProductOperation(operation, response, (result) => ({
                 status_code: result.status,
                 ok: result.status < 400,
                 outcome: result.status < 400 ? "success" : "failure",
-              }),
-            );
+              }));
         return (yield* tracked.pipe(
           Effect.tapCause(ErrorReporter.report),
           Effect.provideService(CurrentPrincipal, principal),

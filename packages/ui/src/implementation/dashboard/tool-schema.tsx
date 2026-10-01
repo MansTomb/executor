@@ -4,16 +4,10 @@ import { ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { Code } from "./code.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs.tsx";
 import { cn } from "../lib/utils.ts";
+import { display, isSchema, text, type JsonSchema } from "./json-schema.ts";
 
-type Schema = { readonly [key: string]: unknown };
-
-const isSchema = (value: unknown): value is Schema =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const schemas = (value: unknown): readonly Schema[] =>
+const schemas = (value: unknown): readonly JsonSchema[] =>
   Array.isArray(value) ? value.filter(isSchema) : [];
-
-const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : undefined);
 
 const count = (value: unknown) => (typeof value === "number" ? value : undefined);
 
@@ -58,7 +52,7 @@ const plurals: Record<string, string> = {
   "Any value": "values",
 };
 
-const primitive = (type: string, schema: Schema) => {
+const primitive = (type: string, schema: JsonSchema) => {
   switch (type) {
     case "string":
       return formats[text(schema.format) ?? ""] ?? "Text";
@@ -82,7 +76,7 @@ const primitive = (type: string, schema: Schema) => {
 };
 
 /** A plain-language name for the kind of value a schema accepts. */
-function typeLabel(schema: Schema): string {
+function typeLabel(schema: JsonSchema): string {
   if (Array.isArray(schema.enum)) return "Choice";
   if ("const" in schema) return "Fixed value";
   const ref = text(schema.$ref);
@@ -109,20 +103,20 @@ function typeLabel(schema: Schema): string {
  * Merge `allOf` parts and a nullable union's one real variant. Real alternatives keep their own
  * limits, so only the parent's facts are shown for them.
  */
-function flatten(schema: Schema): Schema {
+function flatten(schema: JsonSchema): JsonSchema {
   const alternatives = [...schemas(schema.anyOf), ...schemas(schema.oneOf)].filter(
     (variant) => variant.type !== "null",
   );
   const variants = [...schemas(schema.allOf), ...(alternatives.length === 1 ? alternatives : [])];
   if (variants.length === 0) return schema;
-  return variants.reduce<Schema>((merged, variant) => ({ ...flatten(variant), ...merged }), schema);
+  return variants.reduce<JsonSchema>(
+    (merged, variant) => ({ ...flatten(variant), ...merged }),
+    schema,
+  );
 }
 
-const display = (value: unknown) =>
-  typeof value === "string" ? value : (JSON.stringify(value) ?? String(value));
-
 /** Friendly limits. Patterns and other machine-only rules stay in the JSON view. */
-function hints(schema: Schema): readonly string[] {
+function hints(schema: JsonSchema): readonly string[] {
   const merged = flatten(schema);
   const result: string[] = [];
   const min = count(merged.minLength);
@@ -148,11 +142,11 @@ function hints(schema: Schema): readonly string[] {
 interface Field {
   readonly name: string;
   readonly required: boolean;
-  readonly schema: Schema;
+  readonly schema: JsonSchema;
 }
 
 /** Named fields of an object schema, or of the object each list item holds. */
-function fieldsOf(schema: Schema): readonly Field[] {
+function fieldsOf(schema: JsonSchema): readonly Field[] {
   const merged = flatten(schema);
   const target =
     !isSchema(merged.properties) && isSchema(merged.items) ? flatten(merged.items) : merged;

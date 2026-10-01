@@ -1,9 +1,9 @@
 /**
  * Self-host source development with no environment variables: `bun run hosted:dev`.
  *
- * scripts/dev-host.ts runs this launcher behind this checkout's Portless origin, so Vite
- * (with HMR) gets the proxied PORT and the API gets a free loopback port for this run.
- * Better Auth trusts only that origin. Keys are generated once in the data directory;
+ * scripts/dev-host.ts runs this launcher behind this checkout's Portless origin. A Node web
+ * server gets the proxied PORT, renders documents with host context, and uses Vite for assets
+ * and HMR; the API gets a free loopback port. Keys are generated once in the data directory;
  * ports are never persisted there, because rifts copy `.local/`.
  */
 import { spawn, type ChildProcess } from "node:child_process";
@@ -51,5 +51,7 @@ start("bun", ["apps/hosted/self-host/src/main.ts"], root, {
   // App pages use their own hostnames, which the dashboard proxy does not route; send them to the API.
   EXECUTOR_APP_UI_BASE_URL: `http://localhost:${new URL(api).port}`,
 });
-start("bun", ["run", "dev"], web, { HOSTED_API_URL: api });
+start("node", ["apps/hosted/self-host/scripts/development-web.ts"], root, {
+  HOSTED_API_URL: api,
+});
 console.log(`Executor self-host: ${origin} (API ${api})`);

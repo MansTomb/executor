@@ -4,7 +4,9 @@ Use this when the user asks you to add a service, often from a setup prompt
 copied from the dashboard. Pick the helper below, read the service's
 authentication docs, and ask the user how they sign in when it is unclear. Put
 that method in `provider.ts` ([accounts.md](accounts.md)); never put a
-credential in source. Look up exact helper options with `framework.describe`.
+credential in source. When the service has a safe current-user or account read,
+give the provider a `health` check that calls it ([accounts.md](accounts.md#check-an-account)),
+so users can validate credentials before saving and see which account they connected. Look up exact helper options with `framework.describe`.
 
 | Interface                   | Helper                                                    |
 | --------------------------- | --------------------------------------------------------- |

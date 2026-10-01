@@ -41,7 +41,7 @@ export function OAuthFields({
   readonly account?: Account;
   readonly connection?: ConnectionGrant;
   readonly onSaved: (account: Account) => void;
-  readonly returnTo?: Omit<typeof OAuthAppReturn.Type, "connection">;
+  readonly returnTo?: typeof OAuthAppReturn.Type;
   readonly onPendingChange?: (pending: boolean) => void;
   readonly disabled?: boolean;
 }) {
@@ -92,9 +92,7 @@ export function OAuthFields({
             }
             if (connection) Effect.runSync(openConnectionOAuth(value.authorizationUrl, connection));
             else if (value.connection !== undefined)
-              Effect.runSync(
-                openOAuth(value.authorizationUrl, value.connection, account?.id, returnTo),
-              );
+              Effect.runSync(openOAuth(value.authorizationUrl, account?.id, returnTo));
             else return "done";
             return "navigating";
           }}

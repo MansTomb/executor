@@ -26,7 +26,9 @@ Organization pages share one `/org/*` rule; TanStack resolves their nested route
 and not-found views. Self-host serves its build through its filesystem adapter.
 
 Run `bun run hosted:dev` from the repository root for self-host HMR; it starts the
-API and Vite together behind this checkout's Portless origin. Run `bun run hosted:cloud:web:dev`
+API and a Node web server behind this checkout's Portless origin. The Node server
+renders documents with host context and uses Vite for source assets and HMR. Run
+`bun run hosted:cloud:web:dev`
 for cloud HMR on port 4412, proxying to the local Alchemy Worker on port 4411.
 The cloud dashboard accepts `HOSTED_API_URL` as an override. Set its server's
 `BETTER_AUTH_URL` to the frontend origin when using HMR.

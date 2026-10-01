@@ -90,7 +90,17 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
             Effect.timeout("25 seconds"),
           );
 
+        const directoryQueries = Effect.gen(function* () {
+          const listed = yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/resources?view=available`,
+          );
+          expect(listed.status).toBe(200);
+          return (yield* queries(yield* traceId, "http.server GET")).length;
+        });
         const profile = yield* createProfile(actors.owner, path);
+        let firstDirectory = 0;
         for (let index = 0; index < 10; index++) {
           const pending = yield* api.request(actors.owner, "POST", `${path}/connections`, {
             requirement: "workspaces",
@@ -110,7 +120,38 @@ layer(HostedLive, { excludeTestServices: true })("SDK query budgets", (it) => {
           );
           expect(saved.status).toBe(200);
           accounts.push((yield* body(Resource, saved)).id);
+          if (index === 0) {
+            const submitTrace = yield* traceId;
+            const connectionReads = (yield* queries(submitTrace, "http.server POST")).filter(
+              ({ span }) =>
+                /^select .* from "executor_account_connections"/is.test(
+                  String(span.tags["db.query.text"] ?? ""),
+                ),
+            ).length;
+            yield* evidence.json("submit-connection-reads.json", {
+              traceId: submitTrace,
+              count: connectionReads,
+            });
+            expect
+              .soft(
+                connectionReads,
+                "Submit reads the connection to authorize it, then to claim it",
+              )
+              .toBe(3);
+            firstDirectory = yield* directoryQueries;
+          }
         }
+        const lastDirectory = yield* directoryQueries;
+        yield* evidence.json("directory-query-budget.json", {
+          oneAccount: firstDirectory,
+          tenAccounts: lastDirectory,
+        });
+        expect
+          .soft(
+            lastDirectory,
+            "The account directory reads the same statements for ten accounts as for one",
+          )
+          .toBe(firstDirectory);
         // Deliberately reverse creation order: the batch read must retain saved binding order.
         const selected = [...accounts].reverse();
         expect(

@@ -149,18 +149,7 @@ export const makeListings = (options: {
                 value: outcome,
                 bytes: JSON.stringify(outcome.listing.items).length * 2,
               });
-              // Encoded with the write, so readers of this evaluation never wait for it.
-              return yield* options.declarations.persist(
-                state.app.id,
-                id,
-                Schema.encodeEffect(ListingJson)(outcome.listing).pipe(
-                  Effect.map((json) => ({
-                    at: load.started,
-                    json,
-                    until: load.started + policy.maxStaleMillis,
-                  })),
-                ),
-              );
+              return;
             }
             if (!(outcome instanceof Failed)) return;
             if (
@@ -184,6 +173,24 @@ export const makeListings = (options: {
               bytes: 0,
             });
           });
+        /**
+         * Keep a listing beyond this process. It runs after the evaluation's readers have their
+         * outcome, and encodes with the write, so they never wait for it.
+         */
+        const store = (outcome: Outcome, load: PendingLoad) =>
+          outcome instanceof Listed
+            ? options.declarations.persist(
+                state.app.id,
+                id,
+                Schema.encodeEffect(ListingJson)(outcome.listing).pipe(
+                  Effect.map((json) => ({
+                    at: load.started,
+                    json,
+                    until: load.started + policy.maxStaleMillis,
+                  })),
+                ),
+              )
+            : Effect.void;
         /**
          * Stops the evaluation once it has run for `loadMillis` with no reader waiting: at that
          * point if nobody waits, otherwise when the last waiting reader leaves.
@@ -222,7 +229,9 @@ export const makeListings = (options: {
                 yield* Deferred.succeed(load.done, new Stopped(at - load.started));
               }),
             ),
-            Effect.asVoid,
+            // In the evaluation's own fiber: background work that offered the write as new
+            // background work would find the host refusing it once the request is closing.
+            Effect.flatMap((outcome) => store(outcome, load)),
             Effect.withSpan("sdk.tools.listing.evaluate"),
             // Background work may start uninterruptible; its time bound must still stop it.
             Effect.interruptible,
@@ -304,14 +313,19 @@ export const makeListings = (options: {
             return listed.listing;
           });
 
-        const entry = yield* cache.get(id);
-        const kept =
-          entry?.kind === "value" &&
-          (entry.value instanceof Listed || entry.value instanceof Failed)
-            ? { at: entry.at, value: entry.value }
-            : undefined;
-        if (kept?.value instanceof Listed && servable(kept.at))
-          return yield* serve(kept.at, kept.value, "memory");
+        const keptListing = cache
+          .get(id)
+          .pipe(
+            Effect.map((entry) =>
+              entry?.kind === "value" &&
+              (entry.value instanceof Listed || entry.value instanceof Failed)
+                ? { at: entry.at, value: entry.value }
+                : undefined,
+            ),
+          );
+        const early = yield* keptListing;
+        if (early?.value instanceof Listed && servable(early.at))
+          return yield* serve(early.at, early.value, "memory");
         // Another isolate's listing, unless an invalidation seen here replaced it. It is kept
         // here too when it fits. A remembered failure here does not hide it.
         const recalling = yield* Effect.forkChild(
@@ -341,18 +355,18 @@ export const makeListings = (options: {
             ),
           ),
         );
-        const early = yield* Fiber.join(recalling).pipe(
+        const recalled = yield* Fiber.join(recalling).pipe(
           Effect.timeoutOption(durableHeadStartMillis),
         );
-        if (Option.isSome(early) && early.value !== undefined)
-          return yield* serve(early.value.at, early.value.listed, "durable");
+        if (Option.isSome(recalled) && recalled.value !== undefined)
+          return yield* serve(recalled.value.at, recalled.value.listed, "durable");
         /**
          * A slow durable read, often a Durable Object waking up, would delay every miss: wait for
          * an evaluation beside it and answer with whichever settles first. A listing the read
          * finds still wins.
          */
         const orRecalled = <E, R>(evaluation: Effect.Effect<ToolListing, E, R>) =>
-          Option.isSome(early)
+          Option.isSome(recalled)
             ? evaluation
             : Effect.raceFirst(
                 evaluation,
@@ -362,6 +376,13 @@ export const makeListings = (options: {
                   ),
                 ),
               );
+        // The durable read yielded, and an evaluation may have ended meanwhile. One that ends
+        // keeps its listing or failure before it leaves `pending`, so reading what runs before
+        // what is kept never misses both.
+        const before = cache.pending(id);
+        const kept = yield* keptListing;
+        if (kept?.value instanceof Listed && servable(kept.at))
+          return yield* serve(kept.at, kept.value, "memory");
         // A remembered failure spares a reader with a wait bound, such as MCP discovery, from
         // waiting on the evaluation again. A reader prepared to wait, such as the dashboard,
         // joins or starts a live evaluation instead, so a recovered upstream shows at once.
@@ -375,7 +396,13 @@ export const makeListings = (options: {
           yield* refresh;
           return yield* Effect.fail(kept.value.error);
         }
+        // Read again so that checking and registering below happen without yielding.
         const running = cache.pending(id);
+        if (running === undefined && before !== undefined) {
+          // It ended after the read above: the outcome it left is there already.
+          yield* Effect.annotateCurrentSpan("executor.declarations.cache", "joined");
+          return yield* join(before);
+        }
         if (running !== undefined) {
           const elapsed = now - running.started;
           const bound = read.reportRunningAfterMillis;

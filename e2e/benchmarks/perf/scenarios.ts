@@ -916,8 +916,8 @@ const failureScenarios: Scenario[] = [
     id: "exec.timeout.report",
     group: "mcp",
     description:
-      "Execute that completes one call, logs, then calls a 45 s tool; the 30 s budget must report the completed call and the log",
-    target: "result at the 30 s budget with calls and logs",
+      "Execute that completes one call, logs, then calls a 5.25 minute tool; the 5 minute budget must report the completed call and the log",
+    target: "result at the 5 minute budget with calls and logs",
     warmup: 0,
     run: (target) =>
       failureSample(
@@ -980,8 +980,8 @@ return "unreachable";`,
     id: "exec.timeout.cleanup",
     group: "mcp",
     description:
-      "Execute that leaves a cache refresh running, logs, then calls a 45 s tool; the timeout must be reported as one, with calls and logs, although closing the run is slow",
-    target: "TimeoutExceeded at the 30 s budget with calls and logs",
+      "Execute that leaves a cache refresh running, logs, then calls a 5.25 minute tool; the timeout must be reported as one, with calls and logs, although closing the run is slow",
+    target: "TimeoutExceeded at the 5 minute budget with calls and logs",
     warmup: 0,
     run: (target) =>
       failureSample(

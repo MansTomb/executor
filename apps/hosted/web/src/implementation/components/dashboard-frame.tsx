@@ -113,6 +113,7 @@ export function DashboardFrame({
   organization,
   navigation,
   banner,
+  support,
   pendingPage = "apps",
   children,
 }: {
@@ -120,6 +121,8 @@ export function DashboardFrame({
   readonly organization: ReactNode;
   readonly navigation: ReactNode;
   readonly banner?: ReactNode;
+  /** Cloud offers a support dialog; self-host has no support channel of its own. */
+  readonly support?: ReactNode;
   readonly pendingPage?: string;
   readonly children: ReactNode;
 }) {
@@ -139,6 +142,7 @@ export function DashboardFrame({
         )
       }
       banner={banner}
+      support={support}
       navigation={
         <>
           {navigation}

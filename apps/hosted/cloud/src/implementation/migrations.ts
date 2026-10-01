@@ -9,6 +9,7 @@ import {
 import { Effect } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { cloudAuthSetup } from "./auth-provisioning.ts";
+import { migrateAppDomainRecords } from "./app-domain-records.ts";
 
 /** Additive cloud tables; existing organizations and memberships are never changed. */
 export const migrateOnboarding = Effect.gen(function* () {
@@ -123,6 +124,7 @@ export const migrateCloudDatabase = Effect.scoped(
       yield* migrateProductSteps("private_cloud_migrations", {
         "1_baseline": migrateOnboarding.pipe(Effect.andThen(migrateWelcomeEmails)),
         "2_billing_seats": migrateBillingSeats,
+        "3_app_domain_records": migrateAppDomainRecords,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

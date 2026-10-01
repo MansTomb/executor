@@ -142,8 +142,8 @@ export const plan = (seed: number): readonly OrgPlan[] => {
       purpose: "Execute failure classes: timeouts, apps without accounts, refused MCP servers",
       apps: [
         failing("Perf err fast", "mcp", 0, {}),
-        // Every call outlasts the 30 s execution budget.
-        failing("Perf err slow", "mcp", 1, { latencyMs: 45_000 }),
+        // Every call outlasts the 5 minute execution budget.
+        failing("Perf err slow", "mcp", 1, { latencyMs: 315_000 }),
         // Requires an API key that no profile selects.
         failing("Perf err keyed", "mcp", 2, { auth: true }),
         failing("Perf err moved", "authored", 3, {}),

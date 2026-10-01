@@ -406,74 +406,93 @@ const callerDisconnects = Effect.gen(function* () {
 });
 
 /**
- * Repeated out-of-memory restarts: the process dies during a renewal, and again during each
- * recovery that takes over its claim. A recovery whose request fails without an answer releases
- * the claim. The grant still converges on the service's newest refresh token.
+ * Out-of-memory restarts: the process dies during a renewal, then again during each of the next
+ * `recoveries` recoveries that take over its claim. A recovery whose request fails without an
+ * answer releases the claim, and the grant recovers with the refresh token it held before the
+ * first kill.
+ *
+ * Every kill leaves the same saved state: an unconfirmed claim over the unchanged grant. A
+ * recovery claims the grant exactly as a first renewal does, and each restart begins with no
+ * claims held, so a process that died during one recovery leaves what a process that died during
+ * any later one would.
  */
-const repeatedCrashes = Effect.gen(function* () {
-  const context = "repeated crashes";
-  const { issuer, metrics, read, renewed, heldBeyond, concurrentReads, newestTokenSaved } =
-    yield* rotatingAccount("refused");
-  const start = yield* metrics;
-  yield* issuer.configure({ hold: "refresh-unprocessed" });
-  for (const cycle of [1, 2, 3]) {
-    const before = yield* metrics;
-    // The first cycle's renewal is a normal one; later ones take over the dead process's claim.
-    const pending = yield* Effect.forkChild(
-      Effect.forEach(
-        Array.from({ length: cycle === 1 ? 1 : callers }),
-        () => read.pipe(Effect.exit),
-        {
-          concurrency: callers,
-        },
-      ),
-    );
-    yield* heldBeyond(before.held, `${context} ${cycle}`);
-    // Exactly one of the callers renews; the others wait for its claim.
-    yield* Effect.sleep("500 millis");
-    expect((yield* metrics).held - before.held, `${context} ${cycle}`).toBe(1);
-    yield* serverControl("kill");
-    for (const exit of yield* Fiber.join(pending))
-      expect(Exit.isFailure(exit), `${context} ${cycle}`).toBe(true);
+const crashedRecoveries = (recoveries: number, context: string) =>
+  Effect.gen(function* () {
+    const renewal = yield* rotatingAccount("refused");
+    const { issuer, metrics, read, renewed, heldBeyond, concurrentReads } = renewal;
+    const start = yield* metrics;
+    yield* issuer.configure({ hold: "refresh-unprocessed" });
+    for (let cycle = 1; cycle <= recoveries + 1; cycle++) {
+      const before = yield* metrics;
+      // The first cycle's renewal is a normal one; later ones take over the dead process's claim.
+      const pending = yield* Effect.forkChild(
+        Effect.forEach(
+          Array.from({ length: cycle === 1 ? 1 : callers }),
+          () => read.pipe(Effect.exit),
+          {
+            concurrency: callers,
+          },
+        ),
+      );
+      yield* heldBeyond(before.held, `${context} ${cycle}`);
+      // Exactly one of the callers renews; the others wait for its claim.
+      yield* Effect.sleep("500 millis");
+      expect((yield* metrics).held - before.held, `${context} ${cycle}`).toBe(1);
+      yield* serverControl("kill");
+      for (const exit of yield* Fiber.join(pending))
+        expect(Exit.isFailure(exit), `${context} ${cycle}`).toBe(true);
+      yield* issuer.release;
+      yield* serverControl("clock/advance", 200, { milliseconds: pastLease });
+      yield* serverControl("start");
+    }
+    // The recovery's request fails without an answer while the process is alive: it releases the
+    // claim with the grant unchanged and reports the outage.
+    const outage = yield* metrics;
+    const failing = yield* Effect.forkChild(read);
+    yield* heldBeyond(outage.held, `${context} outage`);
+    yield* issuer.configure({ hold: null });
     yield* issuer.release;
-    yield* serverControl("clock/advance", 200, { milliseconds: pastLease });
-    yield* serverControl("start");
-  }
-  // The recovery's request fails without an answer while the process is alive: it releases the
-  // claim with the grant unchanged and reports the outage.
-  const outage = yield* metrics;
-  const failing = yield* Effect.forkChild(read);
-  yield* heldBeyond(outage.held, `${context} outage`);
-  yield* issuer.configure({ hold: null });
-  yield* issuer.release;
-  const failed = yield* Fiber.join(failing);
-  expect(failed.status, JSON.stringify(failed.body)).toBe(502);
-  expect(yield* body(Failure, failed), context).toMatchObject({
-    _tag: "OAuthRenewalFailed",
-    reason: "service_unavailable",
-    cause: { stage: "refresh", status: 503 },
+    const failed = yield* Fiber.join(failing);
+    expect(failed.status, JSON.stringify(failed.body)).toBe(502);
+    expect(yield* body(Failure, failed), context).toMatchObject({
+      _tag: "OAuthRenewalFailed",
+      reason: "service_unavailable",
+      cause: { stage: "refresh", status: 503 },
+    });
+    // No kill or outage consumed the saved refresh token, so the grant recovers. Nothing holds
+    // this renewal, so a caller may read the grant only after it was saved. The recovered token
+    // outlasts the host's renewal window, so such a caller uses it as the waiting callers do; a
+    // token inside the window would rightly be renewed again. Waiting callers that reuse a renewal
+    // whose token is still inside the window are covered by the held renewals above.
+    yield* issuer.configure({ refreshedExpiresIn: recoveredLifetime });
+    const after = yield* metrics;
+    const calls = yield* concurrentReads(context);
+    const tokens = yield* Effect.forEach(
+      calls.map(({ response }) => response),
+      renewed(context),
+    );
+    expect(new Set(tokens).size, context).toBe(1);
+    expect((yield* metrics).refreshesIssued - after.refreshesIssued, context).toBe(1);
+    expect(after.refreshesIssued, context).toBe(start.refreshesIssued);
+    return { ...renewal, recovered: tokens[0] ?? null };
   });
-  // No kill or outage consumed the saved refresh token, so the grant recovers. Nothing holds
-  // this renewal, so a caller may read the grant only after it was saved. The recovered token
-  // outlasts the host's renewal window, so such a caller uses it as the waiting callers do; a
-  // token inside the window would rightly be renewed again. Waiting callers that reuse a renewal
-  // whose token is still inside the window are covered by the held renewals above.
-  yield* issuer.configure({ refreshedExpiresIn: recoveredLifetime });
-  const after = yield* metrics;
-  const calls = yield* concurrentReads(context);
-  const tokens = yield* Effect.forEach(
-    calls.map(({ response }) => response),
-    renewed(context),
-  );
-  expect(new Set(tokens).size, context).toBe(1);
-  expect((yield* metrics).refreshesIssued - after.refreshesIssued, context).toBe(1);
-  expect(after.refreshesIssued, context).toBe(start.refreshesIssued);
+
+/** The process dies during a renewal and again during the recovery that takes over its claim. */
+const diesAgainDuringRecovery = crashedRecoveries(1, "dies again during recovery");
+
+/**
+ * After a killed renewal and a failed recovery, the recovered grant holds the service's newest
+ * refresh token.
+ */
+const recoveredGrantKeepsNewestToken = Effect.gen(function* () {
+  const context = "recovered grant keeps newest token";
+  const { issuer, newestTokenSaved, recovered } = yield* crashedRecoveries(0, context);
   // Bring the recovered token inside the renewal window, so the next call renews it.
   yield* serverControl("stop");
   yield* serverControl("clock/advance", 200, { milliseconds: intoRenewalWindow });
   yield* serverControl("start");
   yield* issuer.configure({ refreshedExpiresIn: null });
-  yield* newestTokenSaved(context, tokens[0] ?? null);
+  yield* newestTokenSaved(context, recovered);
 });
 
 layer(HostedLive, { excludeTestServices: true })("OAuth renewal interruption", (it) => {
@@ -510,7 +529,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth renewal interruption", (
   it.effect(scenarios.oauthRenewalCallerDisconnects.title, (context) =>
     withHostedCase(context, callerDisconnects),
   );
-  it.effect(scenarios.oauthRenewalRepeatedCrashes.title, (context) =>
-    withHostedCase(context, repeatedCrashes),
+  it.effect(scenarios.oauthRenewalDiesDuringRecovery.title, (context) =>
+    withHostedCase(context, diesAgainDuringRecovery),
+  );
+  it.effect(scenarios.oauthRenewalRecoveredNewestToken.title, (context) =>
+    withHostedCase(context, recoveredGrantKeepsNewestToken),
   );
 });

@@ -10,6 +10,7 @@ import {
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/unstable/http";
+import { tokenRequestParameters } from "./client-credentials-issuer.ts";
 
 type TokenAuth = "client_secret_basic" | "client_secret_post" | "none";
 type SecretAuth = Exclude<TokenAuth, "none">;
@@ -72,6 +73,12 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let refreshesIssued = 0;
   /** The `expires_in` of issued tokens; undefined omits it. */
   let expiresIn: number | undefined = 3600;
+  /** The token request encoding the service reads; Notion and Atlassian read only JSON. */
+  let tokenRequestFormat: "form" | "json" = "form";
+  /** Media type of each token request, in order. */
+  const tokenContentTypes: Array<string | undefined> = [];
+  /** The `scope` parameter of the latest authorization request. */
+  let authorizationScope: string | null | undefined;
   let tokenExchanges = 0;
   let tokenChecks: Readonly<Record<string, boolean>> = {};
   let refreshes = 0;
@@ -224,6 +231,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           return HttpServerResponse.empty({ status: 400 });
         const code = randomUUID();
         nonceRequested = params.get("nonce") !== null;
+        authorizationScope = params.get("scope");
         const callback = new URL(redirect);
         if (authorizeError === undefined) {
           codes.set(code, { clientId, redirect, challenge, nonce: params.get("nonce") });
@@ -244,7 +252,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       "/token",
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        const input = new URLSearchParams(yield* request.text);
+        const contentType = request.headers["content-type"]?.split(";")[0]?.trim();
+        const input = tokenRequestParameters(contentType, yield* request.text);
         const refreshing = input.get("grant_type") === "refresh_token";
         if (refreshing && hold === "refresh-unprocessed") {
           // The service never processes this request; its caller is gone once it is released.
@@ -253,6 +262,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         }
         if (refreshing) refreshes++;
         else tokenExchanges++;
+        tokenContentTypes.push(contentType);
         if (tokenError === "reset") {
           const source = request.source;
           if (!("socket" in source) || !(source.socket instanceof Socket))
@@ -286,6 +296,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (!refreshing) lastExchangeAuth = method;
         const client = clientId === undefined ? undefined : clients.get(clientId);
         const authChecks = {
+          format:
+            contentType ===
+            (tokenRequestFormat === "json"
+              ? "application/json"
+              : "application/x-www-form-urlencoded"),
           authScheme:
             method !== "client_secret_basic" || authorization?.startsWith("Basic ") === true,
           authMethod: client?.methods.includes(method) === true,
@@ -674,8 +689,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly basicCredentials?: typeof basicCredentials;
       /** Credentials issued by the next registrations; null restores numbered synthetic clients. */
       readonly registeredClient?: typeof registeredClient | null;
+      /** The token request encoding the service accepts; it refuses the other one. */
+      readonly tokenRequestFormat?: typeof tokenRequestFormat;
     }) =>
       Effect.sync(() => {
+        if (input.tokenRequestFormat !== undefined) tokenRequestFormat = input.tokenRequestFormat;
         if (input.mcpStatus !== undefined)
           mcpStatus = input.mcpStatus === null ? undefined : input.mcpStatus;
         if (input.postChallenge !== undefined) postChallenge = input.postChallenge;
@@ -769,6 +787,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       probes,
       tokenExchanges,
       tokenChecks,
+      tokenContentTypes: [...tokenContentTypes],
+      authorizationScope,
       refreshes,
       refreshChecks,
       lastExchangeAuth,

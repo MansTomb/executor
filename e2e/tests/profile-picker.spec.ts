@@ -268,6 +268,11 @@ layer(HostedLive, { excludeTestServices: true })("Profile picker", (it) => {
         yield* browser.use("Inspect the work tool", (page) =>
           page.getByRole("button", { name: "who", exact: true }).click(),
         );
+        expect(
+          yield* browser.use("The runner names the selected profile and its account", (page) =>
+            page.getByText(/^Running as /).textContent(),
+          ),
+        ).toMatch(/^Running as Work inbox · Work inbox\b/);
         yield* browser.use("Run using the work account", (page) =>
           page.getByRole("button", { name: "Run tool", exact: true }).click(),
         );

@@ -93,7 +93,7 @@ questions:
     question: What limits apply to an execute program?
     expected:
       - 100 tool calls
-      - 30 seconds
+      - 5 minutes
       - 65,536 characters of program source
       - 65,536 bytes of output
       - a client cannot raise them

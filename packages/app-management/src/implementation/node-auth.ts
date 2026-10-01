@@ -2,7 +2,6 @@ import { homedir } from "node:os";
 import { lock } from "proper-lockfile";
 /** CLI OAuth and OS credential-store adapter. Credentials never enter repositories or config files. */
 import { createServer } from "node:http";
-import { AsyncEntry } from "@napi-rs/keyring";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
   Console,
@@ -59,8 +58,15 @@ const Session = Schema.Struct({
   namespace: Schema.String,
 });
 const authError = () => new AppClientError({ reason: "authentication" });
+// Loaded lazily so a native binding that cannot load fails here instead of at process start.
 const entry = (host: string) =>
-  Effect.try({ try: () => new AsyncEntry("Executor Registry", host), catch: authError });
+  Effect.tryPromise({
+    try: async () => {
+      const { AsyncEntry } = await import("@napi-rs/keyring");
+      return new AsyncEntry("Executor Registry", host);
+    },
+    catch: authError,
+  });
 /** Read a JSON response from the Executor host; redirects fail rather than carry credentials. */
 const fetchJson = <A>(request: HttpClientRequest.HttpClientRequest, schema: Schema.Decoder<A>) =>
   HttpClient.execute(request).pipe(

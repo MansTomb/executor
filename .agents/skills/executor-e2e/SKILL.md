@@ -82,6 +82,14 @@ Report the commands and scenario that ran, the outcome, the saved evidence path,
 and any behavior or target left unverified. Diagnose failures within the task's
 scope; do not skip cases, loosen assertions, or call a blocked run a pass.
 
+## Select the scenarios CI runs
+
+A pull request runs only the E2E spec files its description selects in a fenced
+`e2e` block; `main` runs everything. Follow [the CI section](../../../AGENTS.md#choosing-a-prs-e2e-scenarios)
+of AGENTS.md. List every spec file that exercises the changed code's callers, not
+only the one you edited. Use `all` for cross-cutting changes and `none` only when
+no scenario can observe the change.
+
 ## Remove tests that do not earn their cost
 
 Tests are not sacred. Every scenario costs CI time and can fail for reasons

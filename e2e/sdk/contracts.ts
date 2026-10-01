@@ -8,7 +8,7 @@ export const PreparedScenarios = Schema.Record(
   Schema.NonEmptyString,
   Schema.Struct({
     id: ScenarioId,
-    status: Schema.Literals(["ready", "domain_unavailable"]),
+    status: Schema.Literals(["ready", "organization_unavailable", "domain_unavailable"]),
   }),
 );
 

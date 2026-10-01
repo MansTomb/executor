@@ -8,10 +8,12 @@ import { ScenarioId } from "./contracts.ts";
 /** A prerequisite failed within its own deadline, before scenario work could start. */
 export class ScenarioPreparationFailed extends Schema.TaggedError<ScenarioPreparationFailed>()(
   "ScenarioPreparationFailed",
-  { reason: Schema.Literal("domain_unavailable") },
+  { reason: Schema.Literals(["organization_unavailable", "domain_unavailable"]) },
 ) {
   override get message() {
-    return "The scenario's HTTPS app origin was not ready within the infrastructure deadline";
+    return this.reason === "organization_unavailable"
+      ? "The scenario's organization and identities were not provisioned within the setup deadline"
+      : "The scenario's HTTPS app origin was not ready within the infrastructure deadline";
   }
 }
 
@@ -25,8 +27,8 @@ export const prepareScenario = (
     yield* Schema.decodeUnknownEffect(ScenarioId)(id);
     yield* Schema.decodeUnknownEffect(Schema.NonEmptyString)(label);
     const prepared = base.preparedScenarios?.[label];
-    if (prepared?.id === id && prepared.status === "domain_unavailable")
-      return yield* new ScenarioPreparationFailed({ reason: "domain_unavailable" });
+    if (prepared?.id === id && prepared.status !== "ready")
+      return yield* new ScenarioPreparationFailed({ reason: prepared.status });
     const fs = yield* FileSystem.FileSystem;
     if (base.metadata.target === "cloud")
       return Target.of({ ...base, scenarioId: id, scenarioLabel: label });

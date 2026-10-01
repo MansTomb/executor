@@ -2,6 +2,7 @@
 import { installDependencies, type InMemoryFileSystem } from "@cloudflare/worker-bundler";
 import { captureTelemetry } from "@executor-js/telemetry";
 import { Effect, Schema, Semaphore } from "effect";
+import type { WorkerHost } from "./worker-build.ts";
 import type { Plugin } from "esbuild";
 import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
 import tailwind from "tailwindcss/package.json" with { type: "json" };
@@ -14,8 +15,9 @@ const Package = Schema.Struct({
  * Framework archives are loaded alone; direct npm imports retain their authored declarations and
  * dependency graphs. `registry` replaces the public npm registry when the host configures one.
  */
-export const workerDependencies = (filesystem: InMemoryFileSystem, registry?: string) =>
+export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerHost) =>
   Effect.gen(function* () {
+    const { registry } = host;
     const manifest = filesystem.read("package.json");
     const dependencies =
       manifest === null
@@ -99,7 +101,15 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, registry?: st
       framework:
         dependencies.apps === undefined
           ? Effect.succeed(false)
-          : install("apps", dependencies.apps, false).pipe(Effect.as(true)),
+          : dependencies.apps === host.apps?.version
+            ? host.apps.files.pipe(
+                Effect.map((files) => {
+                  for (const [path, content] of Object.entries(files))
+                    filesystem.write(`node_modules/apps/${path}`, content);
+                  return true;
+                }),
+              )
+            : install("apps", dependencies.apps, false).pipe(Effect.as(true)),
     };
   }).pipe(
     Effect.catchTag("SchemaError", (cause) =>

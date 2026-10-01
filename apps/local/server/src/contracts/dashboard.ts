@@ -18,7 +18,6 @@ import { AppWebhooksActive } from "@executor-js/sdk/core";
 /** Browser-safe read contracts for inspecting the local Executor instance. */
 import {
   AccountConnectionTargetChanged,
-  AccountConnectionId,
   AccountConnectionNotFound,
   AccountConnectionClosed,
   Account,
@@ -70,6 +69,7 @@ import {
   DeployedApp,
   Tool,
   ToolName,
+  ToolRouter,
   Json,
   ToolNotFound,
   InputInvalid,
@@ -247,8 +247,14 @@ export const DashboardApp = Schema.Struct({
 });
 export type DashboardApp = typeof DashboardApp.Type;
 
-/** Complete account-dependent catalog. Tool schemas remain dynamic, never retained deployment metadata. */
-export const DashboardTools = Schema.Struct({ tools: Schema.Array(Tool) });
+/**
+ * Complete account-dependent catalog and the routers that group it. Tool schemas remain dynamic,
+ * never retained deployment metadata.
+ */
+export const DashboardTools = Schema.Struct({
+  tools: Schema.Array(Tool),
+  routers: Schema.Array(ToolRouter),
+});
 export type DashboardTools = typeof DashboardTools.Type;
 
 /** Query results include a connection-local revision; heartbeats carry no product data. */
@@ -656,11 +662,9 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
       }),
     )
     .add(
+      // The callback's state finds its sign-in, so any tab of this dashboard can finish it.
       HttpApiEndpoint.post("completeOAuth", "/dashboard/api/accounts/oauth/complete", {
-        payload: Schema.Struct({
-          connection: AccountConnectionId,
-          callbackUrl: Schema.RedactedFromValue(HttpUrl),
-        }),
+        payload: Schema.Struct({ callbackUrl: Schema.RedactedFromValue(HttpUrl) }),
         success: Account,
         error: [
           StorageError,

@@ -73,16 +73,20 @@ export function DashboardEntryPending({
   children,
   pathname,
   banner,
+  support,
 }: {
   readonly children?: ReactNode;
   readonly pathname?: string;
   /** The same banner the resolved dashboard shows, so the frame does not move when it arrives. */
   readonly banner?: ReactNode;
+  /** The resolved dashboard's support entry, for the same reason. */
+  readonly support?: ReactNode;
 } = {}) {
   const pendingPage = pathname?.split("/")[3] ?? "apps";
   return (
     <DashboardFrame
       banner={banner}
+      support={support}
       organization={<OrganizationSwitcherSkeleton />}
       navigation={<DashboardNavigation pendingPage={pendingPage} />}
       pendingPage={pendingPage}

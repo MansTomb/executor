@@ -96,6 +96,7 @@ export const createExecutor = (
       workflows.controls,
       options.lifecycle,
     );
+    const connections = makeAccountConnections(db, options.credentials, crypto, options.lifecycle);
     const { checkCredentials, ...accountHealth } = makeAccountHealth(db, runtime, oauth, apps.list);
     const schedules = makeSchedules(options.storage, apps, tools, options.credentials, crypto);
     const setup = makeProfileSetup(db, crypto, apps.profiles, {
@@ -115,8 +116,9 @@ export const createExecutor = (
         ...accountHealth,
       },
       accountConnections: {
-        ...makeAccountConnections(db, options.credentials, crypto, options.lifecycle),
+        ...connections,
         ...oauth.connections,
+        findOAuth: (input) => Effect.flatMap(oauth.findOAuth(input), connections.get),
       },
       apps: { ...apps, profiles: setup.operations, checkCredentials },
       owners: makeOwners(db),

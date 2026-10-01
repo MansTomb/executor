@@ -2,7 +2,7 @@
 import { Effect, Option, Redacted, Schema } from "effect";
 import { OAuthCallbackPath } from "@executor-js/local-server/contracts";
 import { OAuthReturn, type OAuthAppReturn } from "../contracts/oauth.ts";
-import type { AccountId, AccountConnectionId } from "@executor-js/sdk";
+import type { AccountId } from "@executor-js/sdk";
 
 const returnKey = "executor.oauth.return";
 /**
@@ -25,22 +25,20 @@ export const readOAuthCallback = Effect.sync(() => {
 /** Remember only the account-selection page to resume after provider consent. */
 export const openOAuth = (
   authorizationUrl: string,
-  connection: AccountConnectionId,
   account?: AccountId,
-  returnTo?: Omit<typeof OAuthAppReturn.Type, "connection">,
+  returnTo?: typeof OAuthAppReturn.Type,
 ) =>
   Effect.sync(() => {
     const current = new URL(window.location.href);
     const target = Schema.decodeUnknownOption(OAuthReturn)(
       account === undefined
         ? {
-            connection,
             app: current.searchParams.get("app"),
             slot: current.searchParams.get("slot"),
             profile: current.searchParams.get("profile") ?? undefined,
             ...returnTo,
           }
-        : { connection, account },
+        : { account },
     );
     if (Option.isSome(target))
       window.sessionStorage.setItem(returnKey, JSON.stringify(target.value));

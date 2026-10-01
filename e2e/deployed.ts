@@ -10,9 +10,7 @@ const command = Command.make(
   {
     database: Flag.Literals("database", ["neon", "planetscale"]).pipe(Flag.withDefault("neon")),
     name: Flag.String("test-name").pipe(
-      Flag.withDefault(
-        "^(?!.*(?:Claude Code connects|Cloud compiler memory failures|MCP subscriptions survive))",
-      ),
+      Flag.withDefault("^(?!.*(?:Claude Code connects|Cloud compiler memory failures))"),
     ),
     workers: Flag.Int("workers").pipe(Flag.withDefault(16)),
   },

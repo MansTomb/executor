@@ -72,6 +72,7 @@ import { authorDatabase, unavailableStorage } from "./storage.ts";
 import { parseDatabaseSchema } from "@executor-js/app-data/schema";
 import { isApp, toEffectApp } from "./app.ts";
 import { authorCache, unavailableCache } from "./cache.ts";
+import type { HostCache } from "../contracts/cache.ts";
 import {
   accountSecrets,
   boundFailureMessage,
@@ -257,6 +258,51 @@ function bindAccounts(
   );
 }
 
+/**
+ * The lifetime of an invocation's `ctx.fetch`: the invocation, then every app cache refresh it
+ * handed to the host's background runner. Those refreshes outlive the reply, and loaders such as
+ * remote skill and tool catalogs fetch with the author's `ctx.fetch`. The host ends them by draining
+ * or cancelling its cache session. The signal aborts once the invocation has ended, by `signal` or
+ * by its scope closing, and no refresh it started is still running.
+ */
+const fetchLifetime = (signal: AbortSignal, background: HostCache["background"]) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const controller = new AbortController();
+      let refreshes = 0;
+      let ended = false;
+      const settle = () => {
+        if (ended && refreshes === 0) controller.abort();
+      };
+      const end = () => {
+        ended = true;
+        settle();
+      };
+      signal.addEventListener("abort", end, { once: true });
+      if (signal.aborted) end();
+      const settled = Effect.sync(() => {
+        refreshes -= 1;
+        settle();
+      });
+      return {
+        signal: controller.signal,
+        close: () => {
+          signal.removeEventListener("abort", end);
+          end();
+        },
+        /** Counted from the hand-off, so a refresh that has not started yet keeps the fetch. */
+        background: (task: Effect.Effect<void, unknown>) =>
+          Effect.suspend(() => {
+            refreshes += 1;
+            return background(task.pipe(Effect.ensuring(settled))).pipe(
+              Effect.onError(() => settled),
+            );
+          }),
+      };
+    }),
+    (lifetime) => Effect.sync(lifetime.close),
+  );
+
 function dispatch(
   app: unknown,
   request: HostRequest,
@@ -383,6 +429,7 @@ function dispatch(
       // Counts cache commands, so a skill read can tell whether its loader used the app cache.
       let cacheCommands = 0;
       const hostCache = context.cache ?? unavailableCache;
+      const fetching = yield* fetchLifetime(signal, hostCache.background);
       const bound = {
         cache: authorCache(
           {
@@ -391,6 +438,7 @@ function dispatch(
               cacheCommands += 1;
               return hostCache.transport(command);
             },
+            background: fetching.background,
           },
           Redacted.value(context.accounts),
           invocationSignal,
@@ -402,7 +450,7 @@ function dispatch(
         )),
         workflows: workflowReads,
         signal: invocationSignal,
-        fetch: yield* invocationFetch(invocationSignal),
+        fetch: yield* invocationFetch(fetching.signal),
         elicit: makeElicit(delivery, invocationSignal),
       };
       const definition = yield* evaluationSafe(native.evaluate(bound), secrets).pipe(
@@ -676,7 +724,7 @@ function dispatch(
           transactionOpen = db !== undefined;
           const output = yield* Effect.gen(function* () {
             running = yield* captureTelemetry;
-            const fetch = yield* invocationFetch(invocationSignal);
+            const fetch = yield* invocationFetch(fetching.signal);
             return yield* tool.run(
               {
                 ...bound,
@@ -772,7 +820,8 @@ function dispatch(
 /**
  * Run one slot's provider check against the single account the host supplied, without evaluating
  * the app. Failures are attributed to that account. HTTP status failures from `decodeJson` are
- * classified like other provider responses; anything else means the check could not verify it.
+ * classified like other provider responses; anything else means the check
+ * could not verify it, and carries the app's own error message with account secrets replaced.
  */
 function checkAccount(
   slots: AccountSlots,
@@ -812,7 +861,7 @@ function checkAccount(
         return Effect.fail(
           Option.isSome(classified)
             ? accountProviderError(classified.value, account.id)
-            : new HostOperationFailed(),
+            : new HostOperationFailed(failureDetail(error, accountSecrets(context.accounts))),
         );
       }),
       Effect.withSpan("app.account.check"),

@@ -163,11 +163,9 @@ const packageRuntime = Effect.gen(function* () {
   yield* fs.copyFile(alchemyResolve.resolve("workerd/bin/workerd"), path.join(output, "workerd"));
   yield* fs.chmod(path.join(output, "workerd"), 0o755);
   yield* fs.copy(web, path.join(output, "web"), { overwrite: true });
-  yield* fs.copy(
-    path.join(root, "packages/telemetry/dist/motel-workerd"),
-    path.join(output, "motel"),
-    { overwrite: true },
-  );
+  yield* fs.copy(path.join(root, "packages/telemetry/dist/motel"), path.join(output, "motel"), {
+    overwrite: true,
+  });
   // The collector shares the product's process and memory limit. Bound what it holds for
   // exports in flight (4 x 16 MiB) and what it stores; beyond either it refuses and counts.
   const motelBounds = Object.entries({

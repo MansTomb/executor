@@ -158,18 +158,35 @@ export const observeUsage = <A, E, R>(
     );
   });
 
+type ProductOperation = UsageProperties & { readonly area: string; readonly operation: string };
+
+const productOperationSpan = (properties: ProductOperation) =>
+  Effect.withSpan("product.operation", {
+    attributes: {
+      "executor.product.area": properties.area,
+      "executor.product.operation": properties.operation,
+    },
+  });
+
 /** Count attempted and finished operations separately so failures and abandoned work remain visible. */
 export const observeProductOperation = <A, E, R>(
-  properties: UsageProperties & { readonly area: string; readonly operation: string },
+  properties: ProductOperation,
   effect: Effect.Effect<A, E, R>,
   result?: (value: A) => UsageProperties,
 ) =>
   recordUsage("product_operation_started", properties).pipe(
     Effect.andThen(observeUsage("product_operation_completed", properties, effect, result)),
-    Effect.withSpan("product.operation", {
-      attributes: {
-        "executor.product.area": properties.area,
-        "executor.product.operation": properties.operation,
-      },
-    }),
+    productOperationSpan(properties),
   );
+
+/**
+ * Trace a read without product analytics. Dashboard refetches and MCP discovery repeat
+ * constantly and do not represent product use; failures still reach tracing and error reporting.
+ */
+export const traceProductRead = <A, E, R>(
+  properties: ProductOperation,
+  effect: Effect.Effect<A, E, R>,
+) => effect.pipe(productOperationSpan(properties));
+
+/** Safe HTTP methods are reads; every other method is recorded as a product operation. */
+export const isReadMethod = (method: string) => method === "GET" || method === "HEAD";

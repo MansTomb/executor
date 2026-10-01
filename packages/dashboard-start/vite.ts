@@ -25,20 +25,15 @@ const buildMetadata = (): PluginOption => ({
   }),
 });
 
-/**
- * The document renderer is imported by each host's own server bundle, so it is self-contained.
- * Hosted products run it in workerd, which needs React's Web Streams server build. A Node
- * development server instead loads dependencies with Node itself: Vite's module runner evaluates
- * inlined modules as ESM, which CommonJS packages such as React cannot run as.
- */
+/** Server builds are self-contained; dev keeps dependencies external to Vite's Node module runner. */
 const serverBundle = (runtime: "workerd" | "node"): PluginOption => ({
   name: "executor-dashboard-server-bundle",
   config: (_, { command }) => ({
     environments: {
       ssr: {
         resolve: {
-          ...(runtime === "workerd" || command === "build" ? { noExternal: true } : {}),
-          ...(runtime === "workerd"
+          ...(command === "build" ? { noExternal: true } : {}),
+          ...(runtime === "workerd" && command === "build"
             ? { conditions: ["workerd", "worker", "module", "import", "default"] }
             : {}),
         },

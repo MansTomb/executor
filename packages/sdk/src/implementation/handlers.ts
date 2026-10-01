@@ -83,6 +83,7 @@ export const executorHandlers = (executor: Executor) =>
         .handle("submit", ({ payload }) => executor.accountConnections.submit(payload))
         .handle("oauthSetup", ({ payload }) => executor.accountConnections.oauthSetup(payload))
         .handle("startOAuth", ({ payload }) => executor.accountConnections.startOAuth(payload))
+        .handle("findOAuth", ({ payload }) => executor.accountConnections.findOAuth(payload))
         .handle("completeOAuth", ({ payload }) =>
           executor.accountConnections.completeOAuth(payload),
         ),

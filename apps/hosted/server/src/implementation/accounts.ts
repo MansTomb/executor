@@ -3,7 +3,12 @@ import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { permitsApp, permittedAppIds } from "@executor-js/authorization";
 import { OrganizationForbidden } from "../contracts/organization.ts";
-import { recordConnection, checkConnection, checkDestination } from "./connection-policy.ts";
+import {
+  recordConnection,
+  checkConnection,
+  checkDestination,
+  createdConnectionOrganization,
+} from "./connection-policy.ts";
 import { accountDestination } from "./resource-lifecycle.ts";
 import {
   requireAccountAccess,
@@ -20,13 +25,18 @@ import {
   type AppId,
   type Executor,
   type OwnerId,
+  StorageError,
 } from "@executor-js/sdk/core";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { HostedApi } from "../contracts/api.ts";
-import { ApiAuthentication, Authentication } from "../contracts/auth.ts";
-import { CurrentOrganization } from "../contracts/organization.ts";
+import { ApiAuthentication, Authentication, CurrentPrincipal } from "../contracts/auth.ts";
+import {
+  CurrentOrganization,
+  OrganizationSlug,
+  organizationOwner,
+} from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import {
   executionManagerOwner,
@@ -326,6 +336,50 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
         ),
       );
   }),
+);
+
+/**
+ * A provider's link can open in a tab or browser without the page that started sign-in. The
+ * callback's state finds the pending connection, which only its creator, still a member of its
+ * organization, may resume. Completion then runs the organization route's full checks.
+ */
+export const hostedOAuthCallbackHandlers = HttpApiBuilder.group(
+  HostedApi,
+  "oauthCallback",
+  (handlers) =>
+    Effect.gen(function* () {
+      const auth = yield* Authentication;
+      const redirectUri = accountOAuthRedirectUri(auth);
+      return handlers.handle("resolve", ({ payload }) =>
+        Effect.gen(function* () {
+          const principal = yield* CurrentPrincipal;
+          const executor = yield* Effect.flatten(HostedExecutor);
+          const connection = yield* executor.accountConnections.findOAuth(payload);
+          const organization = yield* createdConnectionOrganization(
+            connection.id,
+            principal.userId,
+          );
+          if (organizationOwner(organization) !== connection.owner)
+            return yield* new OrganizationForbidden();
+          yield* auth.membership(principal, organization);
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          const organizationSlug = yield* auth
+            .organizationSlug(new Headers(request.headers), organization)
+            .pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(OrganizationSlug)),
+              Effect.catchTag("SchemaError", () => new StorageError()),
+            );
+          return {
+            organizationSlug,
+            connection: connection.id,
+            app: connection.target?.app ?? null,
+            profile: connection.target?.profile,
+            redirectUri,
+            reconnect: connection.reconnectAccount !== null,
+          };
+        }),
+      );
+    }),
 );
 
 /** Keep the existing provider redirect URL. Completion still requires the browser session and membership. */

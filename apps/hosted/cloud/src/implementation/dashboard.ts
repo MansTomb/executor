@@ -6,7 +6,7 @@ import { Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { CloudEntryPage } from "../contracts/entry.ts";
 import { betaNoticeDismissed } from "@executor-js/hosted-cloud-web/document";
-import dashboardRoutes from "@executor-js/hosted-cloud-web/routes";
+import dashboardRoutes from "@executor-js/hosted-cloud-web/routes" with { type: "json" };
 
 /**
  * API-only isolates never load React. The renderer is imported on the first page request and the

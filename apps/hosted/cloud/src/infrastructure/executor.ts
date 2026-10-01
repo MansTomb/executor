@@ -37,6 +37,8 @@ import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { SqlClient } from "effect/unstable/sql";
 import { cloudBuildAsset } from "../implementation/build-storage.ts";
 import { cachedBuildAssets } from "../implementation/asset-cache.ts";
+import { AppDomainDatabase } from "../implementation/app-domain-records.ts";
+import { UiFailed } from "apps/ui/contracts";
 import { cachedDeploymentSources } from "../implementation/deployment-source-cache.ts";
 import { withExecutorAnalytics } from "../implementation/product-analytics.ts";
 import { cloudAppSources } from "./source.ts";
@@ -47,6 +49,7 @@ import { cloudWorkflows } from "./workflows.ts";
 import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { cloudDatabaseConnection } from "./database.ts";
+import { ObjectDatabase } from "./object-database.ts";
 import { cloudSecrets } from "./secrets.ts";
 import { cloudOrigin } from "./stage.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
@@ -64,7 +67,8 @@ export const cloudEgress = Effect.gen(function* () {
 
 /**
  * Callers select the API-owned token coordinator explicitly, including across Workers.
- * Alchemy owns one concrete Effect SQL client per invocation, closed with that invocation.
+ * A Worker event owns one concrete Effect SQL client, closed with that event; a Durable Object
+ * supplies its own held client through {@link ObjectDatabase}.
  * Its SQL.PostgresLayer currently returns a lazy proxy: FumaDB's synchronous Statement.join
  * cannot inspect those deferred fragments. Resolve the native client before composing ORM
  * queries, using Alchemy's execution memo rather than an isolate-global pool.
@@ -91,10 +95,12 @@ export const cloudExecutor = Effect.fn(function* (
     ),
   );
   const appSources = yield* cloudAppSources(tokens);
-  // App storage and hosted permission checks use the same database. Share its
-  // client only inside this execution; the event scope owns all connections.
+  // App storage and hosted permission checks use the same database. A Worker event owns one
+  // connection and closes it with the event; a Durable Object lends its own held connections.
   const database = yield* makeExecutionMemo(
     Effect.gen(function* () {
+      const object = yield* Effect.serviceOption(ObjectDatabase);
+      if (Option.isSome(object)) return yield* object.value.sql;
       const url = yield* connection.connectionString;
       return yield* Layer.build(PgClient.layer({ url, maxConnections: 1, prepare: false }));
     }).pipe(Effect.withSpan("runtime.cloud.database.initialize")),
@@ -235,6 +241,14 @@ export const cloudExecutor = Effect.fn(function* (
       executor.pipe(
         Effect.flatMap((resources) => resources.scheduleAuthority(target)),
         Effect.provide(RuntimeContext.phantom),
+      ),
+    ),
+    Layer.succeed(
+      AppDomainDatabase,
+      database.pipe(
+        Effect.map((services) => Context.get(services, SqlClient.SqlClient)),
+        Effect.provide(RuntimeContext.phantom),
+        Effect.mapError(() => new UiFailed({ reason: "unavailable" })),
       ),
     ),
     Layer.succeed(OrganizationIcons, makeOrganizationIcons(blobs)),

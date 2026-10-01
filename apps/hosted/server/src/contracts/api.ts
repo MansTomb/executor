@@ -18,7 +18,7 @@ import {
   RequireOrganization,
 } from "./organization.ts";
 import { HostedApps } from "./apps.ts";
-import { HostedAccounts } from "./accounts.ts";
+import { HostedAccounts, HostedOAuthCallbacks } from "./accounts.ts";
 import { HostedAppData } from "./app-data.ts";
 import { HostedWebhookSetup } from "./webhook-setup.ts";
 import { HostedWorkflows } from "./workflows.ts";
@@ -162,6 +162,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedSkills,
     HostedSchedules,
     HostedAccounts,
+    HostedOAuthCallbacks,
     HostedTools,
     HostedOrganization,
     HostedGroups,

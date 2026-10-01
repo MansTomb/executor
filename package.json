@@ -30,6 +30,7 @@
     "server": "bun run apps:build && bun run telemetry:build && node scripts/dev-host.ts local node --import ./scripts/local-dev.ts apps/local/server/src/main.ts",
     "hosted:dev": "bun run apps:build && bun run telemetry:build && node scripts/dev-host.ts self-host node apps/hosted/self-host/scripts/dev.ts",
     "hosted:test-account": "node apps/hosted/testing/cli.ts",
+    "agent-account": "bun run with:test-stage node apps/hosted/testing/agent-account.ts",
     "hosted:test-server": "bun run apps:build && bun run telemetry:build && bun run hosted:self-host:web:build && bun apps/hosted/testing/self-host.ts",
     "hosted:self-host:web:build": "bun run --cwd apps/hosted/self-host/web build",
     "hosted:cloud:web:build": "bun run --cwd apps/hosted/cloud/web build",
@@ -37,6 +38,7 @@
     "hosted:cloud:dev:1password": "bun run with:cloud:dev bun run --cwd apps/hosted/cloud dev --stage development",
     "hosted:cloud:deploy": "bun run with:cloud bun run --cwd apps/hosted/cloud deploy",
     "hosted:cloud:test-stage": "bun run with:test-stage bun run --cwd apps/hosted/cloud test-stage",
+    "agent-mail:deploy": "bun run with:test-stage env CI=true bun run --cwd apps/hosted/cloud alchemy deploy alchemy.agent-mail.ts --stage shared",
     "hosted:docker": "bun run with:self-host env BETTER_AUTH_URL=http://localhost:4400 EXECUTOR_BUILD_VERSION=$(git rev-parse HEAD) docker compose -f apps/hosted/self-host/compose.yaml up --build -d",
     "hosted:docker:down": "bun run with:self-host docker compose -f apps/hosted/self-host/compose.yaml down",
     "typecheck": "node scripts/check-typescript.ts && bun run --cwd apps/hosted/cloud framework:build && tsc --noEmit && tsc --noEmit -p apps/local/web && tsc --noEmit -p apps/hosted/web && tsc --noEmit -p apps/hosted/cloud/web && tsc --noEmit -p apps/hosted/self-host/web && tsc --noEmit -p apps/marketing && tsc --noEmit -p apps/docs && tsc --noEmit -p scripts/releases",
@@ -128,7 +130,9 @@
     "playwright": "1.63.0",
     "typescript": "7.0.2",
     "typescript-5": "npm:typescript@5.9.3",
-    "vitest": "5.0.1"
+    "vitest": "5.0.1",
+    "workerd": "1.20260901.1",
+    "yaml": "^2.8.2"
   },
   "overrides": {
     "@effect/platform-browser": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-browser@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
@@ -144,6 +148,7 @@
     "alchemy@2.0.0-beta.79": "patches/alchemy@2.0.0-beta.79.patch",
     "@distilled.cloud/cloudflare@1.0.0-rc.12": "patches/@distilled.cloud%2Fcloudflare@1.0.0-rc.12.patch",
     "@effect/sql-pg@https://pkg.pr.new/Effect-TS/effect/@effect/sql-pg@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d": "patches/@effect%2Fsql-pg@c7d1ffff.patch",
+    "@effect/platform-node-shared@https://pkg.pr.new/Effect-TS/effect/@effect/platform-node-shared@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d": "patches/@effect%2Fplatform-node-shared@c7d1ffff.patch",
     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
     "miniflare@4.20260730.0": "patches/miniflare@4.20260730.0.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.79": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.79.patch",

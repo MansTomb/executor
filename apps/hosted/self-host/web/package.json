@@ -21,8 +21,8 @@
     "@executor-js/hosted-web": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/ui": "workspace:*",
-    "@tanstack/react-router": "1.170.40",
-    "@tanstack/react-start": "1.168.59",
+    "@tanstack/react-router": "1.170.41",
+    "@tanstack/react-start": "1.168.60",
     "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

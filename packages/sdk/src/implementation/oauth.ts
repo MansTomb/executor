@@ -15,10 +15,15 @@ import {
   SchemaRepresentation,
   Struct,
 } from "effect";
-import { StartConnectionOAuth, CompleteConnectionOAuth } from "../contracts/account-connection.ts";
+import {
+  StartConnectionOAuth,
+  CompleteConnectionOAuth,
+  FindConnectionOAuth,
+} from "../contracts/account-connection.ts";
 import {
   openConnection,
   readConnection,
+  requireOpen,
   finishConnection,
   lockConnection,
 } from "./connection-state.ts";
@@ -632,7 +637,7 @@ export const makeOAuth = (
           Effect.gen(function* () {
             const current = yield* lockConnection(tx, input, crypto);
             if (current.state.status === "completed") return current.state.account;
-            yield* openConnection(tx, input);
+            const claimed = yield* requireOpen(input, current);
             const stored =
               existing === undefined
                 ? undefined
@@ -668,7 +673,7 @@ export const makeOAuth = (
               }),
             );
             if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
-            yield* finishConnection(tx, input, saved);
+            yield* finishConnection(tx, claimed, saved);
             yield* saveClient(tx);
             return saved;
           }),
@@ -709,8 +714,7 @@ export const makeOAuth = (
       const expiresAt = new Date(Math.min(now + 10 * 60_000, pending.expiresAt.getTime()));
       yield* transaction(db, (tx) =>
         Effect.gen(function* () {
-          yield* lockConnection(tx, input, crypto);
-          yield* openConnection(tx, input);
+          yield* requireOpen(input, yield* lockConnection(tx, input, crypto));
           yield* query(() =>
             tx.create("oauthAttempts", { id, encrypted, expiresAt, status: "pending" }),
           );
@@ -734,7 +738,7 @@ export const makeOAuth = (
       const saved = yield* readConnection(db, input);
       if (saved.state.status === "completed")
         return { status: "completed" as const, account: saved.state.account };
-      const connection = yield* openConnection(db, input);
+      const connection = yield* requireOpen(input, saved);
       const existing =
         connection.reconnectAccount === null
           ? undefined
@@ -777,24 +781,22 @@ export const makeOAuth = (
       return yield* decode(StoredAccount, row);
     });
 
-  const completeOAuth = (input: typeof CompleteConnectionOAuth.Type) =>
+  const failed = (reason: OAuthCompletionReason) => new OAuthCompletionFailed({ reason });
+  /** Reject the returned authorization response, recording which part failed. */
+  const rejected = (
+    reason: OAuthCompletionReason,
+    field: OAuthCallbackField,
+    detail: OAuthFailureDetail,
+  ) =>
+    Effect.annotateCurrentSpan({
+      "oauth.error.stage": "authorize",
+      "oauth.error.callback_field": field,
+      "oauth.error.detail": detail,
+    }).pipe(Effect.andThen(Effect.fail(failed(reason))));
+  /** The callback's one-time state is the only key to its pending sign-in. */
+  const pendingAttempt = (callbackUrl: Redacted.Redacted<string>) =>
     Effect.gen(function* () {
-      const connectionState = yield* readConnection(db, input);
-      if (connectionState.state.status === "completed") return connectionState.state.account;
-      const failed = (reason: OAuthCompletionReason) => new OAuthCompletionFailed({ reason });
-      /** Reject the returned authorization response, recording which part failed. */
-      const rejected = (
-        reason: OAuthCompletionReason,
-        field: OAuthCallbackField,
-        detail: OAuthFailureDetail,
-      ) =>
-        Effect.annotateCurrentSpan({
-          "oauth.error.stage": "authorize",
-          "oauth.error.callback_field": field,
-          "oauth.error.detail": detail,
-        }).pipe(Effect.andThen(Effect.fail(failed(reason))));
-      if (protocol === undefined) return yield* failed("oauth_unavailable");
-      const received = Redacted.value(input.callbackUrl);
+      const received = Redacted.value(callbackUrl);
       if (!URL.canParse(received))
         return yield* rejected("callback_malformed", "callback_url", "callback_unparseable");
       const callback = new URL(received);
@@ -822,6 +824,31 @@ export const makeOAuth = (
       if (row.expiresAt.getTime() <= now) return yield* failed("sign_in_expired");
       const attempt = yield* decrypt(id, row.encrypted, OAuthAttempt);
       yield* Effect.annotateCurrentSpan("oauth.provider.id", attempt.provider);
+      return { callback, id, attempt };
+    });
+
+  /** Another owner's sign-in is indistinguishable from an unknown one. */
+  const findOAuth = (input: typeof FindConnectionOAuth.Type) =>
+    pendingAttempt(input.callbackUrl).pipe(
+      Effect.flatMap(({ attempt }) =>
+        input.owner !== undefined && attempt.owner !== input.owner
+          ? rejected("sign_in_not_found", "state", "callback_attempt_not_found")
+          : Effect.succeed({ owner: attempt.owner, connection: attempt.connection }),
+      ),
+      Effect.tapError((error) =>
+        Schema.is(OAuthCompletionFailed)(error)
+          ? Effect.annotateCurrentSpan("oauth.completion.reason", error.reason)
+          : Effect.void,
+      ),
+      Effect.withSpan("oauth.findOAuth"),
+    );
+
+  const completeOAuth = (input: typeof CompleteConnectionOAuth.Type) =>
+    Effect.gen(function* () {
+      const connectionState = yield* readConnection(db, input);
+      if (connectionState.state.status === "completed") return connectionState.state.account;
+      if (protocol === undefined) return yield* failed("oauth_unavailable");
+      const { callback, id, attempt } = yield* pendingAttempt(input.callbackUrl);
       // This browser, or this connection, has since started a newer sign-in.
       if (attempt.connection !== input.connection) return yield* failed("sign_in_replaced");
       const connection = yield* openConnection(db, input);
@@ -898,6 +925,10 @@ export const makeOAuth = (
         client: attempt.client,
         response: attempt.response,
         ...(attempt.resource === undefined ? {} : { resource: attempt.resource }),
+        ...(attempt.tokenRequestFormat === undefined
+          ? {}
+          : { tokenRequestFormat: attempt.tokenRequestFormat }),
+        ...(attempt.tokenResponse === undefined ? {} : { tokenResponse: attempt.tokenResponse }),
         ...idTokenIdentity(tokens),
         fields,
         ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
@@ -918,8 +949,7 @@ export const makeOAuth = (
       const ready = `ready_${yield* nextId}`;
       return yield* transaction(db, (tx) =>
         Effect.gen(function* () {
-          yield* lockConnection(tx, input, crypto);
-          const current = yield* openConnection(tx, input);
+          const current = yield* requireOpen(input, yield* lockConnection(tx, input, crypto));
           // A newer sign-in started while the token exchange was running.
           if (current.oauthAttempt !== id) return yield* failed("sign_in_replaced");
           // Read again after the remote exchange: deletion must win, and a concurrent rename must survive.
@@ -968,7 +998,7 @@ export const makeOAuth = (
             }),
           );
           if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
-          yield* finishConnection(tx, input, saved);
+          yield* finishConnection(tx, current, saved);
           if (savedClient !== undefined)
             yield* query(() =>
               tx.upsert("oauthClients", {
@@ -1345,6 +1375,7 @@ export const makeOAuth = (
 
   return {
     connections: { oauthSetup, startOAuth, completeOAuth },
+    findOAuth,
     resolve: (account: StoredAccount, provider: ProviderDefinition) => resolve(account, provider),
     renewRejected,
     usable,

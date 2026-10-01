@@ -56,6 +56,8 @@ account's name and shows it beside the account. Every field is optional:
 `externalId`, `displayName`, `username`, `email`, `avatarUrl` and `profileUrl`.
 
 ```ts
+import { ProviderError, decodeJson, defineProvider, object, secrets, string } from "apps";
+
 const User = object({ id: string(), username: string(), name: string(), email: string() });
 
 const vercel = defineProvider({
@@ -93,8 +95,20 @@ refused, 429 and 5xx mean the service is unavailable. Throw
 `new ProviderError({ reason: "forbidden" })` only with explicit evidence of a
 missing permission, such as an `insufficient_scope` challenge; a bare 403 is not
 enough. Services that answer a bad token with something other than 401, as Vercel does, need
-an explicit `new ProviderError({ reason: "unauthorized" })`. Any other error or a timeout means
-the check could not verify the account.
+an explicit `new ProviderError({ reason: "unauthorized" })`. `ProviderError` carries only its
+reason and status, never a message.
+
+To tell the user why the check failed, throw an ordinary `Error` with a message written for them.
+The account form shows it after "Couldn't verify this API token:". Read the service's documented
+error fields to choose the message; do not copy a response body, URL or credential into it.
+Executor replaces the checked credentials if they appear, and shortens long messages.
+
+```ts
+if (response.status === 403 && (await response.json()).error?.code === "missing_scope")
+  throw new Error("This token lacks the accounts scope. Create a token with accounts:read.");
+```
+
+Any error or a timeout means the check could not verify the account.
 Executor never treats that as bad credentials.
 
 Account forms run the same check on entered credentials before saving them, so the user sees
@@ -138,8 +152,13 @@ pass that check: use a tenant-specific issuer URL, or declare the endpoints
 without `issuer`.
 
 `authorizationParams` adds service-defined parameters to the sign-in request,
-from the service's docs. Use it for settings such as offline access. It cannot
-replace protocol parameters such as `state`, `scope` or `redirect_uri`.
+from the service's docs. Use it for settings such as offline access or a
+service's own selector, for example `{ providers: "..." }`. It works with
+`discover` and with declared endpoints. Executor sets the protocol parameters
+itself, so these names are rejected: `response_type`, `client_id`,
+`redirect_uri`, `state`, `scope`, `code_challenge`, `code_challenge_method`,
+`nonce`, `resource`, `request` and `request_uri`. Use `scopes` and `resource`
+for those settings instead.
 
 Declare `authorizationUrl`, `tokenUrl` and `scopes` only when the service
 publishes no metadata. Then set `tokenEndpointAuthMethod` to what its docs say
@@ -148,6 +167,40 @@ for public PKCE clients), and `issuer` when the docs name one, so Executor can
 check the service's `iss` responses. Without `issuer` those checks are skipped.
 Do not copy endpoints from an OpenAPI `oauth2` scheme without checking the
 service's docs; those schemes carry no issuer or client authentication.
+
+A declared `authorizationUrl` may include a query string, such as
+`https://auth.example.com/authorize?tenant=acme`; Executor keeps it and adds the
+protocol parameters. Prefer `authorizationParams` for service settings. Declare
+each parameter in one place: a name in both the URL and `authorizationParams`,
+or a protocol parameter in the URL, fails the build.
+
+Some services read OAuth requests or answer them differently from the
+standard. Declare the difference from the service's docs; do not work around it
+in app code:
+
+- `scopeSeparator: ","` joins `scopes` with commas on the sign-in request, as
+  Linear requires. The default is a space.
+- `tokenRequestFormat: "json"` sends token requests (sign-in, renewal and
+  client credentials) as a JSON object, as Atlassian, ClickUp and Notion
+  require. The default is a form.
+- `tokenResponse: { path: "authed_user" }` reads the grant from a nested member
+  of the token response when the top level has no access token or scope.
+  Slack returns user tokens there. Comma-separated scopes in that member become
+  space-separated.
+
+```ts
+oauth2({
+  authorizationUrl: "https://slack.com/oauth/v2/authorize",
+  tokenUrl: "https://slack.com/api/oauth.v2.access",
+  scopes: [],
+  // Slack names user scopes in its own parameter.
+  authorizationParams: { user_scope: "search:read,channels:history" },
+  tokenResponse: { path: "authed_user" },
+});
+```
+
+A connected account keeps the settings it signed in with; reconnect it after
+changing them.
 
 When the service documents an RFC 7009 token revocation endpoint, also declare
 `revocationUrl`. Executor calls it when a user deletes the account, so the

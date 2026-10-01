@@ -57,7 +57,8 @@ directory. `bun run with:local …` loads 1Password values instead; see
 | `EXECUTOR_PORT`                         | Loopback listener port; defaults to `4312`.                                                                                                                                              |
 | `EXECUTOR_API_KEY`                      | Optional supplied bearer token; set with the encryption key. At least 32 characters.                                                                                                     |
 | `EXECUTOR_ENCRYPTION_KEY`               | Optional supplied AES key; set with the API key. Exactly 64 hexadecimal characters.                                                                                                      |
-| `EXECUTOR_MCP_TIMEOUT_MS`               | Catalog discovery plus program timeout; defaults to `30000`.                                                                                                                             |
+| `EXECUTOR_KEY_STORAGE`                  | Optional key storage for a new directory: `file` for `keys.json`, `os` for the OS credential store without the key file fallback. See [Key storage](#key-storage).                       |
+| `EXECUTOR_MCP_TIMEOUT_MS`               | Catalog discovery plus program timeout; defaults to `300000`.                                                                                                                            |
 | `EXECUTOR_MCP_MAX_TOOL_CALLS`           | Admitted calls per execute, including search; defaults to `100`.                                                                                                                         |
 | `EXECUTOR_MCP_MAX_OUTPUT_BYTES`         | Result value/log truncation budget; defaults to `65536`. Protocol metadata and truncation markers add overhead.                                                                          |
 | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS`   | Reuse an app's evaluated tool list this long before refreshing it in the background; defaults to `30`.                                                                                   |
@@ -66,14 +67,62 @@ directory. `bun run with:local …` loads 1Password values instead; see
 | `EXECUTOR_EVALUATION_MEMORY_MB`         | Memory for kept tool lists and app declarations; defaults to `256`.                                                                                                                      |
 | `EXECUTOR_APP_WORKERS`                  | Most app Workers kept loaded; defaults to `32`. Idle ones above it unload and reload on their next call. Each app with a database also keeps one data Worker, which this does not count. |
 
-First launch saves generated keys in the OS credential store and records the
-installation ID in `installation.json`. Linux requires a persistent Secret
-Service. There is no plaintext or kernel-keyring fallback. Existing data with
-missing keys stops with a restore instruction. Explicit environment keys stay
-supported and are never persisted. A directory keeps its chosen key source.
-Back up the OS credential and installation record with the data, or retain both
-supplied keys. Changing an encryption key does not re-encrypt existing accounts. Database rows
-contain encrypted bytes, and each ciphertext is bound to its account ID.
+### Key storage
+
+First launch generates the API and encryption keys, saves them in the OS
+credential store and records the installation ID in `installation.json`. Linux
+uses a persistent Secret Service; the kernel keyring is never used because it
+loses keys on reboot.
+
+When there is no store on a directory's first start, Executor writes the keys
+to `keys.json` in the data directory instead, as Executor 1 did with
+`auth.json`. "No store" means the native keyring module cannot load, Linux has
+no D-Bus session or Secret Service, or a Windows logon session has no
+credential vault. When a store exists but access is denied or cancelled, or it
+is locked, startup stops with a message saying so. Nothing is written except
+the `pending` record, so the next start prompts again, and can still fall back
+if the store turns out to be absent. Failures that cannot be identified as a
+missing store count as denied. The directory is created with mode `0700` and the file with `0600`.
+The record then says `file`, and startup prints one line to stderr naming the
+file. This applies to every platform, including desktop. A first start is a
+directory with no record, or a `pending` record and no databases. A first start
+interrupted after writing `keys.json` finishes with that file instead of
+replacing it.
+
+When a store exists but no prompt can appear, such as over SSH, the denied
+message includes the platform error text and says how to unlock the store first
+(`gnome-keyring-daemon --unlock` on Linux, `security unlock-keychain` on macOS).
+On a first start it also points to the opt-in below.
+
+`EXECUTOR_KEY_STORAGE=file` chooses `keys.json` on a first start even when a
+store works. It writes the file exactly as the fallback does, records `file`,
+never touches the store and prints `EXECUTOR_KEY_STORAGE=file; keys saved to
+<path>` on stderr. `EXECUTOR_KEY_STORAGE=os` requires the store: an absent
+store on a first start fails instead of falling back. Either value is a no-op on
+a directory already using that storage and fails without changes on one using
+the other; keys are never moved. Any other value, or combining it with supplied
+keys, fails before anything is written.
+
+A directory keeps its chosen key source; Executor never switches it silently.
+A `ready` directory whose store is missing or denied stops instead of falling back.
+A `file` directory with a missing or invalid `keys.json` stops with a restore
+instruction. Existing data without a record stops too. No replacement keys are
+generated in any of these cases.
+
+Explicit environment keys stay supported and are never persisted. A directory
+that saves its own keys, in the OS store or `keys.json`, refuses them. Back up
+the installation record with the data, together with either the OS credential or
+`keys.json`, or retain both supplied keys. Anyone who can read `keys.json` can
+use the local API and decrypt saved accounts. Changing an encryption key does
+not re-encrypt existing accounts. Database rows contain encrypted bytes, and
+each ciphertext is bound to its account ID.
+
+A refused key setup reports one reason: `credential-unavailable` (the
+directory needs an OS store and there is none), `credential-denied`,
+`credential-missing`, `invalid` (a damaged record or key), `misconfigured`
+(`EXECUTOR_KEY_STORAGE` or supplied keys cannot apply to this directory),
+`locked` or `io`. The desktop backend also sends that reason on its private fd4
+pipe so the desktop can choose recovery actions.
 
 SDK routes, including `/mcp` and `/openapi.json`, require `Authorization: Bearer …`.
 The local token grants access to the whole local instance. Owner filters do not

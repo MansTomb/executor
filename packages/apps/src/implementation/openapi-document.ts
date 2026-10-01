@@ -1,66 +1,160 @@
 /** OpenAPI reference and dialect rules, shared by every part of the app importer. */
-import { loadSwaggerClient } from "./swagger-client.ts";
-import { upgrade } from "@scalar/openapi-upgrader";
+import { upgradeFromTwoToThree } from "@scalar/openapi-upgrader/2.0-to-3.0";
+import { upgradeOpenApi30InPlace } from "./openapi-upgrade.ts";
+import { yieldToRuntime } from "./runtime-yield.ts";
 import { JsonPointer, JsonSchema, Schema } from "effect";
 import { JsonObject } from "../contracts/schema.ts";
 import { Specification } from "../contracts/openapi-document.ts";
 import { OpenapiCompileError as TemplateError } from "../contracts/openapi-compile.ts";
 
-const record = Schema.decodeUnknownSync(JsonObject);
+/**
+ * An object in a document that was validated as JSON when it was read. Compilation only turns JSON
+ * into JSON, so inside it an object's shape is checked, not its every leaf again: re-validating
+ * whole documents was most of a large API's compile time.
+ */
+export const DocumentObject = Schema.declare(
+  (value: unknown): value is JsonObject =>
+    typeof value === "object" && value !== null && !Array.isArray(value),
+);
+export const documentObject = Schema.decodeUnknownSync(DocumentObject);
+const record = documentObject;
 function fail(code: TemplateError["code"], reason: string): never {
   throw new TemplateError({ code, reason });
 }
 
-/** Resolve OpenAPI objects once with Swagger; schemas retain their original recursive references.
+const isObject = (value: unknown): value is JsonObject =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+/** Fields that map names to Path Item Objects, whose `$ref` siblings extend the referenced item. */
+const pathItemMaps = new Set(["paths", "webhooks", "pathItems"]);
+
+/** The path of a local reference. Documents often leave characters such as `[` unencoded in the
+ * fragment, so a fragment that is not a valid URI fragment is read as a plain JSON Pointer.
+ */
+const localPath = (ref: string): readonly string[] | undefined => {
+  if (!ref.startsWith("#")) return undefined;
+  const strict = JsonPointer.parseUriFragment(ref);
+  if (strict !== undefined) return strict;
+  let pointer = ref.slice(1);
+  try {
+    pointer = decodeURIComponent(pointer);
+  } catch {
+    // An invalid percent-encoding is read literally.
+  }
+  if (pointer === "") return [];
+  return pointer.startsWith("/")
+    ? pointer.slice(1).split("/").map(JsonPointer.unescapeToken)
+    : undefined;
+};
+
+/** Replace the document's local Reference Objects with their targets in one walk.
+ * Only the document itself is a reference scope: external, missing and circular references
+ * stay in place, and operations that reach them are skipped when their objects are resolved.
+ * A Reference Object's `summary` and `description` override its target's. A Path Item keeps
+ * every sibling of its `$ref`. Schema Objects, examples and extensions are values, not objects
+ * to resolve.
+ */
+function dereference(scope: JsonObject): JsonObject {
+  const active = new Set<string>();
+  const target = (ref: string): JsonObject | undefined => {
+    const path = localPath(ref);
+    let node: Schema.Json | undefined = scope;
+    for (const part of path ?? []) {
+      node = isObject(node)
+        ? Object.hasOwn(node, part)
+          ? node[part]
+          : undefined
+        : Array.isArray(node)
+          ? node[Number(part)]
+          : undefined;
+      if (node === undefined) return;
+    }
+    return path !== undefined && isObject(node) ? node : undefined;
+  };
+  const fields = (object: JsonObject): JsonObject => {
+    const result: Record<string, Schema.Json> = {};
+    for (const [key, value] of Object.entries(object))
+      result[key] =
+        key === "schema"
+          ? value
+          : key === "example" || key.startsWith("x-")
+            ? value
+            : pathItemMaps.has(key) && isObject(value)
+              ? Object.fromEntries(
+                  Object.entries(value).map(([name, item]) => [name, visit(item, true)]),
+                )
+              : key === "responses"
+                ? defaultFirst(visit(value, false))
+                : visit(value, false);
+    return result;
+  };
+  // A Responses Object lists its fixed `default` field before status codes, as the importer
+  // always stored it.
+  const defaultFirst = (responses: Schema.Json): Schema.Json => {
+    if (!isObject(responses) || !Object.hasOwn(responses, "default")) return responses;
+    const { default: fallback, ...statuses } = responses;
+    return { default: fallback ?? null, ...statuses };
+  };
+  const visit = (value: Schema.Json, pathItem: boolean): Schema.Json => {
+    if (Array.isArray(value)) return value.map((item) => visit(item, false));
+    if (!isObject(value)) return value;
+    const ref = value.$ref;
+    const found = typeof ref === "string" && !active.has(ref) ? target(ref) : undefined;
+    if (typeof ref !== "string" || found === undefined) return fields(value);
+    active.add(ref);
+    const resolved = visit(found, pathItem);
+    active.delete(ref);
+    if (!isObject(resolved)) return resolved;
+    const { $ref: _, ...siblings } = value;
+    if (pathItem) return { ...resolved, ...fields(siblings) };
+    return {
+      ...resolved,
+      ...(typeof siblings.summary === "string" ? { summary: siblings.summary } : {}),
+      ...(typeof siblings.description === "string" ? { description: siblings.description } : {}),
+    };
+  };
+  return record(visit(scope, false));
+}
+
+/** The document's specification, with its paths and components checked for shape. */
+const DocumentSpecification = Schema.Struct({
+  ...Specification.fields,
+  paths: Schema.Record(Schema.String, DocumentObject),
+  components: Schema.optionalKey(
+    Schema.Struct({
+      schemas: Schema.optionalKey(Schema.Record(Schema.String, DocumentObject)),
+      securitySchemes: Schema.optionalKey(Schema.Record(Schema.String, DocumentObject)),
+    }),
+  ),
+});
+
+/** Upgrade a document the caller owns to OpenAPI 3.1, as Scalar's upgrader does: Swagger 2.0 is
+ * first converted to 3.0, a 3.0 document is upgraded in place and a 3.1 document is unchanged.
+ */
+function upgradeOwned(document: JsonObject): JsonObject {
+  return record(upgradeOpenApi30InPlace(record(upgradeFromTwoToThree(document))));
+}
+
+/** Resolve OpenAPI objects once; schemas retain their original recursive references.
  * Scalar first upgrades Swagger 2.0 and OpenAPI 3.0 to 3.1, so the importer has one dialect and
  * 3.1 keywords that appear in 3.0 documents keep their meaning.
  * Unsupported versions, references and conversions throw TemplateError at the import boundary.
  */
-export async function openApiDocument(input: unknown) {
-  // The upgrader rewrites its argument in place.
-  const root = record(upgrade(structuredClone(record(input)), "3.1"));
-  const spec = Schema.decodeUnknownSync(Specification)(root);
+export async function openApiDocument(input: JsonObject) {
+  // The caller hands over the document; each original entry is released as it is upgraded.
+  const root = upgradeOwned(record(input));
+  await yieldToRuntime();
+  const spec = Schema.decodeUnknownSync(DocumentSpecification)(root);
   if (!spec.openapi.startsWith("3.1."))
     fail("openapi_version", "This importer supports Swagger 2.0 and OpenAPI 3.0 and 3.1.");
   const components = spec.components?.schemas ?? {};
   const convert = JsonSchema.fromSchemaOpenApi3_1;
 
   // Schema Objects are opaque to the object resolver. Effect owns their dialect,
-  // reference siblings and recursion. Masking also avoids dereferencing a large
-  // component graph only to reconstruct it for the validator.
-  const schemas: Schema.Json[] = [];
+  // reference siblings and recursion, so component schemas are not reference targets here.
   const componentsObject = root.components === undefined ? {} : record(root.components);
-  const masked: unknown = JSON.parse(
-    JSON.stringify(
-      { ...root, components: { ...componentsObject, schemas: {} } },
-      (key, value: unknown) => {
-        if (key !== "schema") return value;
-        const index = schemas.push(Schema.decodeUnknownSync(Schema.Json)(value)) - 1;
-        return { "x-executor-schema": index };
-      },
-    ),
-  );
-  const resolved = await (
-    await loadSwaggerClient()
-  ).resolve({
-    spec: masked,
-    skipNormalization: true,
-    useCircularStructures: false,
-    // Spec import uses the host's guarded download. References must not acquire
-    // a second, unguarded network capability inside the resolver.
-    requestInterceptor: () =>
-      fail("external_reference", "External OpenAPI references are not supported yet."),
-  });
-  const restored = record(
-    JSON.parse(JSON.stringify(resolved.spec), (key, value: unknown) => {
-      if (key !== "schema") return value;
-      const marker = record(value)["x-executor-schema"];
-      if (typeof marker !== "number" || schemas[marker] === undefined)
-        return fail("invalid_document", "The API resolver did not preserve a schema.");
-      return schemas[marker];
-    }),
-  );
-  const parsed = Schema.decodeUnknownSync(Specification)({
+  const restored = dereference({ ...root, components: { ...componentsObject, schemas: {} } });
+  await yieldToRuntime();
+  const parsed = Schema.decodeUnknownSync(DocumentSpecification)({
     ...restored,
     components: { ...record(restored.components), schemas: components },
   });

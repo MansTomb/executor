@@ -15,6 +15,7 @@ import {
   type OAuthOptions,
   type OAuthClientAuth,
 } from "../contracts/oauth.ts";
+import type { OAuthTokenRequestFormat, OAuthTokenResponse } from "apps/contracts";
 import type { ProviderAuthMethod } from "../contracts/provider.ts";
 import {
   challengeDiagnostics,
@@ -419,13 +420,52 @@ const normalizedTokens = (body: object) => {
   return tokens;
 };
 
+/** Members that describe one grant; a nested grant replaces all of them. */
+const grantMembers = ["access_token", ...optionalTokenMembers];
+
+const isObject = (value: unknown): value is object =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/**
+ * The grant a provider declared at a nested member, used when the top-level response has no
+ * access token or no scope. Slack answers a user-only install with `authed_user` holding the
+ * user token and its comma-separated scopes. Other top-level members, such as Slack's `team`,
+ * stay beside it; the top-level grant members do not.
+ */
+const nestedGrant = (body: object, nested: OAuthTokenResponse | undefined) => {
+  if (nested === undefined) return body;
+  const scope = Reflect.get(body, "scope");
+  if (
+    typeof Reflect.get(body, "access_token") === "string" &&
+    typeof scope === "string" &&
+    scope !== ""
+  )
+    return body;
+  let grant: unknown = body;
+  for (const member of nested.path.split("."))
+    grant = isObject(grant) ? Reflect.get(grant, member) : undefined;
+  if (!isObject(grant) || typeof Reflect.get(grant, "access_token") !== "string") return body;
+  const merged: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body))
+    if (!grantMembers.includes(key)) merged[key] = value;
+  for (const [key, value] of Object.entries(grant))
+    if (grantMembers.includes(key)) merged[key] = value;
+  const nestedScope = Reflect.get(grant, "scope");
+  if (typeof nestedScope === "string")
+    merged.scope = nestedScope
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .join(" ");
+  return merged;
+};
+
 /**
  * RFC 6749 §5.2: a JSON object with an `error` code and no access token is an error response,
  * whatever its HTTP status. Some services send it with HTTP 200; with a 401 WWW-Authenticate
  * challenge, oauth4webapi reports the challenge before reading the body. Other HTTP 200 JSON
- * objects are normalized for validation.
+ * objects are normalized for validation, reading a declared nested grant first.
  */
-const tokenResponse = async (response: Response) => {
+const tokenResponse = async (response: Response, nested?: OAuthTokenResponse) => {
   const body = await jsonObject(response);
   if (body === undefined) return response;
   const error = Reflect.get(body, "error");
@@ -440,7 +480,7 @@ const tokenResponse = async (response: Response) => {
       },
     });
   if (response.status !== 200) return response;
-  return new Response(JSON.stringify(normalizedTokens(body)), {
+  return new Response(JSON.stringify(normalizedTokens(nestedGrant(body, nested))), {
     status: response.status,
     headers: response.headers,
   });
@@ -523,6 +563,16 @@ type IssuerMissing = { readonly missing: OAuthProtocolFailed };
 type IssuerFound = { readonly server: OAuthTokenServer; readonly audienceFromScopes: boolean };
 type IssuerDiscovery = IssuerFound | IssuerMissing;
 
+/**
+ * A token request as the JSON object some services require instead of RFC 6749's form. The
+ * library's parameters and client authentication are kept; only their encoding changes.
+ */
+const jsonBody = (headers: HeadersInit | undefined, body: URLSearchParams) => {
+  const json = new Headers(headers);
+  json.set("content-type", "application/json");
+  return { headers: json, body: JSON.stringify(Object.fromEntries(body)) };
+};
+
 /** Resolve protocol operations against one host-supplied Effect HTTP client. */
 export const makeOAuthProtocol = (options: OAuthOptions) => {
   // This callback is the external library boundary, not an internal Promise implementation.
@@ -530,6 +580,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     (
       telemetry: Effect.Success<typeof captureTelemetry>,
       received: (status: number, contentType: OAuthMediaType | undefined) => void,
+      format: OAuthTokenRequestFormat,
     ) =>
     (url: string, init: oauth.CustomFetchOptions<string, BodyInit | undefined>) =>
       Effect.runPromiseWith(telemetry.context)(
@@ -543,8 +594,12 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               HttpClientRequest.fromWeb(
                 new Request(destination, {
                   method: init.method,
-                  headers: init.headers,
-                  ...(init.body === undefined ? {} : { body: init.body }),
+                  ...(format === "json" && init.body instanceof URLSearchParams
+                    ? jsonBody(init.headers, init.body)
+                    : {
+                        headers: init.headers,
+                        ...(init.body === undefined ? {} : { body: init.body }),
+                      }),
                 }),
               ),
             catch: failure,
@@ -564,12 +619,17 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     signal: AbortSignal,
     telemetry: Effect.Success<typeof captureTelemetry>,
     received: (status: number, contentType: OAuthMediaType | undefined) => void,
+    format: OAuthTokenRequestFormat,
   ) => ({
-    [oauth.customFetch]: transport(telemetry, received),
+    [oauth.customFetch]: transport(telemetry, received, format),
     [oauth.allowInsecureRequests]: true,
     signal,
   });
-  const request = <A>(run: (settings: ReturnType<typeof requestOptions>) => Promise<A>) =>
+  /** Run one library call. `format` re-encodes its form bodies; only token requests set it. */
+  const request = <A>(
+    run: (settings: ReturnType<typeof requestOptions>) => Promise<A>,
+    format: OAuthTokenRequestFormat = "form",
+  ) =>
     Effect.gen(function* () {
       const telemetry = yield* captureTelemetry;
       // The last response status tells a rejection (4xx) from a response we could not use (2xx).
@@ -577,9 +637,14 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       return yield* Effect.tryPromise({
         try: (signal) =>
           run(
-            requestOptions(signal, telemetry, (status, contentType) => {
-              last = { status, contentType };
-            }),
+            requestOptions(
+              signal,
+              telemetry,
+              (status, contentType) => {
+                last = { status, contentType };
+              },
+              format,
+            ),
           ),
         catch: (error) => {
           const failed = failure(error);
@@ -857,15 +922,24 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             ...(resourceIndicator == null ? {} : { resource: resourceIndicator }),
           };
         });
+        // Frozen on the attempt and grant, so renewal sends what sign-in did.
+        const requestEncoding = {
+          ...(method.scopeSeparator === undefined ? {} : { scopeSeparator: method.scopeSeparator }),
+          ...(method.tokenRequestFormat === undefined
+            ? {}
+            : { tokenRequestFormat: method.tokenRequestFormat }),
+        };
         if (method.grant === "client_credentials")
-          return { ...resolved, grant: "client_credentials" as const };
+          return { ...resolved, ...requestEncoding, grant: "client_credentials" as const };
         return {
           ...resolved,
+          ...requestEncoding,
           grant: "authorization_code" as const,
           server: yield* decode(OAuthServer, resolved.server),
           ...(method.authorizationParams === undefined
             ? {}
             : { authorizationParams: method.authorizationParams }),
+          ...(method.tokenResponse === undefined ? {} : { tokenResponse: method.tokenResponse }),
         };
       }).pipe(protocolStage("discover")),
     register: (
@@ -928,6 +1002,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       scopes: readonly string[];
       resource?: string;
       authorizationParams?: Readonly<Record<string, string>>;
+      scopeSeparator?: string;
     }) =>
       Effect.gen(function* () {
         const state = yield* Effect.sync(oauth.generateRandomState);
@@ -949,7 +1024,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           code_challenge_method: "S256",
         }))
           url.searchParams.set(key, value);
-        if (input.scopes.length > 0) url.searchParams.set("scope", input.scopes.join(" "));
+        if (input.scopes.length > 0)
+          url.searchParams.set("scope", input.scopes.join(input.scopeSeparator ?? " "));
         if (input.resource !== undefined) url.searchParams.set("resource", input.resource);
         if (nonce !== undefined) url.searchParams.set("nonce", nonce);
         return {
@@ -996,6 +1072,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         verifier: string;
         resource?: string | undefined;
         nonce?: string | undefined;
+        tokenRequestFormat?: OAuthTokenRequestFormat | undefined;
+        tokenResponse?: OAuthTokenResponse | undefined;
       },
       parameters: URLSearchParams,
     ) =>
@@ -1016,6 +1094,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
                 : { additionalParameters: { resource: input.resource } }),
             },
           ),
+          input.tokenResponse,
         );
         const response = input.server.issuer_derived === true ? await withoutIdToken(sent) : sent;
         // Executor never uses the ID token, so it is optional even after requesting `openid`.
@@ -1026,17 +1105,20 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           recognizedTokenTypes: await tokenTypes(response),
           ...(nonce === undefined ? {} : { expectedNonce: nonce, requireIdToken: true }),
         });
-      }).pipe(protocolStage("exchange")),
+      }, input.tokenRequestFormat).pipe(protocolStage("exchange")),
     clientCredentials: (input: {
       server: OAuthTokenServer;
       client: OAuthConfidentialRegistration;
       scopes: readonly string[];
       resource?: string | undefined;
+      scopeSeparator?: string | undefined;
+      tokenRequestFormat?: OAuthTokenRequestFormat | undefined;
     }) =>
       request(async (settings) => {
         const server = metadata(input.server);
         const parameters = new URLSearchParams();
-        if (input.scopes.length > 0) parameters.set("scope", input.scopes.join(" "));
+        if (input.scopes.length > 0)
+          parameters.set("scope", input.scopes.join(input.scopeSeparator ?? " "));
         if (input.resource !== undefined) parameters.set("resource", input.resource);
         const response = await tokenResponse(
           await oauth.clientCredentialsGrantRequest(
@@ -1050,7 +1132,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         return oauth.processClientCredentialsResponse(server, input.client, response, {
           recognizedTokenTypes: await tokenTypes(response),
         });
-      }).pipe(protocolStage("clientCredentials")),
+      }, input.tokenRequestFormat).pipe(protocolStage("clientCredentials")),
     refresh: (input: {
       server: OAuthServer;
       client: OAuthRegistration;
@@ -1058,6 +1140,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       resource?: string | undefined;
       idTokenSubject?: string | undefined;
       idTokenIssuer?: string | undefined;
+      tokenRequestFormat?: OAuthTokenRequestFormat | undefined;
+      tokenResponse?: OAuthTokenResponse | undefined;
     }) =>
       request(async (settings) => {
         const server = metadata(input.server);
@@ -1074,6 +1158,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
                 : { additionalParameters: { resource: input.resource } }),
             },
           ),
+          input.tokenResponse,
         );
         const usable =
           input.server.issuer_derived === true ? await withoutIdToken(response) : response;
@@ -1091,7 +1176,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             field: "id_token",
           });
         return tokens;
-      }).pipe(protocolStage("refresh")),
+      }, input.tokenRequestFormat).pipe(protocolStage("refresh")),
     /** RFC 7009 revocation with the grant's own client authentication. */
     revoke: (input: {
       server: OAuthTokenServer;

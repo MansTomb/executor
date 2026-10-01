@@ -59,7 +59,9 @@ server and provision the actors declared in the test plan. Provisioning belongs 
 the setup deadline; scenario actions retain their full deadline. Scenarios that need
 the default management app can declare `managementProfiles` with the required actor
 roles. Setup waits for those committed profiles through public APIs. Scenarios that
-exercise provisioning progress leave that prerequisite undeclared. Native cleanup
+exercise provisioning progress leave that prerequisite undeclared. Scenarios that need
+another Testing SDK scenario declare `sdkScenarios`; setup creates each one in a
+child scope the test may close. Native cleanup
 hooks release those fixtures and close the server scope. `withCase` provides the per-case Layers;
 `@effect/vitest` owns suite sharing and test interruption. The scenario deadline
 is 60 seconds, with separate 60-second setup and cleanup deadlines and no retries.
@@ -94,16 +96,20 @@ credentials nor fixture endpoints are installed in the Worker.
 The test plan declares `appOrigin: true` for scenarios that use private app URLs.
 Deployed preparation verifies those HTTPS origins before the scenario deadline;
 an origin that misses the infrastructure deadline produces a native setup failure
-for its scenario. Independent scenarios still run. The preparation report retains
-the number of ready origins, both phase timings, and each origin's probe count and
-last safe DNS, TLS, or HTTP failure. All origin probes start together. Fallback
+for its scenario. An organization whose actors are not provisioned within their
+60-second deadline does the same. Independent scenarios still run. The preparation
+report retains each unavailable organization and its failure, the number of ready
+origins, both phase timings, and each origin's probe count and last safe DNS, TLS,
+or HTTP failure. All origin probes start together. Fallback
 organization cleanup uses the worker bound and preserves release order within
 each scenario, including when another organization's cleanup fails.
 
-Files run in parallel with 16 workers by default. Use `--workers 1` through
-`--workers 32` to set the bound. A file's cases retain their declared sequence.
+Files run in parallel with one worker per two CPUs by default, up to 16. Each worker
+runs its own product server and browser. Use `--workers 1` through `--workers 32` to
+set the bound. A file's cases retain their declared sequence.
 Interactive recordings use one worker. Filters load only applicable files.
-Each unattended test has a 60-second timeout. Cleanup hooks retain a separate
+Each unattended test has a 60-second timeout, except the 1,000-account self-host
+inventory case, which has 120 seconds. Cleanup hooks retain a separate
 60-second timeout. Interactive inspection has no test timeout.
 Within a scenario, use `Effect.all` or `Effect.forEach` with a concurrency bound
 when operations are independent. Keep dependent actions ordered.
@@ -111,8 +117,8 @@ when operations are independent. Keep dependent actions ordered.
 The self-host load case creates 1,000 accounts through four concurrent API
 writers. The MCP catalog scale case deploys 29 apps with 7,000 tools and about
 46 MB of input schemas, plus three MCP apps with profiles whose server never answers, and bounds
-execute and search latency. CI gives both cases their own M4 runner, one after
-the other, in parallel with the functional suite. The PGlite workload depends on single-thread speed. Running both workloads on one machine can consume its CPU budget and
+execute and search latency. CI gives both cases their own 16-vCPU Linux runner, one
+after the other, in parallel with the functional suite. The PGlite workload depends on single-thread speed. Running both workloads on one machine can consume its CPU budget and
 invalidate the load timing. The normal self-host command still includes every
 applicable case. To reproduce the CI split, use separate machines:
 
@@ -261,9 +267,9 @@ Cloudflare, PlanetScale, Google, GitHub, Context.dev, or 1Password credentials
 are needed. Docker must be running; Bun, Playwright Chromium and ffmpeg are
 normal tool prerequisites.
 
-The disposable Postgres server allows 512 connections. Local Hyperdrive forwards
-TCP directly, so concurrent requests and background jobs cannot share the deployed
-pooler's backend connections. PostgreSQL's default 100 slots can reject parallel
+The disposable Postgres server allows 512 connections. The local Worker connects
+directly, so concurrent requests and background jobs cannot share a pooler's
+backend connections. PostgreSQL's default 100 slots can reject parallel
 scenario startup. This capacity setting applies only to the managed test container.
 
 Setting `E2E_CLOUD_URL` explicitly attaches to that server instead. A failed
@@ -281,9 +287,8 @@ The SDK isolation scenario also runs on the disposable Cloud stage. Deployed
 runs use a scoped Axiom reader for delivered telemetry. This is correctness
 coverage; it does not establish Cloud load capacity.
 
-Neon stages connect directly to Neon's pooled endpoint with verified TLS and
-allocate no Hyperdrive configuration. Explicit PlanetScale stages retain Hyperdrive.
-Realistic concurrent CI coverage of that path is tracked in
+Neon stages connect to Neon's pooled endpoint and PlanetScale stages to their
+branch's PgBouncer, both directly over verified TLS. Realistic concurrent CI coverage of that path is tracked in
 [#508](https://github.com/UsefulSoftwareCo/executor-next/issues/508).
 
 ### MCP server scenarios
@@ -700,22 +705,11 @@ Run it alone with `bun run e2e:deployed --test-name 'Cloud compiler memory failu
 The default deployed filter excludes it because exhausting the shared compiler
 can interrupt other scenarios' builds.
 
-The MCP memory soak probes use the separate `deployed-cloud-soak` job
-after the functional deployed job on `main`. PRs run the emulated Cloud target.
+The deployed job runs after the functional checks on `main`. PRs run the emulated Cloud target.
 Main and manual deployed CI jobs share one non-cancelling concurrency group;
 scenario workers remain parallel within each job. Agents can still run targeted
-disposable deployments through this CLI.
-The shared-session and distributed-session probes are temporarily skipped because deployed
-streams end unexpectedly; see [the failing run](https://github.com/UsefulSoftwareCo/executor-next/actions/runs/36063767428).
-The reconnect-burst probe remains enabled. The skipped probes retain their workloads and
-assertions for re-enabling after the transport cause is resolved. Enabled probes share a
-disposable deployment and run concurrently in independent organizations.
-Their original stream counts, reconnect rounds, observation periods and 20-minute
-deadlines are preserved. The normal deployed suite excludes these probes and keeps
-its 16 workers and separate 60-second setup, scenario and cleanup deadlines.
-Run the soak suite with `bun run e2e:deployed --test-name '^MCP subscriptions survive ' --workers 3`,
-or dispatch `Deployed Cloud tests` with `soak` enabled. Both CI jobs retain raw evidence
-and destroy their own environments. The soak artifact has `soak` in its name.
+disposable deployments through this CLI. The job retains raw evidence and destroys its
+own environment.
 
 ### Installed CLI artifact
 
@@ -724,6 +718,23 @@ To verify the installed CLI artifact through the same local scenarios, set
 `bun run e2e:local`. The harness starts that entry from its isolated data directory,
 with synthetic secrets. Pairing, dashboard loading and app deployment/call use
 real HTTP requests against the installed package.
+
+The first-launch key scenarios also run against an installed entry:
+
+```sh
+EXECUTOR_E2E_LOCAL_ENTRY=/path/to/node_modules/executor/bin.mjs \
+  bunx vitest run --config e2e/local-bootstrap.config.ts
+```
+
+The OS credential scenario uses the real store and removes only its own entry.
+The key file and denied-access scenarios never touch the real store. They start
+the CLI with a stand-in keyring module that reproduces the package's errors: an
+absent store, a cancelled or dismissed prompt, and a store that grants access.
+Only an absent store may fall back to `keys.json`. The key storage scenario
+covers `EXECUTOR_KEY_STORAGE`: `file` on a new or denied-pending directory,
+no-ops on matching directories, refusals on mismatched ones, and invalid values. On Linux outside a D-Bus
+session, set `EXECUTOR_E2E_CREDENTIAL_STORE=absent` to use the real missing
+Secret Service for the key file scenario instead; release CI runs both.
 
 The desktop artifact smoke uses the packaged executable, synthetic secrets and a
 fresh profile/data directory. It deploys a dependency-using app, calls it, closes

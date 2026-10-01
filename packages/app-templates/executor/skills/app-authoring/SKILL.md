@@ -10,6 +10,15 @@ Its `package.json` declares the exact `apps` version it uses; new apps already
 do. App authors use ordinary async functions; Effect stays inside
 the framework. An app's installed name is separate from its source definition.
 
+## Choose how to work
+
+With a shell, prefer the **local CLI path** in [deploy.md](deploy.md): keep the
+source in a directory, edit it with your file tools, and deploy with
+`executor apps` (npm `executor@beta`). The pinned `apps` package from npm
+supplies types and `framework-reference.json`, so writing code needs no MCP.
+Use MCP only to connect accounts and call the deployed app. Without a shell,
+build through `execute`; source then travels as data inside tool calls.
+
 ## Read only the topics needed
 
 | Task                                                         | Reference                          |
@@ -19,7 +28,7 @@ the framework. An app's installed name is separate from its source definition.
 | Create, save, deploy, update or select dependencies          | [deploy.md](deploy.md)             |
 | Build a React UI and subscribe to data                       | [ui.md](ui.md)                     |
 | Store, query or modify app data                              | [storage.md](storage.md)           |
-| Connect provider accounts                                    | [accounts.md](accounts.md)         |
+| Connect provider accounts and check they work                | [accounts.md](accounts.md)         |
 | Add a service: MCP, OpenAPI, GraphQL or another API          | [integrations.md](integrations.md) |
 | Handle webhooks                                              | [webhooks.md](webhooks.md)         |
 | Run workflows or scheduled mutations                         | [workflows.md](workflows.md)       |

@@ -56,7 +56,11 @@ export interface BoundContext<Slots extends AccountSlots> {
   readonly workflows: WorkflowReads;
   /** Ask for user input during this tool call. Unavailable during discovery and after the invocation closes. */
   readonly elicit: Elicit;
-  /** Invocation-owned HTTP requests with trace propagation and host cancellation. */
+  /**
+   * Invocation-owned HTTP requests with trace propagation and host cancellation. It lasts until the
+   * invocation and every app cache refresh it started in the background have ended, so a catalog
+   * loader given this fetch can refresh after the reply.
+   */
   readonly fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   /** Host cancellation for this invocation. Pass it to fetch and other interruptible APIs. */
   readonly signal: AbortSignal;

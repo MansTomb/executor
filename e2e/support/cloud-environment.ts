@@ -179,7 +179,7 @@ export const startCloudEnvironment = (input: {
           "--env",
           "POSTGRES_PASSWORD",
           "postgres:17",
-          // Local Hyperdrive is a TCP passthrough, without the deployed pooler.
+          // The local Worker connects straight to Postgres, without PgBouncer.
           // Parallel browser requests and their background jobs each own SQL
           // connections; PostgreSQL's default 100 slots rejects startup bursts.
           "-c",

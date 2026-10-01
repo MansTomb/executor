@@ -30,7 +30,13 @@ const InviteMember = Schema.Struct({
   role: Schema.Literals(["admin", "member"]),
 });
 const Membership = Schema.Struct({ role: OrganizationRole });
-const StoredInvitation = Schema.Struct({ role: InviteMember.fields.role });
+const StoredInvitation = Schema.Struct({
+  role: InviteMember.fields.role,
+  status: Schema.String,
+  organizationId: Schema.NonEmptyString,
+});
+const JoinedMember = Schema.Struct({ organizationId: Schema.NonEmptyString });
+const JoinedOrganization = Schema.Struct({ name: Schema.String });
 const SentInvitation = Schema.Struct({
   id: Schema.NonEmptyString,
   email: Schema.NonEmptyString,
@@ -121,20 +127,46 @@ export const explicitOrganizationAuth = {
               if (session === null) throw new APIError("UNAUTHORIZED");
               // Old pending invitations can predate the request role guard. Native
               // acceptance copies their stored role directly into a new membership.
-              const stored = Schema.decodeUnknownOption(StoredInvitation)(
-                await context.context.adapter.findOne({
-                  model: "invitation",
-                  where: [
-                    { field: "id", value: invitation.value.invitationId },
-                    { field: "email", value: session.user.email.toLowerCase() },
-                  ],
-                  select: ["role"],
-                }),
-              );
+              const row = await context.context.adapter.findOne<Record<string, unknown>>({
+                model: "invitation",
+                where: [
+                  { field: "id", value: invitation.value.invitationId },
+                  { field: "email", value: session.user.email.toLowerCase() },
+                ],
+              });
+              const stored = Schema.decodeUnknownOption(StoredInvitation)(row);
               if (Option.isNone(stored))
                 throw new APIError("BAD_REQUEST", {
                   message: "This invitation is invalid. Ask an administrator for a new invitation.",
                 });
+              // Reopening the link after joining repeats an acceptance that already
+              // happened. Native acceptance only takes pending invitations, so answer
+              // with the recipient's current membership, marked so the page can say so.
+              if (stored.value.status === "accepted") {
+                const member = await context.context.adapter.findOne<Record<string, unknown>>({
+                  model: "member",
+                  where: [
+                    { field: "userId", value: session.user.id },
+                    { field: "organizationId", value: stored.value.organizationId },
+                  ],
+                });
+                const organization = Schema.decodeUnknownOption(JoinedOrganization)(
+                  await context.context.adapter.findOne({
+                    model: "organization",
+                    where: [{ field: "id", value: stored.value.organizationId }],
+                    select: ["name"],
+                  }),
+                );
+                if (
+                  Option.isSome(Schema.decodeUnknownOption(JoinedMember)(member)) &&
+                  Option.isSome(organization)
+                )
+                  return context.json({
+                    invitation: row,
+                    member,
+                    alreadyMember: { name: organization.value.name },
+                  });
+              }
               return { context: { body: invitation.value } };
             }
             // The invitation identifies the organization; Better Auth checks its current membership and cancel permission.

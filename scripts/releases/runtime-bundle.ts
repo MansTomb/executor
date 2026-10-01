@@ -290,11 +290,16 @@ else process.exitCode = result.status ?? 1;
         yield* fs.rename(path.join(directory, file), destination);
       }
     }
-    for (const [name, directory, resource] of [
-      ["@executor-js/app-templates", path.join(root, "packages/app-templates"), "executor"],
-      ["apps", path.join(root, "packages/apps/dist"), "framework-reference.json"],
+    // Bundled dependencies must also be published: bun and yarn resolve them from the
+    // registry. Private resources sit beside the bundle instead, where resolution from
+    // runtime/*.mjs finds them first, and are never declared as dependencies.
+    for (const [name, directory, resource, published] of [
+      ["@executor-js/app-templates", path.join(root, "packages/app-templates"), "executor", false],
+      ["apps", path.join(root, "packages/apps/dist"), "framework-reference.json", true],
     ] as const) {
-      const destination = path.join(stage, "node_modules", name);
+      const destination = published
+        ? path.join(stage, "node_modules", name)
+        : path.join(output, "node_modules", name);
       yield* fs.makeDirectory(destination, { recursive: true });
       yield* fs.copy(path.join(directory, resource), path.join(destination, resource));
       const pkg = Schema.decodeUnknownSync(
@@ -310,7 +315,7 @@ else process.exitCode = result.status ?? 1;
         path.join(destination, "package.json"),
         JSON.stringify({ name, version, exports: pkg.exports }),
       );
-      dependencies[name] = version;
+      if (published) dependencies[name] = version;
       licenseDirectories.add(directory);
     }
     // Keep full license files for bundled code, as well as esbuild's inline/external notices.

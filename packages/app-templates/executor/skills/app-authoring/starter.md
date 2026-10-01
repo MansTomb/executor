@@ -35,7 +35,10 @@ the affected files. Submit the complete file list with its expected revision.
 An `execute` call does not retain variables for the next call; fetch the source
 again when needed. Preserve unrelated files and edits.
 
-If local files are useful, keep one working copy and serialize their content
-with JSON when preparing a tool payload. Do not rewrite valid TypeScript just
+With a shell and the CLI, read the same example from
+`node_modules/apps/framework-reference.json` under `examples["live-inbox"]`.
+Write its `files` into a local app directory once, then edit and deploy them
+with `executor apps` as described in [deploy.md](deploy.md). Over MCP only, keep one working copy and serialize its
+content with JSON when preparing a tool payload. Do not rewrite valid TypeScript just
 to remove backticks or `${...}`. See the source transport guidance in
 [deploy.md](deploy.md).

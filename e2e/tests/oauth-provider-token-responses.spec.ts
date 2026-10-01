@@ -1,7 +1,7 @@
 /**
  * Sign in and renew against a loopback issuer that answers with the token responses real services
  * send: Slack's `bot` type, Shopify and Mailchimp without a type, null or array members, and
- * an empty scope.
+ * an empty scope. Declared options read Slack's nested user grant and send JSON token requests.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
@@ -47,6 +47,22 @@ const slack: TokenShape = (tokens) => ({
   is_enterprise_install: false,
   ...(tokens.expires_in === undefined ? {} : { expires_in: tokens.expires_in }),
   ...(tokens.refresh_token === undefined ? {} : { refresh_token: tokens.refresh_token }),
+});
+/** Slack's `oauth.v2.access` answer for a user-only install: the grant is under `authed_user`. */
+const slackUser: TokenShape = (tokens) => ({
+  ok: true,
+  app_id: "A0SYNTHETIC",
+  authed_user: {
+    id: "U0SYNTHETIC",
+    scope: "search:read,chat:write",
+    access_token: tokens.access_token,
+    token_type: "user",
+    ...(tokens.expires_in === undefined ? {} : { expires_in: tokens.expires_in }),
+    ...(tokens.refresh_token === undefined ? {} : { refresh_token: tokens.refresh_token }),
+  },
+  team: { id: "T0SYNTHETIC", name: "Synthetic" },
+  enterprise: null,
+  is_enterprise_install: false,
 });
 /** Shopify's expiring offline token: no `token_type`, comma-separated scopes. */
 const shopify: TokenShape = (tokens) => ({
@@ -98,22 +114,28 @@ const dpop =
 const serviceApp = (
   issuer: Effect.Success<typeof oauthSetupIssuer>,
   kind: "declared" | "discovered",
-  options: { readonly scope?: boolean } = {},
+  options: {
+    readonly scope?: boolean;
+    /** Further OAuth options the provider declares. */
+    readonly oauth?: Readonly<Record<string, unknown>>;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors,
       http = yield* HttpClient.HttpClient;
     const prefix = `/api/organizations/${actors.organization.id}`;
-    const oauth =
-      kind === "declared"
+    const oauth = {
+      ...(kind === "declared"
         ? {
             authorizationUrl: `${issuer.origin}/authorize`,
             tokenUrl: `${issuer.origin}/token`,
             scopes: ["openid", "read"],
           }
         : // Authorization-server discovery and dynamic registration; the resource advertises nothing.
-          { discover: issuer.origin, scopes: ["openid", "read"] };
+          { discover: issuer.origin, scopes: ["openid", "read"] }),
+      ...options.oauth,
+    };
     const method =
       options.scope === true
         ? `oauth2({ ...${JSON.stringify(oauth)}, response: object({ access_token: string(), scope: string() }) })`
@@ -379,8 +401,116 @@ const emptyScope = (context: TestContext) =>
     }),
   );
 
+/**
+ * A provider that declares `tokenResponse: { path: "authed_user" }` signs in and renews with
+ * Slack's user-only response, and app code sees the nested grant's scopes space-separated. A
+ * top-level grant with a scope still wins. Without the option the nested grant is not read.
+ */
+const nestedTokenResponse = (context: TestContext) =>
+  withHostedCase(
+    context,
+    Effect.gen(function* () {
+      const issuer = yield* oauthSetupIssuer;
+      const nested = yield* serviceApp(issuer, "declared", {
+        scope: true,
+        oauth: { tokenResponse: { path: "authed_user" } },
+      });
+      const cases: ReadonlyArray<{
+        readonly name: string;
+        readonly tokenShape: TokenShape;
+        readonly scope: string;
+      }> = [
+        { name: "Slack user token", tokenShape: slackUser, scope: "search:read chat:write" },
+        // A bot install answers with a top-level grant and scope, and only the user's ID nested.
+        { name: "Slack bot token beside a nested user", tokenShape: slack, scope: "read,write" },
+      ];
+      for (const scenario of cases) {
+        const label = scenario.name;
+        yield* issuer.configure({
+          tokenShape: scenario.tokenShape,
+          refreshTokens: true,
+          // Inside the host's 30-second refresh window, so each call renews once.
+          expiresIn: 10,
+        });
+        const signedIn = yield* nested.signIn(label);
+        expect(signedIn.completed.status, `${label}: ${JSON.stringify(signedIn.failure)}`).toBe(
+          200,
+        );
+        // Renew twice: the second renewal presents the refresh token the first one kept.
+        const presented: string[] = [];
+        for (const call of [1, 2]) {
+          const { response, refreshes } = yield* nested.read(signedIn);
+          expect(response.status, `${label} call ${call}: ${JSON.stringify(response.body)}`).toBe(
+            200,
+          );
+          expect(refreshes, `${label} call ${call}`).toBe(1);
+          const echo = yield* body(ScopeEcho, response);
+          expect(echo.refreshed, `${label} call ${call}`).toBe(true);
+          expect(echo.authorization, `${label} call ${call}`).toMatch(
+            /^Bearer synthetic-refreshed-token-\d+$/,
+          );
+          expect(echo.scope, `${label} call ${call}`).toBe(scenario.scope);
+          presented.push(echo.authorization ?? "");
+        }
+        expect(presented[1], label).not.toBe(presented[0]);
+      }
+
+      // The same response without the declared option has no access token Executor can read.
+      const standard = yield* serviceApp(issuer, "declared", { scope: true });
+      yield* issuer.configure({ tokenShape: slackUser, refreshTokens: true, expiresIn: 10 });
+      const refused = yield* standard.signIn("Slack user token without the option");
+      expect(refused.completed.status, JSON.stringify(refused.failure)).toBe(400);
+      expect(refused.failure._tag).toBe("OAuthCompletionFailed");
+    }),
+  );
+
+/**
+ * A provider that declares `tokenRequestFormat: "json"` signs in and renews against a service
+ * that reads only JSON token requests. Without the option, the form request is refused.
+ */
+const jsonTokenRequests = (context: TestContext) =>
+  withHostedCase(
+    context,
+    Effect.gen(function* () {
+      const issuer = yield* oauthSetupIssuer;
+      yield* issuer.configure({ tokenRequestFormat: "json", refreshTokens: true, expiresIn: 10 });
+      const json = yield* serviceApp(issuer, "declared", {
+        oauth: { tokenRequestFormat: "json" },
+      });
+      const sent = (yield* issuer.metrics).tokenContentTypes.length;
+      const signedIn = yield* json.signIn("JSON token requests");
+      expect(
+        signedIn.completed.status,
+        `${JSON.stringify(signedIn.failure)} checks=${JSON.stringify((yield* issuer.metrics).tokenChecks)}`,
+      ).toBe(200);
+      for (const call of [1, 2]) {
+        const { response, refreshes } = yield* json.read(signedIn);
+        expect(response.status, `call ${call}: ${JSON.stringify(response.body)}`).toBe(200);
+        expect(refreshes, `call ${call}`).toBe(1);
+        expect(
+          (yield* body(Echo, response)).authorization,
+          `call ${call}: ${JSON.stringify((yield* issuer.metrics).refreshChecks)}`,
+        ).toMatch(/^Bearer synthetic-refreshed-token-\d+$/);
+      }
+      // The exchange and every renewal, including any during profile setup, were JSON.
+      const types = (yield* issuer.metrics).tokenContentTypes.slice(sent);
+      expect(types.length).toBeGreaterThanOrEqual(3);
+      expect(types).toEqual(types.map(() => "application/json"));
+
+      const form = yield* serviceApp(issuer, "declared");
+      const refused = yield* form.signIn("Form token request");
+      expect(refused.completed.status, JSON.stringify(refused.failure)).toBe(400);
+      expect(refused.failure._tag).toBe("OAuthCompletionFailed");
+      expect((yield* issuer.metrics).tokenContentTypes.at(-1)).toBe(
+        "application/x-www-form-urlencoded",
+      );
+    }),
+  );
+
 layer(HostedLive, { excludeTestServices: true })("OAuth provider token responses", (it) => {
   it.effect(scenarios.oauthDeclaredTokenResponses.title, tokenResponses("declared"));
   it.effect(scenarios.oauthDiscoveredTokenResponses.title, tokenResponses("discovered"));
   it.effect(scenarios.oauthEmptyTokenScope.title, emptyScope);
+  it.effect(scenarios.oauthNestedTokenResponse.title, nestedTokenResponse);
+  it.effect(scenarios.oauthJsonTokenRequests.title, jsonTokenRequests);
 });

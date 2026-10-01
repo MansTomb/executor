@@ -3,7 +3,7 @@
  * provider's check with the account's current credentials; results are kept per account and app.
  */
 import { Clock, Effect, Match, Option, Redacted, Result, Schema } from "effect";
-import { AccountInfo, ProviderError } from "apps/contracts";
+import { AccountInfo, HostOperationFailed, ProviderError } from "apps/contracts";
 import { AccountCheckStatus, type AccountHealth } from "../contracts/account.ts";
 import { SelectedAccounts, type App } from "../contracts/apps.ts";
 import type { Executor } from "../contracts/executor.ts";
@@ -80,6 +80,12 @@ const statusOf = (error: unknown): AccountCheckStatus =>
             Match.exhaustive,
           )
         : "check_failed";
+
+/** The message of an error the app's check threw. Other failures keep their causes private. */
+const messageOf = (error: unknown): string | undefined =>
+  Schema.is(HostOperationFailed)(error) && error.message !== undefined && error.message !== ""
+    ? error.message
+    : undefined;
 
 export const makeAccountHealth = (
   db: Query,
@@ -322,9 +328,13 @@ export const makeAccountHealth = (
         .pipe(Effect.timeout(checkMillis), Effect.result);
       if (Result.isFailure(outcome) && Schema.is(StorageError)(outcome.failure))
         return yield* Effect.fail(outcome.failure);
+      if (Result.isSuccess(outcome))
+        return { status: "healthy" as const, info: outcome.success.accountInfo ?? null };
+      const message = messageOf(outcome.failure);
       return {
-        status: Result.isSuccess(outcome) ? ("healthy" as const) : statusOf(outcome.failure),
-        info: Result.isSuccess(outcome) ? (outcome.success.accountInfo ?? null) : null,
+        status: statusOf(outcome.failure),
+        info: null,
+        ...(message === undefined ? {} : { message }),
       };
     }).pipe(Effect.withSpan("sdk.accounts.checkCredentials"));
 

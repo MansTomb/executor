@@ -7,6 +7,7 @@ import {
   Layer,
   Option,
   Ref,
+  Result,
   Schedule,
   Schema,
   Scope,
@@ -140,16 +141,16 @@ export const prepareCloudScenarios = (input: {
     const cleanupScope = yield* Scope.fork(yield* Scope.Scope, "parallel");
     const cleanup = yield* Semaphore.make(input.workers);
     yield* Console.log(`Preparing ${input.scenarios.length} isolated Cloud organizations.`);
-    const prepared = yield* Effect.forEach(
+    const provisioned = yield* Effect.forEach(
       input.scenarios,
-      ({ title, appOrigin }) =>
-        Effect.gen(function* () {
+      ({ title, appOrigin }) => {
+        const id = randomBytes(16).toString("hex");
+        return Effect.gen(function* () {
           // Organizations are independent. Bound their release fan-out while
           // retaining reverse-order finalization inside each actor layer.
           const scope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
             Scope.close(owned, exit).pipe(cleanup.withPermits(1)),
           ).pipe(Scope.provide(cleanupScope));
-          const id = randomBytes(16).toString("hex");
           const target = yield* startScenario(input.target, title, id);
           const context = yield* Layer.buildWithScope(
             Actors.layer.pipe(
@@ -160,9 +161,19 @@ export const prepareCloudScenarios = (input: {
           );
           const actors = yield* Actors.pipe(Effect.provideContext(context));
           return { title, id, slug: actors.organization.slug, appOrigin };
-        }).pipe(Effect.timeout("60 seconds")),
+        }).pipe(
+          Effect.timeout("60 seconds"),
+          // One organization that is not ready within its deadline is a native setup failure
+          // for its own scenario; the others still run. The suite scope still releases whatever
+          // it created.
+          Effect.mapError((error) => ({ title, id, failure: error._tag })),
+          Effect.result,
+        );
+      },
       { concurrency: input.workers },
     );
+    const prepared = provisioned.filter(Result.isSuccess).map((result) => result.success);
+    const unavailable = provisioned.filter(Result.isFailure).map((result) => result.failure);
     const actorsReadyAt = yield* Clock.currentTimeMillis;
     // All domain requests must begin before waiting on the certificate authority.
     // Waiting inside the provisioning loop would serialize issuance in worker-sized batches.
@@ -171,7 +182,7 @@ export const prepareCloudScenarios = (input: {
     const observations = yield* Ref.make<ReadonlyMap<string, DomainObservation>>(new Map());
     const fs = yield* FileSystem.FileSystem;
     yield* Console.log(
-      `Cloud actors ready: ${Math.round((actorsReadyAt - started) / 1000)}s; waiting for ${domains.length} HTTPS domains.`,
+      `Cloud actors ready: ${Math.round((actorsReadyAt - started) / 1000)}s (${prepared.length}/${input.scenarios.length} organizations); waiting for ${domains.length} HTTPS domains.`,
     );
     yield* Effect.forEach(
       domains,
@@ -194,6 +205,7 @@ export const prepareCloudScenarios = (input: {
             JSON.stringify(
               {
                 organizations: prepared.length,
+                unavailableOrganizations: unavailable,
                 domains: domains.length,
                 readyDomains,
                 origins: domains.map(({ id, title, slug }) => ({
@@ -223,11 +235,12 @@ export const prepareCloudScenarios = (input: {
     );
     const readyIds = yield* Ref.get(ready);
     return PreparedScenarios.make(
-      Object.fromEntries(
-        prepared.map(({ title, id, appOrigin }) => [
+      Object.fromEntries([
+        ...prepared.map(({ title, id, appOrigin }) => [
           title,
           { id, status: !appOrigin || readyIds.has(id) ? "ready" : "domain_unavailable" },
         ]),
-      ),
+        ...unavailable.map(({ title, id }) => [title, { id, status: "organization_unavailable" }]),
+      ]),
     );
   });

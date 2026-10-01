@@ -1,6 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Effect, FileSystem, Path, Redacted, Schedule, Schema } from "effect";
+import { Config, Effect, FileSystem, Layer, Path, Redacted, Schedule, Schema } from "effect";
+import { FetchHttpClient } from "effect/unstable/http";
 import { _electron, chromium } from "playwright";
 import { randomBytes, randomUUID } from "node:crypto";
 import { driver } from "../support/platform.ts";
@@ -11,6 +12,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Collector, SpanQuery } from "../support/contracts.ts";
 import { withApps } from "../support/apps-release.ts";
+import { localNpmRegistry } from "../support/npm-registry.ts";
 
 it.live("packaged desktop starts without the workspace and retains apps after restart", () =>
   Effect.scoped(
@@ -26,6 +28,8 @@ it.live("packaged desktop starts without the workspace and retains apps after re
         Config.withDefault(process.env.PATH ?? ""),
       );
       const port = yield* freePort;
+      // The desktop server deploys the bundled Executor app, which pins this checkout's apps release.
+      const registry = yield* localNpmRegistry;
       const origin = `http://127.0.0.1:${port}`;
       const mcpUrl = new URL(`${origin}/mcp`);
       const env = {
@@ -49,6 +53,7 @@ it.live("packaged desktop starts without the workspace and retains apps after re
         EXECUTOR_PORT: String(port),
         EXECUTOR_DESKTOP_DATA_DIR: path.join(directory, "data"),
         EXECUTOR_DESKTOP_PROFILE_DIR: path.join(directory, "profile"),
+        EXECUTOR_NPM_REGISTRY: registry.url,
       };
       let appId = "";
       let appSlug = "";
@@ -382,5 +387,5 @@ createRoot(root).render(<App />);`,
         yield* checkpoint("Desktop closed");
       }
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );

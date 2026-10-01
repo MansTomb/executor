@@ -7,6 +7,7 @@ import { Context, Effect, Layer, Option, Schema, Tracer } from "effect";
 import { Kysely, PostgresDialect, type PostgresPool, type QueryId } from "kysely";
 import type { Pool } from "pg";
 import { cloudDatabaseConnection } from "./database.ts";
+import { ObjectDatabase } from "./object-database.ts";
 
 const DriverCode = Schema.Struct({
   code: Schema.String.check(Schema.isPattern(/^(?:[0-9A-Z]{5}|E[A-Z_]{2,40})$/)),
@@ -145,16 +146,22 @@ export const boundAuthAdapter = <A extends object>(adapter: A, bind: <B>(run: ()
     },
   });
 
-/** One Kysely instance per isolate; each invocation opens and closes its own pool. */
+/**
+ * One Kysely instance per isolate. Each Worker invocation opens and closes its own pool; calls
+ * into a Durable Object use the object's held pool.
+ */
 export const cloudAuthDatabase = Layer.effect(
   AuthDatabase,
   Effect.gen(function* () {
     const connection = yield* cloudDatabaseConnection;
     const resources = yield* makeExecutionMemo(
       Effect.gen(function* () {
-        // Alchemy's request-owned pg pool, closed when the event settles.
-        const url = yield* connection.connectionString;
-        const pool = yield* openPostgresPool(Effect.succeed(url));
+        // A Durable Object lends its held pool. Otherwise Alchemy's request-owned pg pool,
+        // closed when the event settles.
+        const object = yield* Effect.serviceOption(ObjectDatabase);
+        const pool = Option.isSome(object)
+          ? yield* object.value.auth
+          : yield* openPostgresPool(Effect.succeed(yield* connection.connectionString));
         const pending: Array<Promise<unknown>> = [];
         // Added after the pool, so it runs first: background SQL still has its socket.
         yield* Effect.addFinalizer(() => Effect.promise(() => Promise.allSettled(pending)));

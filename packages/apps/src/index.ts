@@ -10,8 +10,9 @@ import type { WebhookContext } from "./contracts/context.ts";
 import { type JsonResponse as NativeResponse, ResponseDecodeError } from "./contracts/http.ts";
 import {
   OAuth2AccessToken as NativeAccessToken,
-  type OAuth2Config,
+  type OAuth2Config as NativeOAuth2Config,
   type OAuth2Method as NativeOAuth2Method,
+  type ReservedAuthorizationParam,
   type SecretsMethod as NativeSecretsMethod,
 } from "./contracts/provider.ts";
 import type { Webhook as NativeWebhook } from "./contracts/webhooks.ts";
@@ -54,8 +55,8 @@ export {
   type AuthMethodData,
   type AuthMethods,
   type ManyAccounts,
-  type OAuth2Config,
   type Provider,
+  type ReservedAuthorizationParam,
 } from "./contracts/provider.ts";
 export { defineProvider, type ProviderOptions } from "./implementation/provider.ts";
 export { accountRouter } from "./implementation/account-router.ts";
@@ -81,6 +82,19 @@ export type OAuth2Method<Response extends Schema<unknown, boolean>> = NativeOAut
 /** Default OAuth fields visible to app code. Host-only grants and clients stay private. */
 export const OAuth2AccessToken = wrap(NativeAccessToken, false);
 
+/**
+ * OAuth options as authors write them. `authorizationParams` naming a host-owned protocol
+ * parameter such as `state` or `scope` is a type error as well as a declaration failure.
+ */
+export type OAuth2Config = WithoutReservedParams<NativeOAuth2Config>;
+type WithoutReservedParams<Config> = Config extends unknown
+  ? "authorizationParams" extends keyof Config
+    ? Config & {
+        readonly authorizationParams?: { readonly [Key in ReservedAuthorizationParam]?: never };
+      }
+    : Config
+  : never;
+
 /** Declare a secrets method without requiring an Effect schema from the author. */
 export const secrets = <const F extends Fields>(options: {
   readonly label: string;
@@ -88,7 +102,11 @@ export const secrets = <const F extends Fields>(options: {
 }): SecretsMethod<ObjectSchema<F>> =>
   nativeSecrets({ label: options.label, fields: decoderOf(options.fields) });
 
-/** Declare OAuth discovery/endpoints and an optional app-visible response projection. */
+/**
+ * Declare OAuth discovery/endpoints and an optional app-visible response projection.
+ * `authorizationParams` adds service-defined sign-in parameters; a declared `authorizationUrl`
+ * keeps its own query. Neither can set host-owned parameters, and each parameter appears once.
+ */
 export function oauth2(options: OAuth2Config): OAuth2Method<typeof OAuth2AccessToken>;
 export function oauth2<Response extends Schema<unknown, boolean>>(
   options: OAuth2Config & {

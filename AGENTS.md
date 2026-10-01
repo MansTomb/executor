@@ -67,10 +67,12 @@ or the scenario instead.
 For application features, fixes, and behavior-preserving refactors, use the
 [executor-e2e skill](.agents/skills/executor-e2e/SKILL.md).
 
-For authenticated development testing, use the local-only
-[test account command](notes/test-accounts.md). It provisions synthetic users,
-organization roles, and short-lived sessions for self-host and cloud dev.
-Keep session files private and out of tool output.
+For authenticated testing and bug reproduction, use
+[test accounts](notes/test-accounts.md). The fixture command provisions
+synthetic users, organization roles and short-lived sessions for self-host,
+cloud dev and running test stages. On production, agents sign in through real
+email codes to `@agents.executor.engineering` inboxes. Keep session files
+private and out of tool output.
 
 Run `bun run format` before committing. `bun run check` runs the format check,
 `oxlint`, and the typecheck; CI-style verification should use it. Lint rules
@@ -92,7 +94,38 @@ An earlier PR run on the same ref is cancelled; `main` runs finish so every merg
 has a baseline. The jobs live in `.github/workflows/checks.yml`,
 a `workflow_call` workflow, so another repository can call the same jobs.
 
-A PR run takes about seven minutes. Wait for it once; do not poll post-merge
+### Choosing a PR's E2E scenarios
+
+A pull request runs only the E2E scenarios it selects. Pushes to `main` run the
+full suite. The static checks (`check`, `apps-version`, `self-host-native`) always
+run. Put exactly one fenced `e2e` block in the PR description, listing spec files
+from `e2e/tests/`:
+
+````md
+```e2e
+groups.spec.ts
+invitation-roles.spec.ts
+```
+````
+
+Spec files the PR adds or changes are always included. Write `none` for a change
+no scenario exercises, such as documentation. Write `all` for cross-cutting changes:
+the e2e harness (`e2e/sdk`, `e2e/support`, `e2e/setup.ts`), the toolchain, lockfile or
+workflows, shared runtime, storage or auth, or anything whose callers you cannot
+enumerate. A description without the block runs the full suite. An unknown file name
+fails the `select` job. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
+into each job's scenario list; the run summary shows it.
+
+Choose from the actual callers of the changed code. Search `e2e/tests/` for the
+routes, tools and UI the change touches, and include every file that exercises them
+on any target. Too narrow a selection only defers the failure to `main`. The `select`
+job reads the live description, so after editing it, rerun the whole workflow
+(`gh run rerun <run-id>`), not only failed jobs.
+
+A failure on `main` is a regression or a flake that a PR selection missed. Fixing
+it takes priority over new work that touches the same area.
+
+A PR run takes at most about seven minutes. Wait for it once; do not poll post-merge
 suites before handing off. When a job fails in a scenario the change does not
 touch:
 
@@ -107,34 +140,37 @@ A flake is a bug in the product or the scenario, not noise. Never add retries,
 longer deadlines or skips to make a run pass.
 
 `.github/workflows/cloud-tests.yml` runs deployed tests only after pushes to `main`.
-It finishes the active run and coalesces pending pushes. The functional job runs
-before the separate MCP memory soak job; manual deployed jobs share the same
-non-cancelling concurrency group. Each job owns a disposable Neon staging environment.
-The soak job keeps three full-duration probes and preserves their 20-minute deadlines.
-The shared-session and distributed-session probes are temporarily skipped while their
-unexpected stream endings remain unresolved; the reconnect-burst probe stays enabled.
-Functional scenarios retain 60-second deadlines. Both jobs own their teardown and evidence artifacts. These post-merge
+It finishes the active run and coalesces pending pushes. Manual deployed jobs share
+the same non-cancelling concurrency group. Each job owns a disposable Neon staging environment.
+Scenarios retain 60-second deadlines. The job owns its teardown and evidence artifacts. These post-merge
 checks are not required PR checks. Agents can run targeted deployments through
 the same SDK and CLI on demand.
 
 Every push to `main` deploys production directly, without a deployed-test gate.
 The deployed suite remains available for manual dispatch with Neon or PlanetScale.
 
-Blacksmith runners run five check jobs. Local and Cloud E2E jobs use
-`blacksmith-16vcpu-ubuntu-2404`. Self-host uses a 12-vCPU M4 Mac for its 16 concurrent
-product servers and browsers. The load job uses a 6-vCPU M4 Mac for its
-single-threaded PGlite workload. Static checks use 4 vCPUs.
+Blacksmith Linux runners run five check jobs. Local, self-host and Cloud E2E jobs use
+`blacksmith-16vcpu-ubuntu-2404`. The load job also uses 16 vCPUs: on 4 vCPUs the
+product server, PGlite and the test driver contend. Its inventory case has a 120-second
+test limit because its body takes 40-48s on CI. Static checks use 4 vCPUs.
+
+Do not run CI checks on macOS runners. They cost 5-20x as much per minute as Linux
+runners and were most of the CI bill, and no check needs macOS. Fix slow or flaky
+scenarios on Linux instead of moving them to a Mac.
 
 - `check` runs `bun run check`: the format check, `oxlint`, the typecheck, the
   no-tests-outside-`e2e/` check and the e2e boundary check.
+- `select` runs [`e2e/ci-selection.ts`](e2e/ci-selection.ts) and gives each e2e job
+  its `--test-name` pattern, or skips the job when none of its scenarios is selected.
+  Its job patterns hold the exclusions and splits below.
 - `e2e-local` and `e2e-self-host` run `bun run e2e:prepare`, then `e2e:local`
-  under `xvfb-run` and `e2e:self-host` headlessly on macOS. The self-host run excludes the Claude
+  and `e2e:self-host` under `xvfb-run`. The self-host run excludes the Claude
   Code MCP scenario, which needs a model API key that CI does not hold.
 - `e2e-self-host-scale` runs the 1,000-account workload and then the 7,000-tool MCP
   catalog scenario and the slow and stalled tool listing scenarios on its own runner,
   in parallel with the functional jobs. This preserves the four concurrent writers,
-  the catalog and listing latency bounds and the 60-second deadline without competing
-  with 15 independent product servers.
+  the catalog and listing latency bounds and the inventory case's 120-second limit without
+  competing with the functional job's product servers.
 - `e2e-cloud` runs Cloud onboarding and delivered observability scenarios. It starts the local Cloud
   Worker, a throwaway Postgres container and the service emulators, so it needs
   Docker but no credentials.
@@ -144,6 +180,9 @@ API/MCP outcomes, workflow correlation, browser failures, app traces and analyti
 Deployed tests run through `bun run e2e:deployed`; the runner owns provisioning
 and teardown. The release workflow builds and tests Docker images on release PRs
 and manual dispatch. Publication requires an explicit channel dispatch from main.
+Release PRs build and test the Linux and Windows targets only. The macOS targets run
+on manual dispatch, where they are built, signed, notarized and tested. macOS runners
+cost 5-20x as much as Linux runners, so keep them off pull requests.
 
 A failed e2e job uploads raw reports and server logs. Product database files,
 runtime dependencies and private `actors.json` sessions are excluded.

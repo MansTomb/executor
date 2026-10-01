@@ -207,7 +207,7 @@ type Verdict =
 
 /**
  * Whether the entered credentials work, as the app's check found. The line keeps its height while
- * empty, so a result never moves the form.
+ * empty, so a short result never moves the form; the app's own explanation of a failure may wrap.
  */
 function CredentialVerdict({
   verdict,
@@ -261,12 +261,22 @@ function CredentialVerdict({
             "upstream_unavailable",
             () => ["warn", <>Couldn't reach {provider} to check it</>] as const,
           ),
-          Match.when("check_failed", () => ["warn", <>Couldn't verify this {label}</>] as const),
+          Match.when(
+            "check_failed",
+            () =>
+              [
+                "warn",
+                <>
+                  Couldn't verify this {label}
+                  {shown.message !== undefined ? `: ${shown.message}` : null}
+                </>,
+              ] as const,
+          ),
           Match.exhaustive,
         );
   return (
     <p
-      className={`-mt-1 flex h-4 items-center gap-1.5 text-xs transition-opacity duration-150 ${
+      className={`-mt-1 flex min-h-4 items-start gap-1.5 text-xs transition-opacity duration-150 ${
         shown === undefined ? "opacity-0" : "opacity-100"
       } ${tone === "bad" ? "text-destructive" : "text-muted-foreground"}`}
       role="status"
@@ -281,14 +291,14 @@ function CredentialVerdict({
             strokeWidth={2}
             className={
               tone === "good"
-                ? "shrink-0 text-emerald-600 dark:text-emerald-400"
+                ? "mt-px shrink-0 text-emerald-600 dark:text-emerald-400"
                 : tone === "bad"
-                  ? "shrink-0"
-                  : "shrink-0 text-amber-600 dark:text-amber-400"
+                  ? "mt-px shrink-0"
+                  : "mt-px shrink-0 text-amber-600 dark:text-amber-400"
             }
             aria-hidden
           />
-          <span className="truncate">{message}</span>
+          <span className="line-clamp-3 min-w-0 break-words">{message}</span>
         </>
       )}
     </p>

@@ -29,7 +29,7 @@ export function AccountForm({
   readonly checkWith?: AppId | undefined;
   readonly provider: Provider;
   readonly onSaved: (account: Account) => void;
-  readonly returnTo?: Omit<typeof OAuthAppReturn.Type, "connection">;
+  readonly returnTo?: typeof OAuthAppReturn.Type;
   readonly onPendingChange?: (pending: boolean) => void;
 }) {
   const add = useAtomSet(addAccountAtom, { mode: "promiseExit" });

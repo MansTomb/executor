@@ -1,13 +1,14 @@
 /**
- * A loopback npm registry for product builds. It serves the `apps` package staged from this checkout
+ * A local npm registry for product builds. It serves the `apps` package staged from this checkout
  * (`bun run e2e:prepare`) as the version the hosts ship, which new apps pin, so scenarios run before
  * that version is published. Every other request, including every published `apps` release, is
- * forwarded to the public registry unchanged.
+ * forwarded to the public registry unchanged. Products on this machine reach it on loopback;
+ * released images reach it from their containers through Docker's host gateway.
  */
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const upstream = "https://registry.npmjs.org";
@@ -26,8 +27,8 @@ interface Served {
   readonly bytes: Uint8Array;
 }
 
-/** Start the registry for the scope and return its origin. */
-export const localNpmRegistry = Effect.gen(function* () {
+/** Start the registry for the scope on `hostname` and return the port it listens on. */
+const serveRegistry = Effect.fnUntraced(function* (hostname: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -126,11 +127,8 @@ export const localNpmRegistry = Effect.gen(function* () {
         new Promise<ReturnType<typeof createServer>>((resolve, reject) => {
           const server = createServer((request, response) => {
             const url = request.url ?? "/";
-            const address = server.address();
-            const base =
-              address === null || typeof address === "string"
-                ? ""
-                : `http://127.0.0.1:${address.port}`;
+            // Archive links use the origin the client addressed, loopback or a container's gateway.
+            const base = `http://${request.headers.host ?? ""}`;
             // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- node:http request handlers are plain callbacks
             Effect.runPromise(reply(url, base)).then(
               (result) => {
@@ -144,7 +142,7 @@ export const localNpmRegistry = Effect.gen(function* () {
             );
           });
           server.once("error", reject);
-          server.listen(0, "127.0.0.1", () => resolve(server));
+          server.listen(0, hostname, () => resolve(server));
         }),
       catch: () => new RegistryFailed({ reason: "registry listener" }),
     }),
@@ -153,5 +151,35 @@ export const localNpmRegistry = Effect.gen(function* () {
   const address = server.address();
   if (address === null || typeof address === "string")
     return yield* new RegistryFailed({ reason: "registry address" });
-  return { url: `http://127.0.0.1:${address.port}`, version: manifest.version };
+  return { port: address.port, version: manifest.version };
 });
+
+/** Start the registry for the scope on loopback and return its origin. */
+export const localNpmRegistry = serveRegistry("127.0.0.1").pipe(
+  Effect.map(({ port, version }) => ({ url: `http://127.0.0.1:${port}`, version })),
+);
+
+/** The name released images resolve to the machine running the suite. */
+const gatewayHost = "npm-registry.e2e.internal";
+
+/**
+ * Start the registry for the scope where released images can reach it. Docker's `host-gateway`
+ * is the host's address on the container network, so the registry listens on every interface.
+ * `docker` holds the `docker run` arguments that point a product container at it.
+ */
+export const containerNpmRegistry = serveRegistry("0.0.0.0").pipe(
+  Effect.provide(FetchHttpClient.layer),
+  Effect.map(({ port, version }) => {
+    const url = `http://${gatewayHost}:${port}`;
+    return {
+      url,
+      version,
+      docker: [
+        "--add-host",
+        `${gatewayHost}:host-gateway`,
+        "--env",
+        `EXECUTOR_NPM_REGISTRY=${url}`,
+      ] as const,
+    };
+  }),
+);

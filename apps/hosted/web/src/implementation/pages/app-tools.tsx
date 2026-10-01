@@ -8,7 +8,7 @@ import { Cause, Option, Schema } from "effect";
 import { UnexpectedError, type UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
-import { ToolRunner } from "@executor-js/ui/dashboard/tool-runner";
+import { ToolRunner, toolRunContext } from "@executor-js/ui/dashboard/tool-runner";
 import {
   appToolReadiness,
   unfilledAccountSlots,
@@ -18,7 +18,7 @@ import {
 import { ErrorNotice } from "@executor-js/ui/dashboard/error-notice";
 import { Empty } from "@executor-js/ui/dashboard/common";
 import { AppSectionHeader, AppSectionTitle } from "@executor-js/ui/dashboard/app-section-header";
-import { appError, callToolAtom, toolDetailAtom, toolListAtom } from "../../contracts/apps.ts";
+import { appError, callToolAtom, toolDetailAtom, toolCatalogAtom } from "../../contracts/apps.ts";
 import type { HostedError } from "../../contracts/errors.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
@@ -28,11 +28,14 @@ export function AppTools({
   accounts,
   selected,
   profile,
+  label,
 }: {
   readonly app: App;
   readonly accounts: readonly AccountSummary[];
   readonly selected: string | undefined;
   readonly profile: Profile | undefined;
+  /** The selected profile's name in the page's profile picker. */
+  readonly label: string;
 }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   const navigate = useNavigate();
@@ -79,7 +82,7 @@ export function AppTools({
       )}
       <ToolBrowser
         key={`${app.id}:${app.activeDeployment}:${profile?.id}:${profile?.revision}:${JSON.stringify(profile?.accounts ?? {})}`}
-        query={toolListAtom(catalog)}
+        query={toolCatalogAtom(catalog)}
         detail={(tool) => toolDetailAtom({ ...catalog, tool: tool.name })}
         Failure={ToolsFailure}
         selected={selected}
@@ -112,6 +115,9 @@ export function AppTools({
             })}
             detail={toolDetailAtom({ ...catalog, tool: tool.name })}
             Failure={ToolCallFailure}
+            context={
+              profile === undefined ? undefined : toolRunContext(label, profile.accounts, accounts)
+            }
           />
         )}
       />

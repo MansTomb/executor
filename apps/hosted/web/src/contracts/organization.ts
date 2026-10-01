@@ -58,9 +58,11 @@ const request = <A>(
                 result.error.code === "ORGANIZATION_SLUG_ALREADY_TAKEN" ||
                 result.error.code === "ORGANIZATION_ALREADY_EXISTS"
                   ? "This organization URL is already in use. Choose another."
-                  : result.error.status === 403
-                    ? "You do not have permission to do that."
-                    : "Unable to update the organization. Check the details and try again.",
+                  : result.error.code === "INVITATION_NOT_FOUND"
+                    ? "This invitation has already been used, was revoked, or has expired. Ask an administrator for a new invitation."
+                    : result.error.status === 403
+                      ? "You do not have permission to do that."
+                      : "Unable to update the organization. Check the details and try again.",
             }),
           ),
     ),
@@ -403,17 +405,26 @@ export const updateMemberRoleAtom = Atom.family((organizationId: OrganizationId)
     ),
   ),
 );
-/** Accept only an invitation for the signed-in user's email, enforced by Better Auth. */
+/**
+ * Accept only an invitation for the signed-in user's email, enforced by Better Auth.
+ * `alreadyMember` names the organization when this repeats an earlier acceptance.
+ */
 export const acceptInvitationAtom = BrowserAtoms.fn((invitationId: string, get) =>
   request("acceptInvitation", (options) =>
     organizationOperations(options).acceptInvitation(invitationId),
   ).pipe(
     Effect.flatMap(
       Schema.decodeUnknownEffect(
-        Schema.Struct({ member: Schema.Struct({ organizationId: OrganizationId }) }),
+        Schema.Struct({
+          member: Schema.Struct({ organizationId: OrganizationId }),
+          alreadyMember: Schema.optionalKey(Schema.Struct({ name: Schema.String })),
+        }),
       ),
     ),
-    Effect.map((result) => result.member.organizationId),
+    Effect.map((result) => ({
+      organization: result.member.organizationId,
+      alreadyMember: result.alreadyMember,
+    })),
     Effect.tap(() => Effect.sync(() => get.refresh(organizationsAtom))),
   ),
 );

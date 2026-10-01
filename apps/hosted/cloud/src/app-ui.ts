@@ -14,16 +14,12 @@ import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/h
 import { cloudSentry } from "./implementation/error-reporting.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
 import { postHogBindings } from "./infrastructure/posthog.ts";
-import { cloudAuth } from "./infrastructure/auth.ts";
+import { cloudAppSessions } from "./infrastructure/app-sessions.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
-import { cloudEmail } from "./infrastructure/email.ts";
 import { cloudExecutor } from "./infrastructure/executor.ts";
-import {
-  cloudArtifactsTokens,
-  ArtifactsTokenCoordinator,
-} from "./infrastructure/artifacts-tokens.ts";
+import { cloudArtifactsTokensLive } from "./infrastructure/artifacts-tokens.ts";
 import { sentryBindings } from "./infrastructure/sentry.ts";
-import { billingBindings } from "./infrastructure/billing.ts";
+import { cloudOrigin } from "./infrastructure/stage.ts";
 import { appDataSupervisors } from "./infrastructure/app-data.ts";
 import { Api } from "./infrastructure/api-worker.ts";
 import {
@@ -57,7 +53,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
           scriptName: (yield* Api).workerName,
         }),
         ...(yield* telemetryBindings),
-        ...(yield* billingBindings),
         ...(yield* sentryBindings).env,
       },
       compatibility: {
@@ -77,15 +72,14 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
   Effect.gen(function* () {
     const reportErrors = yield* cloudSentry;
     const analytics = yield* cloudAnalytics;
-    const email = yield* cloudEmail.pipe(Effect.orDie);
-    const auth = yield* cloudAuth(email.send);
+    const appSessions = yield* cloudAppSessions;
     const executor = yield* cloudExecutor(
       yield* appDataSupervisors,
-      yield* cloudArtifactsTokens(yield* ArtifactsTokenCoordinator.from(Api)).pipe(Effect.orDie),
+      yield* cloudArtifactsTokensLive,
     );
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
-    const appUi = hostedAppUi(appAddresses(auth.origin, base));
-    const services = requestServices(Layer.mergeAll(auth.appSessions, executor));
+    const appUi = hostedAppUi(appAddresses(yield* cloudOrigin.pipe(Effect.orDie), base));
+    const services = requestServices(Layer.mergeAll(appSessions, executor));
     const notFound = HttpServerResponse.empty({ status: 404 });
     const protectedRoutes = Layer.mergeAll(
       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),

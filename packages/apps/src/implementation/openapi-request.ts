@@ -163,13 +163,19 @@ function operationPath(op: OpenapiOperation): RegExp {
 }
 const bytes = (value: unknown) =>
   Uint8Array.from(atob(scalar(value)), (char) => char.charCodeAt(0));
+/** What decides whether an account can call an operation: its transport and security. */
+export interface OpenapiOperationAccess {
+  readonly streaming?: true;
+  readonly request: { readonly security: OpenapiOperation["request"]["security"] };
+}
+
 /** Create request helpers from credential-free generated authentication metadata. */
 export function createRequest(config: {
   readonly methods: Readonly<Record<string, readonly CredentialBinding[]>>;
   readonly oauth: readonly string[];
 }) {
   const { methods, oauth } = config;
-  function selectedCredentials(op: OpenapiOperation, account: OpenapiAccount | undefined) {
+  function selectedCredentials(op: OpenapiOperationAccess, account: OpenapiAccount | undefined) {
     if (op.streaming === true) return undefined;
     const authorized: Record<string, unknown> = {};
     if (account !== undefined) {
@@ -371,7 +377,7 @@ export function createRequest(config: {
       ),
     );
   return {
-    available: (op: OpenapiOperation, account: OpenapiAccount | undefined) =>
+    available: (op: OpenapiOperationAccess, account: OpenapiAccount | undefined) =>
       selectedCredentials(op, account) !== undefined,
     call,
   };

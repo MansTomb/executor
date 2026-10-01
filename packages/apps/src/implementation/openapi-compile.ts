@@ -9,7 +9,10 @@ import {
   isOpenapiTextMedia,
   openapiBinaryResultSchema,
 } from "../contracts/openapi.ts";
-import { loadSwaggerClient, type SwaggerClient } from "./swagger-client.ts";
+import {
+  substitute as substituteServerVariables,
+  test as isServerTemplate,
+} from "openapi-server-url-templating";
 import { OpenapiCompileError as TemplateError } from "../contracts/openapi-compile.ts";
 import type { OpenApiImport } from "../contracts/openapi-document.ts";
 import {
@@ -21,13 +24,14 @@ import {
   type GeneratedOperation,
   type GeneratedSecrets,
 } from "../contracts/openapi-document.ts";
-import { openApiDocument, type OpenApiDocument } from "./openapi-document.ts";
+import { documentObject, openApiDocument, type OpenApiDocument } from "./openapi-document.ts";
+import { yieldToRuntime } from "./runtime-yield.ts";
 import { planOperationNames } from "./openapi-names.ts";
 
 function fail(code: TemplateError["code"], reason: string): never {
   throw new TemplateError({ code, reason });
 }
-const record = (value: unknown): JsonObject => Schema.decodeUnknownSync(JsonObject)(value);
+const record = (value: unknown): JsonObject => documentObject(value);
 /** Naming reads only these fields of each declared Operation Object. */
 const OperationNaming = Schema.Struct({
   operationId: Schema.optionalKey(Schema.String),
@@ -43,27 +47,39 @@ function absolute(value: string): string {
   return url.href.replace(/\/$/, "");
 }
 type Server = { readonly url: string; readonly variables?: JsonObject | undefined };
-/** Swagger fills server variables from their defaults. A path- or operation-level server that
- * omits a variable's declaration uses the document server's declaration of the same name.
+/** Server variables take their defaults, as the request builder fills them. A path- or
+ * operation-level server that omits a variable's declaration uses the document server's
+ * declaration of the same name. The address keeps only the scheme, host and path.
  */
-function serverAddress(
-  swagger: SwaggerClient,
-  server: Server,
-  connectUrl: string | undefined,
-  documentServer?: Server,
-): string {
+function serverAddress(server: Server, connectUrl: string | undefined, documentServer?: Server) {
   const variables = { ...documentServer?.variables, ...server.variables };
-  const request = record(
-    swagger.buildRequest({
-      spec: {
-        openapi: "3.1.0",
-        servers: [{ url: server.url, variables }],
-        paths: { "/": { get: { operationId: "server" } } },
-      },
-      operationId: "server",
-    }),
-  );
-  return absolute(new URL(Schema.decodeUnknownSync(Schema.String)(request.url), connectUrl).href);
+  const template = isServerTemplate(server.url, { strict: true })
+    ? substituteServerVariables(
+        server.url,
+        Object.fromEntries(
+          Object.entries(variables).map(([name, variable]) => {
+            const value = Option.getOrUndefined(
+              Schema.decodeUnknownOption(JsonObject)(variable),
+            )?.default;
+            return [name, value === undefined || value === null ? "" : String(value)];
+          }),
+        ),
+        { encoder: (value) => value },
+      )
+    : server.url;
+  let url: URL | undefined;
+  try {
+    url = new URL(template);
+  } catch {
+    url = undefined;
+  }
+  const relative = new URL(template, "https://relative.invalid");
+  const base =
+    url?.protocol && url.host
+      ? `${url.protocol.replace(/\W/g, "")}://${url.host}${url.pathname}`
+      : (url?.pathname ??
+        (template.startsWith("/") ? relative.pathname : relative.pathname.slice(1)));
+  return absolute(new URL(`${base.endsWith("/") ? base.slice(0, -1) : base}/`, connectUrl).href);
 }
 /** Converts one API Schema Object from the document's OpenAPI dialect to Draft 2020-12. */
 type ApiSchema = (input: Json) => JsonObject;
@@ -209,21 +225,32 @@ function errorResponses(document: OpenApiDocument, operation: Operation): Openap
   }
   return errors;
 }
-/** Compile a revision of a live OpenAPI source into tool declarations for the app runtime. */
+/** Compile a revision of a live OpenAPI source into tool declarations for the app runtime.
+ * The document is consumed: compilation upgrades it in place instead of copying it. It must be a
+ * tree, with no object reached twice, as parsed JSON is.
+ */
 export const compileOpenApiDocument = (
   entry: OpenApiImport,
-  inputDocument: unknown,
+  inputDocument: JsonObject,
   options: {
     readonly baseUrl?: string;
     readonly allowedOrigin?: string;
     readonly securitySchemes?: Readonly<Record<string, JsonObject>>;
     readonly fallbackSecurity?: GeneratedOperation["request"]["security"];
   } = {},
-) =>
-  Effect.tryPromise({
+) => {
+  // The document is consumed once. Holding it only here, and clearing it when compilation takes
+  // it, keeps a finished effect from retaining the whole document while its output is written.
+  let owned: JsonObject | undefined = inputDocument;
+  const take = () => {
+    const input = owned;
+    owned = undefined;
+    if (input === undefined) fail("invalid_document", "This API definition was already compiled.");
+    return input;
+  };
+  return Effect.tryPromise({
     try: async () => {
-      const document = await openApiDocument(inputDocument);
-      const swagger = await loadSwaggerClient();
+      const document = await openApiDocument(take());
       const { spec } = document;
       const schemes = { ...(options.securitySchemes ?? spec.components?.securitySchemes) };
       const bindings = new Map<string, readonly CredentialBinding[]>();
@@ -316,6 +343,25 @@ export const compileOpenApiDocument = (
       const causes = new Map<TemplateError["code"], TemplateError>();
       const built: { operation: GeneratedOperation; methods: GeneratedSecrets[] }[] = [];
       const documentServer = spec.servers?.[0];
+      // Operations mostly share a server, so each distinct one is worked out once, errors included.
+      const addresses = new Map<
+        string,
+        { readonly address: string } | { readonly error: unknown }
+      >();
+      const addressOf = (server: Server) => {
+        const key = JSON.stringify([server, documentServer?.variables ?? null]);
+        let known = addresses.get(key);
+        if (known === undefined) {
+          try {
+            known = { address: serverAddress(server, entry.connectUrl, documentServer) };
+          } catch (error) {
+            known = { error };
+          }
+          addresses.set(key, known);
+        }
+        if ("error" in known) throw known.error;
+        return known.address;
+      };
       const candidates = Object.entries(spec.paths).flatMap(([path, source]) => {
         const item = document.resolve(source);
         return (["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const)
@@ -339,6 +385,7 @@ export const compileOpenApiDocument = (
         }),
       );
       for (const [index, { path, item, method }] of candidates.entries()) {
+        if (index % 100 === 99) await yieldToRuntime();
         try {
           if (!path.startsWith("/") || path.includes("?") || path.includes("#"))
             fail("operation_path", "An operation has an invalid API path.");
@@ -366,11 +413,8 @@ export const compileOpenApiDocument = (
           const serverUrl = options.baseUrl ?? server?.url;
           if (serverUrl === undefined)
             fail("server_missing", "The API has no server URL. Set an API base URL and try again.");
-          const baseUrl = serverAddress(
-            swagger,
+          const baseUrl = addressOf(
             options.baseUrl === undefined && server !== undefined ? server : { url: serverUrl },
-            entry.connectUrl,
-            documentServer,
           );
           const combined = [
             ...(Array.isArray(item.parameters) ? item.parameters : []),
@@ -580,7 +624,7 @@ export const compileOpenApiDocument = (
       let documentOrigin: string | undefined;
       try {
         if (documentServer !== undefined)
-          documentOrigin = new URL(serverAddress(swagger, documentServer, entry.connectUrl)).origin;
+          documentOrigin = new URL(serverAddress(documentServer, entry.connectUrl)).origin;
       } catch (error) {
         if (!(error instanceof TemplateError)) throw error;
       }
@@ -651,3 +695,4 @@ export const compileOpenApiDocument = (
               "This API definition could not be read. It may contain unsupported OpenAPI features.",
           }),
   });
+};

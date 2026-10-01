@@ -32,7 +32,7 @@ import { HostedClient } from "./api.ts";
 import { acknowledge, upsert, currentQuery, invalidate } from "@executor-js/ui/contracts/mutations";
 import { inventoryAtom } from "./organization.ts";
 import { accountAtom, acknowledgeAccount } from "./accounts.ts";
-import { selectedIds } from "@executor-js/ui/contracts/dashboard";
+import { selectedIds, type ToolCatalog } from "@executor-js/ui/contracts/dashboard";
 
 /** App data is never reused between organizations. */
 class AppKey extends Data.Class<{
@@ -310,6 +310,13 @@ const completeOAuth = Atom.family((key: ConnectionKey) =>
       ),
   ),
 );
+/** The callback's OAuth state, not the browser tab, identifies the connection it completes. */
+export const resolveOAuthCallbackAtom = HostedClient.runtime.fn(
+  (callbackUrl: Redacted.Redacted<string>) =>
+    Effect.flatMap(HostedClient, (client) =>
+      client.oauthCallback.resolve({ payload: { callbackUrl } }),
+    ),
+);
 /** Completion reconciles account and target data before the view navigates. */
 export const submitConnectionAtom = (key: {
   organization: OrganizationReference;
@@ -372,7 +379,7 @@ const calls = Atom.family(({ organization, app, ...target }: CallKey) =>
 export const callToolAtom = (key: ConstructorParameters<typeof CallKey>[0]) =>
   calls(new CallKey(key));
 
-/** Browser-only return context. The server verifies connection ownership and OAuth state. */
+/** Return context from the tab that started sign-in; the callback page resolves it from the server. */
 export const PendingOAuth = Schema.Struct({
   organization: OrganizationReference,
   organizationSlug: Schema.NonEmptyString,
@@ -478,15 +485,15 @@ function connectionSaved(
   invalidate(get, inventoryAtom(key.organization));
 }
 
-const toolLists = Atom.family((key: ToolKey) =>
+const toolCatalogs = Atom.family((key: ToolKey) =>
   Atom.map(
     toolsQuery(key),
-    AsyncResult.map((page) => page.items),
+    AsyncResult.map((page): ToolCatalog => ({ tools: page.items, routers: page.routers })),
   ),
 );
-/** Shared browser view for the selected profile. */
-export const toolListAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
-  toolLists(new ToolKey(key));
+/** Shared browser view for the selected profile, with the routers that group its tools. */
+export const toolCatalogAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>
+  toolCatalogs(new ToolKey(key));
 class ToolDetailKey extends Data.Class<
   ConstructorParameters<typeof ToolKey>[0] & { readonly tool: ToolName }
 > {}

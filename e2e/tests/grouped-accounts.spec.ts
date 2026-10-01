@@ -212,7 +212,11 @@ layer(HostedLive, { excludeTestServices: true })("Grouped accounts", (it) => {
               page.getByRole("button", { name: "identity", exact: true }).click(),
             );
             yield* browser.use(`Run the same tool as ${label}`, (page) =>
-              page.getByRole("textbox", { name: "Input", exact: true }).fill("{}"),
+              page
+                .getByRole("tablist", { name: "Input format", exact: true })
+                .getByRole("tab", { name: "JSON", exact: true })
+                .click()
+                .then(() => page.getByRole("textbox", { name: "Input", exact: true }).fill("{}")),
             );
             yield* browser.use(`Run the same tool as ${label}`, (page) =>
               page.getByRole("button", { name: "Run tool", exact: true }).click(),

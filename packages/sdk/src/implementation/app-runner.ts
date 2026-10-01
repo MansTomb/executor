@@ -150,34 +150,60 @@ const attempt = <A>(work: () => Promise<A>) =>
  */
 const protocols = new Map<string, AppProtocol>();
 const protocolLimit = 4096;
+/**
+ * Reads of builds whose protocol is not known yet. Concurrent first calls of a build, such as a
+ * tool call and the profile setup that an account selection started, share one read, so the
+ * Worker they both reach loads its build once.
+ */
+const reads = new Map<string, Promise<LoadedWorkerBuild>>();
+
+/** Record a build's protocol from its read; the cold start reuses that read. */
+const learn = (build: string, loaded: LoadedWorkerBuild) =>
+  appProtocol(loaded.protocol).pipe(
+    Effect.catch(failed),
+    Effect.map((protocol) => {
+      protocols.set(build, protocol);
+      if (protocols.size > protocolLimit) {
+        const oldest = protocols.keys().next();
+        if (oldest.done !== true) protocols.delete(oldest.value);
+      }
+      return { protocol, load: async () => loaded };
+    }),
+  );
 
 /**
  * The adapter for an invocation's build, and the loader its cold start uses. When the protocol is
  * not known yet, the build is read once here and the cold start reuses that read.
  */
-const protocolOf = (build: string, load: () => Promise<LoadedWorkerBuild>) => {
-  const known = protocols.get(build);
-  if (known !== undefined) {
-    protocols.delete(build);
-    protocols.set(build, known);
-    return Effect.succeed({ protocol: known, load });
-  }
-  return attempt(load).pipe(
-    Effect.flatMap((loaded) =>
-      appProtocol(loaded.protocol).pipe(
-        Effect.catch(failed),
-        Effect.map((protocol) => {
-          protocols.set(build, protocol);
-          if (protocols.size > protocolLimit) {
-            const oldest = protocols.keys().next();
-            if (oldest.done !== true) protocols.delete(oldest.value);
-          }
-          return { protocol, load: async () => loaded };
+const protocolOf = (build: string, load: () => Promise<LoadedWorkerBuild>) =>
+  Effect.suspend(() => {
+    const known = protocols.get(build);
+    if (known !== undefined) {
+      protocols.delete(build);
+      protocols.set(build, known);
+      return Effect.succeed({ protocol: known, load });
+    }
+    const pending = reads.get(build);
+    if (pending !== undefined)
+      // Share the read another call started. If it fails, for instance because that caller was
+      // cancelled, this call reads the build itself and reports its own failure.
+      return attempt(() => pending).pipe(
+        Effect.flatMap((loaded) => learn(build, loaded)),
+        Effect.catch(() => attempt(load).pipe(Effect.flatMap((loaded) => learn(build, loaded)))),
+      );
+    // A loader that throws before returning its promise still fails through `attempt`.
+    const read = (async () => load())();
+    reads.set(build, read);
+    return attempt(() => read).pipe(
+      Effect.flatMap((loaded) => learn(build, loaded)),
+      // Removed only once the protocol is recorded, so no later call reads the build again.
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (reads.get(build) === read) reads.delete(build);
         }),
       ),
-    ),
-  );
-};
+    );
+  });
 
 /** A call whose Worker failed to load in this isolate. No authored code ran for it. */
 class ColdStartFailed extends Schema.TaggedError<ColdStartFailed>()("ColdStartFailed", {

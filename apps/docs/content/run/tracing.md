@@ -25,16 +25,16 @@ The local diagnostics directory holds:
 
 - `collector.json` — the collector's state, process ID, query URL and database
   path.
-- `telemetry.sqlite` — the stored traces and logs.
+- `motel/` — the stored traces and logs, as Motel's SQLite files.
 - `executor-local.jsonl` or `executor-selfhost.jsonl` — Effect logs, written
   independently of the collector.
 
 Motel keeps seven days and targets 1 GiB. Each log file keeps four rotated
 archives at about 10 MiB each.
 
-In self-host Docker, Motel runs inside workerd and keeps its SQLite files in
-the `motel` folder of `EXECUTOR_MOTEL_DATA_DIR`. This directory must be
-separate from `/app/data`. Replacing the container discards telemetry by
+Motel runs in workerd. In self-host Docker it shares the product's workerd
+process and keeps its SQLite files in the `motel` folder of
+`EXECUTOR_MOTEL_DATA_DIR`. This directory must be separate from `/app/data`. Replacing the container discards telemetry by
 default. Mount a separate volume at the Motel directory to retain it. The
 container does not include Node or Bun.
 

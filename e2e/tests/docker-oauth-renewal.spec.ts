@@ -14,6 +14,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { driver } from "../support/platform.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { containerNpmRegistry } from "../support/npm-registry.ts";
 
 const Read = Schema.Struct({
   service: Schema.Struct({
@@ -46,6 +47,7 @@ it.live(
           );
         const issuer = yield* oauthSetupIssuer;
         const id = `executor-renewal-${randomBytes(8).toString("hex")}`;
+        const registry = yield* containerNpmRegistry;
         // The container shares the runner's network, so it reaches the loopback token endpoint
         // and the runner reaches its listener directly.
         const port = yield* driver(
@@ -90,6 +92,7 @@ it.live(
               "--volume",
               `${id}:/app/data`,
               ...Object.keys(environment).flatMap((name) => ["--env", name]),
+              ...registry.docker,
               image,
             ],
             environment,

@@ -58,7 +58,7 @@ not cached across changes, so run `tools.search` again in a new `execute` after
 you add or reconfigure an app.
 
 Some limits are fixed by the server and a client cannot raise them: 65,536
-characters of program source, 100 tool calls, 30 seconds, and 65,536 bytes of
+characters of program source, 100 tool calls, 5 minutes, and 65,536 bytes of
 output.
 
 ## Signing in from the browser
