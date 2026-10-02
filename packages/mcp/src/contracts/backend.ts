@@ -6,6 +6,7 @@ import type {
   ToolPending,
   ToolResumeResult,
   ToolPage,
+  ToolIndex,
   ToolInvocationOptions,
   ElicitationFailed,
   AppSkillCatalog,
@@ -46,6 +47,9 @@ export interface McpBackend<E extends Error> {
   /** Enumerate only the caller's execution targets; skills use the same app and account authority. */
   readonly listTargets: (input: McpTargetInput) => Effect.Effect<readonly McpTarget[], E>;
   /** Authorize the app and its selected accounts before evaluating each catalog page. */
+  readonly indexTools: (
+    input: Parameters<Executor["tools"]["index"]>[0],
+  ) => Effect.Effect<ToolIndex, E>;
   readonly listTools: (
     input: Parameters<Executor["tools"]["list"]>[0],
   ) => Effect.Effect<ToolPage, E>;

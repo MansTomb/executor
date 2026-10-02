@@ -35,6 +35,7 @@ export const localMcpBackend = (executor: Executor) =>
           yield* executor.accounts.list({ owner: app.owner }),
         );
       }),
+    indexTools: (input) => executor.tools.index(input),
     listTools: (input) => executor.tools.list(input),
     callTool: (input, options?: ToolInvocationOptions) => executor.tools.call(input, options),
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
@@ -55,6 +56,7 @@ export const localMcp = (
         readSkill: () => Effect.fail(new LocalMcpUnauthorized()),
         listApps: () => Effect.fail(new LocalMcpUnauthorized()),
         listTargets: () => Effect.fail(new LocalMcpUnauthorized()),
+        indexTools: () => Effect.fail(new LocalMcpUnauthorized()),
         listTools: () => Effect.fail(new LocalMcpUnauthorized()),
         callTool: () => Effect.fail(new LocalMcpUnauthorized()),
         resumeInvocation: () => Effect.fail(new LocalMcpUnauthorized()),
@@ -79,6 +81,7 @@ export const localMcp = (
         readSkill: (input) => Effect.flatMap(RequestBackend, (b) => b.readSkill(input)),
         listApps: (input) => Effect.flatMap(RequestBackend, (b) => b.listApps(input)),
         listTargets: (input) => Effect.flatMap(RequestBackend, (b) => b.listTargets(input)),
+        indexTools: (input) => Effect.flatMap(RequestBackend, (b) => b.indexTools(input)),
         listTools: (input) => Effect.flatMap(RequestBackend, (b) => b.listTools(input)),
         callTool: (input, options) =>
           Effect.flatMap(RequestBackend, (b) => b.callTool(input, options)),

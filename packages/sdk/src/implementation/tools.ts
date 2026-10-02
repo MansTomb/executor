@@ -385,8 +385,14 @@ export const makeTools = (
           state,
           catalog,
           value: tools,
-        } = yield* evaluate(input, (options) => runtime.inspect(options));
-        const sorted = [...tools]
+        } = yield* evaluate(input, (options, toolIndex) =>
+          runtime.inspect(
+            toolIndex && input.tools !== undefined ? { ...options, tools: input.tools } : options,
+          ),
+        );
+        const requested = input.tools === undefined ? undefined : new Set(input.tools);
+        const sorted = tools
+          .filter((tool) => requested === undefined || requested.has(ToolName.make(tool.name)))
           .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
           .filter((tool) => input.cursor === undefined || tool.name > input.cursor);
         const selected = sorted.slice(0, input.limit ?? 2_000);

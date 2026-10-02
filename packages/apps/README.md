@@ -250,9 +250,14 @@ operations. `list()` returns tool metadata with qualified names such as
 an operation. `accountOperations` preserves this separation. Static operations
 can run without resolving the source; listings reject duplicate names.
 
-Assign the resolver to the app's `dynamicTools` field. The helper returns only
-`list` and `resolve`, never static query or mutation maps. Both static maps are
-optional, so an app can contain only dynamic tools.
+Optional `summaries()` returns names and descriptions without schemas, and
+`describe(name)` returns one tool's metadata or `undefined`. MCP search uses
+these methods to load schemas only for its results. Without them, discovery
+falls back to `list()`.
+
+Assign the resolver to the app's `dynamicTools` field. The helper returns the
+discovery methods and `resolve`, without static query or mutation maps. Both
+static maps are optional, so an app can contain only dynamic tools.
 
 ```ts
 export default defineApp(

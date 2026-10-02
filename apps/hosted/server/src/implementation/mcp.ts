@@ -19,7 +19,7 @@ import {
 } from "./access.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
-import { listTools } from "./tools.ts";
+import { indexTools, listTools } from "./tools.ts";
 import { listAppSkills, readAppSkill } from "./skills.ts";
 
 /**
@@ -124,6 +124,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
         const accounts = yield* discoveryAccounts;
         return appTargets(app, profiles, accounts);
       }).pipe((work) => observe("listTargets", work)),
+    indexTools: (input) => observe("indexTools", indexTools(input)),
     listTools: (input) => observe("listTools", listTools(input)),
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
