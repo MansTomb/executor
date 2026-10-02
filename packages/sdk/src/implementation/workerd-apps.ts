@@ -160,6 +160,15 @@ export const workerdApps = (options: {
     const engine = yield* LocalRuntime.pipe(Effect.provideContext(runtimeContext));
     const secret = crypto.randomUUID();
     const privateAppFetch = options.allowPrivateAppFetch === true;
+    const durableObjectNamespaces = [
+      { className: "AppDataSupervisor", sql: true, uniqueKey: "executor-app-data" },
+      {
+        className: "AppWorkerPool",
+        sql: true,
+        uniqueKey: "executor-app-workers",
+        preventEviction: true,
+      },
+    ];
     const origin = yield* engine
       .start({
         name: "executor-apps",
@@ -167,13 +176,18 @@ export const workerdApps = (options: {
         // The trusted host worker keeps the default network. Only app isolates are restricted.
         compatibilityFlags: ["nodejs_compat"],
         modules: yield* workerdHostModules,
-        durableObjectNamespaces: [
-          { className: "AppDataSupervisor", sql: true, uniqueKey: "executor-app-data" },
-        ],
+        durableObjectNamespaces,
+        unsafe: {
+          durableObjectNamespaces: durableObjectNamespaces.map(({ sql, ...namespace }) => ({
+            ...namespace,
+            enableSql: sql,
+          })),
+        },
         workflows: [{ workflowName: "executor-app-workflows", className: "AppWorkflows" }],
         bindings: [
           WorkerLoader.local("LOADER"),
           DurableObjectNamespace.local({ binding: "DATA", className: "AppDataSupervisor" }),
+          DurableObjectNamespace.local({ binding: "POOL", className: "AppWorkerPool" }),
           Workflows.local({
             binding: "RUNS",
             workflowName: "executor-app-workflows",

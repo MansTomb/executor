@@ -52,6 +52,8 @@ import {
 import { SourceFiles } from "../contracts/deployment.ts";
 import { decodeWorkflowFailure, workflowFailureMessage } from "../contracts/workflow-errors.ts";
 import framework from "executor-framework";
+import type { AppWorkerPool } from "./workerd-worker-pool.ts";
+export { AppWorkerPool, AppWorkerSlot } from "./workerd-worker-pool.ts";
 
 declare const WebSocketPair: { new (): { 0: NativeWebSocket; 1: NativeWebSocket } };
 
@@ -100,6 +102,7 @@ interface Environment {
   /** Reaches the product that serves `SELF_ORIGIN` without the network. */
   readonly SELF?: HttpService;
   readonly LOADER: WorkerLoader;
+  readonly POOL: { getByName(name: string): Pick<AppWorkerPool, "start"> };
   readonly DATA: { getByName(name: string): DataEntrypoint };
   readonly RUNS: Workflow<{ run: string }>;
   readonly HOST: Fetcher;
@@ -222,20 +225,27 @@ const invoke = (
           ),
         );
       }
-      const worker = env.LOADER.get(
-        `${input.app}:${execution?.runId ?? "call"}:${identity}`,
-        () => ({
-          mainModule: "__executor_rpc.js",
-          modules: {
-            ...workerModules(input.bundle.modules),
-            "__executor_rpc.js": appRpcBridge(input.bundle.mainModule),
-          },
-          compatibilityDate: "2026-07-30",
-          compatibilityFlags: ["nodejs_compat"],
-          globalOutbound: outbound,
-        }),
-      );
-      const entry = yield* Schema.decodeUnknownEffect(AppRpcEntrypoint)(worker.getEntrypoint());
+      const code = () => ({
+        mainModule: "__executor_rpc.js",
+        modules: {
+          ...workerModules(input.bundle.modules),
+          "__executor_rpc.js": appRpcBridge(input.bundle.mainModule),
+        },
+        compatibilityDate: "2026-07-30",
+        compatibilityFlags: ["nodejs_compat"],
+      });
+      const start: (typeof AppRpcEntrypoint.Type)["start"] =
+        input.command.operation === "requirements"
+          ? (...args) =>
+              Schema.decodeUnknownSync(AppRpcEntrypoint)(
+                env.LOADER.load({ ...code(), globalOutbound: outbound }).getEntrypoint(),
+              ).start(...args)
+          : (...args) =>
+              env.POOL.getByName("workers").start(
+                `${input.app}:${execution?.runId ?? "call"}:${identity}`,
+                async () => code(),
+                ...args,
+              );
       const workflow =
         execution === undefined ? null : yield* invocationWorkflow(execution, signal);
       const delivery =
@@ -248,7 +258,7 @@ const invoke = (
       const call = yield* Effect.acquireRelease(
         Effect.tryPromise({
           try: () =>
-            entry.start(body, input.headers, delivery, workflow, controls, (command) =>
+            start(body, input.headers, delivery, workflow, controls, (command) =>
               env.DATA.getByName(input.app).cache(input.build, command),
             ),
           catch: failure,
@@ -377,7 +387,13 @@ export class AppDataSupervisor extends DurableObject<Environment> {
   readonly #supervisor: Promise<Effect.Success<ReturnType<typeof makeFacetSupervisor>>>;
   constructor(ctx: DurableObjectState, env: Environment) {
     super(ctx, env);
-    this.#supervisor = Effect.runPromise(makeFacetSupervisor(ctx, env.LOADER, appOutbound(ctx)));
+    this.#supervisor = Effect.runPromise(
+      makeFacetSupervisor(
+        ctx,
+        { get: (_name, load) => env.LOADER.get(null, load) },
+        appOutbound(ctx),
+      ),
+    );
   }
   async invoke(
     input: typeof FacetInvocation.Type,

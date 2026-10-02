@@ -33,6 +33,16 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  appWorkerLifetime: {
+    fixtures: "actors",
+    file: "app-worker-lifetime.spec.ts",
+    title: "warm app workers reuse code, evict idle capacity and preserve active calls",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Standalone workerd cache and hosted deployment fixture"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   workflowReplayAccess: {
     fixtures: "actors",
     file: "workflow-replay-access.spec.ts",
