@@ -195,6 +195,9 @@ export const nestJsonSchema = (input: JsonObject, pointer: string): JsonObject =
   const document = structuredClone(input);
   const lookup = dereference(document);
   const schemas = new Set(Object.values(lookup));
+  const anchors = new Set<unknown>(
+    [...schemas].filter((schema) => typeof schema === "object" && schema.$recursiveAnchor === true),
+  );
   const pointers = new Map<unknown, string>();
   const locate = (value: JsonValue, path: string): void => {
     if (!pointers.has(value)) pointers.set(value, path);
@@ -219,6 +222,13 @@ export const nestJsonSchema = (input: JsonObject, pointer: string): JsonObject =
       const target = lookup[absolute];
       const path = pointers.get(target);
       if (path === undefined) throw new ValidationError();
+      if (
+        key === "$recursiveRef" &&
+        (schema.$ref !== undefined ||
+          (anchors.size > 0 &&
+            !(anchors.size === 1 && anchors.has(document) && target === document)))
+      )
+        throw new ValidationError();
       refs[key] = path;
     }
     references.set(schema, refs);
@@ -230,7 +240,10 @@ export const nestJsonSchema = (input: JsonObject, pointer: string): JsonObject =
     return Object.fromEntries(
       Object.entries(value)
         .filter(([key]) => refs === undefined || !["$id", "id", "$anchor"].includes(key))
-        .map(([key, item]) => [key, refs?.[key] ?? rewrite(item)]),
+        .map(([key, item]) => [
+          key === "$recursiveRef" && refs?.[key] !== undefined ? "$ref" : key,
+          refs?.[key] ?? rewrite(item),
+        ]),
     );
   };
   return EffectSchema.decodeUnknownSync(

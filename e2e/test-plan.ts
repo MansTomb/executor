@@ -96,6 +96,17 @@ export const scenarios = {
       local: na("Hosted app deployment scenario"),
     },
   },
+  mcpResultContract: {
+    fixtures: "actors",
+    file: "mcp-result-contract.spec.ts",
+    title:
+      "MCP discovery describes native result envelopes and preserves structured output validation",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback MCP result fixture"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   mcpCatalogCache: {
     fixtures: "actors",
     file: "mcp-catalog.spec.ts",

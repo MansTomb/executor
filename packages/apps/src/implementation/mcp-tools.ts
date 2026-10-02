@@ -5,6 +5,8 @@ import { Effect, Schema } from "effect";
 import { McpError, type McpTools, type McpToolMetadata } from "../contracts/mcp.ts";
 import { JsonObject, compileJsonSchemaDecoder, jsonSchemaDecoder } from "../effect.ts";
 import type { McpClient } from "./mcp-client.ts";
+import { mcpResultSchema } from "./mcp-result-schema.ts";
+import { once } from "./schema.ts";
 
 /** Compile only the selected tool and bind its executable to the current invocation. */
 export const adaptMcpTool = (client: McpClient, tool: McpToolMetadata) =>
@@ -20,8 +22,12 @@ export const adaptMcpTool = (client: McpClient, tool: McpToolMetadata) =>
               Effect.mapError(() => new McpError({ phase: "schema", reason: "invalid_response" })),
             ),
           );
+    const resultSchema = once(() => mcpResultSchema(tool.outputSchema));
     const adapted: McpTools[string] = {
       ...tool,
+      get outputSchema() {
+        return resultSchema();
+      },
       description: tool.description ?? tool.title ?? tool.name,
       input: decoder,
       ...(tool.annotations?.readOnlyHint === undefined
