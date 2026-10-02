@@ -12,6 +12,11 @@ import {
 const Rpc = Schema.Struct({
   id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
   method: Schema.String,
+  params: Schema.optionalKey(
+    Schema.Struct({
+      arguments: Schema.optionalKey(Schema.Struct({ fail: Schema.optionalKey(Schema.Boolean) })),
+    }),
+  ),
 });
 
 /** Return a real listener owned by the current test scope; no application services are replaced. */
@@ -20,6 +25,7 @@ export const mcpOutcomeFixture = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const rpc = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Rpc)));
     if (rpc.id === undefined) return HttpServerResponse.empty({ status: 202 });
+    const failed = rpc.params?.arguments?.fail !== false;
     const result =
       rpc.method === "initialize"
         ? {
@@ -29,17 +35,23 @@ export const mcpOutcomeFixture = Effect.gen(function* () {
           }
         : rpc.method === "tools/list"
           ? {
-              tools: [
-                {
-                  name: "failure",
-                  description: "Synthetic upstream tool failure",
-                  inputSchema: { type: "object", properties: {} },
-                  annotations: { readOnlyHint: true },
-                },
-              ],
+              tools: ["failure", "approvedFailure"].map((name) => ({
+                name,
+                description: "Synthetic upstream tool failure",
+                inputSchema: { type: "object", properties: { fail: { type: "boolean" } } },
+                annotations: { readOnlyHint: name === "failure" },
+              })),
             }
           : rpc.method === "tools/call"
-            ? { isError: true, content: [{ type: "text", text: "Synthetic upstream failure" }] }
+            ? {
+                isError: failed,
+                content: [
+                  {
+                    type: "text",
+                    text: failed ? "Synthetic upstream failure" : "Synthetic upstream success",
+                  },
+                ],
+              }
             : {};
     return HttpServerResponse.jsonUnsafe({ jsonrpc: "2.0", id: rpc.id, result });
   }).pipe(Effect.orDie);

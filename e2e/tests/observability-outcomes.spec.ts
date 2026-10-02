@@ -25,6 +25,15 @@ const Analytics = Schema.fromJsonString(
   }),
 );
 
+const McpCompleted = Schema.Struct({
+  status: Schema.Literal("completed"),
+  execution: Schema.Struct({
+    ok: Schema.Boolean,
+    value: Schema.optionalKey(Schema.Json),
+    toolCalls: Schema.Array(Schema.Struct({ name: Schema.String, outcome: Schema.String })),
+  }),
+});
+
 layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) => {
   it.effect(scenarios.observabilityOutcomes.title, (context) =>
     withHostedCase(
@@ -44,15 +53,29 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
           files: [
             {
               path: "package.json",
-              content: JSON.stringify({ dependencies: { "@modelcontextprotocol/sdk": "1.30.0" } }),
+              content: JSON.stringify({
+                dependencies: {
+                  "@modelcontextprotocol/sdk": "1.30.0",
+                  effect: "4.0.0-rc.115",
+                },
+              }),
             },
             {
               path: "index.ts",
               content: `import { defineApp, query, mutation, workflow, object } from "apps";
 import { mcpOperations } from "apps/mcp";
+import { always } from "apps/operations/approval";
+import { Effect } from "effect";
 export default defineApp({ accounts: {} }, async () => {
   const remote = await mcpOperations({ url: ${JSON.stringify(`${upstream}/mcp`)} });
-  return { ...remote, queries: {
+  return { ...remote, dynamicTools: {
+    ...remote.dynamicTools,
+    resolve: name => remote.dynamicTools.resolve(name).pipe(Effect.map(operation =>
+      name === "mutations.approvedFailure" && operation !== undefined
+        ? { ...operation, approval: context => Effect.promise(async () => always()(context)) }
+        : operation
+    )),
+  }, queries: {
     lookalike: query({ input: object({}) }, async () => ({ isError: true, content: [] })),
     bulk: query({ input: object({}) }, async ({ fetch }) => {
       for (let index = 0; index < 340; index++) await (await fetch(${JSON.stringify(`${upstream}/ping`)})).text();
@@ -63,6 +86,7 @@ export default defineApp({ accounts: {} }, async () => {
             },
           ],
         });
+        yield* evidence.json("app-deployment.json", response.body);
         expect(response.status).toBe(200);
         const app = yield* body(App, response);
         yield* Effect.addFinalizer(() =>
@@ -242,6 +266,117 @@ export default defineApp({ accounts: {} }, async () => {
           "observability",
           { organization: actors.organization.id },
         );
+        const execute = (label: string, code: string) =>
+          client.use(label, (client, signal) =>
+            client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
+          );
+        const appTools = `tools[${JSON.stringify(app.slug)}]`;
+        const upstreamFailure = {
+          isError: true,
+          content: [{ type: "text", text: "Synthetic upstream failure" }],
+        };
+        const upstreamSuccess = {
+          isError: false,
+          content: [{ type: "text", text: "Synthetic upstream success" }],
+        };
+        const handled = yield* execute(
+          "Handle an upstream tool error without changing its value",
+          `const upstream = await ${appTools}.queries.failure({});
+const ordinary = await ${appTools}.queries.lookalike({});
+return { upstream, ordinary, handled: upstream.isError === true };`,
+        );
+        yield* evidence.json("mcp-handled-tool-error.json", handled.structuredContent);
+        const handledResult = yield* Schema.decodeUnknownEffect(McpCompleted)(
+          handled.structuredContent,
+        );
+        expect(handledResult.execution).toEqual({
+          ok: true,
+          value: {
+            upstream: upstreamFailure,
+            ordinary: { isError: true, content: [] },
+            handled: true,
+          },
+          toolCalls: [
+            { name: `${app.slug}.queries.failure`, outcome: "failure" },
+            { name: `${app.slug}.queries.lookalike`, outcome: "success" },
+          ],
+        });
+        const handledTrace = yield* waitFor(yield* latestTrace(), "mcp.execute");
+        expect(
+          handledTrace.data.find(({ span }) => span.operationName === "mcp.execute")?.span,
+        ).toMatchObject({
+          status: "ok",
+          tags: { "executor.outcome": "completed", "executor.tool_call.succeeded": "1" },
+        });
+        yield* evidence.json("mcp-handled-tool-error-trace.json", handledTrace);
+        const discarded = yield* execute(
+          "Discard an upstream error value while retaining its failed call outcome",
+          `await ${appTools}.queries.failure({}); return "handled";`,
+        );
+        const discardedResult = yield* Schema.decodeUnknownEffect(McpCompleted)(
+          discarded.structuredContent,
+        );
+        expect(discardedResult.execution).toEqual({
+          ok: true,
+          value: "handled",
+          toolCalls: [{ name: `${app.slug}.queries.failure`, outcome: "failure" }],
+        });
+        yield* evidence.json("mcp-discarded-tool-error.json", discarded.structuredContent);
+        const parallel = yield* execute(
+          "Keep parallel invocations of the same tool independent",
+          `return await Promise.all([
+${appTools}.queries.failure({ fail: true }),
+${appTools}.queries.failure({ fail: false }),
+${appTools}.queries.failure({ fail: true })
+]);`,
+        );
+        const parallelResult = yield* Schema.decodeUnknownEffect(McpCompleted)(
+          parallel.structuredContent,
+        );
+        expect(parallelResult.execution).toEqual({
+          ok: true,
+          value: [upstreamFailure, upstreamSuccess, upstreamFailure],
+          toolCalls: [
+            { name: `${app.slug}.queries.failure`, outcome: "failure" },
+            { name: `${app.slug}.queries.failure`, outcome: "success" },
+            { name: `${app.slug}.queries.failure`, outcome: "failure" },
+          ],
+        });
+        yield* evidence.json("mcp-parallel-tool-outcomes.json", parallel.structuredContent);
+        const paused = yield* execute(
+          "Request approval before an upstream semantic failure",
+          `return await ${appTools}.mutations.approvedFailure({});`,
+        );
+        const pending = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            status: Schema.Literal("approval-required"),
+            requestId: Schema.String,
+          }),
+        )(paused.structuredContent);
+        const resumed = yield* client.use(
+          "Approve the same upstream invocation",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "resume",
+                arguments: {
+                  requestId: pending.requestId,
+                  response: { action: "accept" },
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        const resumedResult = yield* Schema.decodeUnknownEffect(McpCompleted)(
+          resumed.structuredContent,
+        );
+        expect(resumedResult.execution).toEqual({
+          ok: true,
+          value: upstreamFailure,
+          toolCalls: [{ name: `${app.slug}.mutations.approvedFailure`, outcome: "failure" }],
+        });
+        yield* evidence.json("mcp-resumed-tool-error.json", resumed.structuredContent);
         const syntax = yield* client.use("A syntax error remains an MCP result", (client, signal) =>
           client.callTool({ name: "execute", arguments: { code: "return (" } }, undefined, {
             signal,

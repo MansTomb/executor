@@ -569,7 +569,10 @@ export function executeProgram(
             const call = progress.calls[index];
             if (call === undefined) return;
             // A call interrupted while it waited for approval never ran.
-            if (!(outcome === "interrupted" && call.outcome === "awaiting-approval"))
+            if (
+              !(outcome === "interrupted" && call.outcome === "awaiting-approval") &&
+              !(outcome === "success" && call.outcome === "failure")
+            )
               call.outcome = outcome;
             call.durationMs = durationMs;
           }),

@@ -358,8 +358,12 @@ export const makeExecutions = (
                     }),
                   ),
               (result, response) => {
-                if (result.status === "completed")
+                if (result.status === "completed") {
+                  const completed = call === undefined ? undefined : run.progress.calls[call];
+                  if (result.toolError === true && completed !== undefined)
+                    completed.outcome = "failure";
                   return Deferred.succeed(response, result).pipe(Effect.asVoid);
+                }
                 return record({
                   kind: "approval",
                   browserAnswer: Deferred.makeUnsafe<ElicitationResponse | undefined>(),
@@ -632,9 +636,15 @@ export const makeExecutions = (
                     }),
                     Effect.flatMap((result) =>
                       Match.value(result).pipe(
-                        Match.when({ status: "completed" }, (result) =>
-                          Deferred.succeed(pending.response, result),
-                        ),
+                        Match.when({ status: "completed" }, (result) => {
+                          const completed =
+                            pending.call === undefined
+                              ? undefined
+                              : run.progress.calls[pending.call];
+                          if (result.toolError === true && completed !== undefined)
+                            completed.outcome = "failure";
+                          return Deferred.succeed(pending.response, result);
+                        }),
                         Match.when({ status: "denied" }, () =>
                           Deferred.fail(pending.response, new ApprovalDenied()),
                         ),
