@@ -7,6 +7,7 @@ import { type JsonValue } from "../contracts/schema.ts";
 import { catalogCache, type CatalogCacheOptions } from "./catalog-cache.ts";
 import { mcpClientEffect } from "./mcp.ts";
 import { adaptMcpTool } from "./mcp-tools.ts";
+import { mcpResultSchema } from "./mcp-result-schema.ts";
 import { protocolOperations, type OperationKinds } from "./protocol-operations.ts";
 import { nativeOperation } from "./operations.ts";
 
@@ -73,7 +74,7 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
     const describe = (tool: McpToolMetadata) => ({
       ...summarize(tool),
       inputSchema: tool.inputSchema,
-      ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
+      outputSchema: mcpResultSchema(tool.outputSchema),
       ...(tool._meta === undefined ? {} : { _meta: tool._meta }),
     });
     const selected = (name: string) =>
