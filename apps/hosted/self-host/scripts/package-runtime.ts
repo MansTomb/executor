@@ -169,6 +169,7 @@ const packageRuntime = Effect.gen(function* () {
   );
   const config = `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
+ v8Flags=["--gc-global"],
  extensions=[(modules=[(name="cloudflare-runtime:workflows-wrapped-binding",internal=true,esModule=embed "@@RUNTIME@@/workflow-binding.mjs")])],
  services=[
   (name="product",worker=(
