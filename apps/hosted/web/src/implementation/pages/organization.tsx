@@ -33,17 +33,21 @@ import {
   useOrganization,
   OrganizationDetailsBoundary,
 } from "../components/organization.tsx";
-import { OrganizationMembers } from "../components/organization-members.tsx";
+import { OrganizationMembers, type MemberLimit } from "../components/organization-members.tsx";
 import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import { organizationSlugMaxLength } from "@executor-js/hosted-server/organization";
 
-/** Hosts may compose extra admin settings and a footer below the members list. */
+export type { MemberLimit };
+
+/** Hosts may compose extra admin settings, a member limit and a footer below the members list. */
 export function OrganizationPage({
   emailInvitations = false,
+  memberLimit,
   children,
   footer,
 }: {
   readonly emailInvitations?: boolean;
+  readonly memberLimit?: MemberLimit | undefined;
   readonly children?: ReactNode;
   readonly footer?: ReactNode;
 }) {
@@ -51,7 +55,11 @@ export function OrganizationPage({
     <OrganizationDetailsBoundary
       pending={<OrganizationSettingsPending>{children}</OrganizationSettingsPending>}
     >
-      <OrganizationSettings emailInvitations={emailInvitations} footer={footer}>
+      <OrganizationSettings
+        emailInvitations={emailInvitations}
+        memberLimit={memberLimit}
+        footer={footer}
+      >
         {children}
       </OrganizationSettings>
     </OrganizationDetailsBoundary>
@@ -59,10 +67,12 @@ export function OrganizationPage({
 }
 function OrganizationSettings({
   emailInvitations,
+  memberLimit,
   children,
   footer,
 }: {
   readonly emailInvitations: boolean;
+  readonly memberLimit: MemberLimit | undefined;
   readonly children?: ReactNode;
   readonly footer?: ReactNode;
 }) {
@@ -82,7 +92,7 @@ function OrganizationSettings({
         <OrganizationUrl disabled={pending} />
         {children}
       </div>
-      <OrganizationMembers emailInvitations={emailInvitations} />
+      <OrganizationMembers emailInvitations={emailInvitations} memberLimit={memberLimit} />
       {footer && <div className="mt-6">{footer}</div>}
     </PageFrame>
   );

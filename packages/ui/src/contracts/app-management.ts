@@ -1,5 +1,5 @@
 /** Typed app bindings share reconciliation; products supply their existing client and runtime. */
-import { refreshOnFocus } from "./refresh.ts";
+import { revalidated } from "./refresh.ts";
 import type { App, AppId } from "@executor-js/sdk";
 import { AppAccess, appManagementApi, type CopyApp } from "@executor-js/app-management/contracts";
 import { Array as Arr, Data, Effect, Schema, type Cause } from "effect";
@@ -42,7 +42,7 @@ export const makeAppManagementAtoms = <R, E>(
 ) => {
   const catalog = runtime
     .atom(Effect.flatMap(client, (api) => api.catalog({ params, query: {} })))
-    .pipe(hydrate("catalog", params), refreshOnFocus, (source) =>
+    .pipe(hydrate("catalog", params), revalidated, (source) =>
       acknowledgedQuery(source, retainFailure),
     );
   const published = runtime
@@ -51,14 +51,14 @@ export const makeAppManagementAtoms = <R, E>(
   const authoring = Atom.family((app: AppId) =>
     runtime
       .atom(Effect.flatMap(client, (api) => api.authoring({ params: { ...params, app } })))
-      .pipe(hydrate("authoring", { ...params, app }), refreshOnFocus, (source) =>
+      .pipe(hydrate("authoring", { ...params, app }), revalidated, (source) =>
         acknowledgedQuery(source, retainFailure),
       ),
   );
   const source = Atom.family((app: AppId) =>
     runtime
       .atom(Effect.flatMap(client, (api) => api.sourceDisplay({ params: { ...params, app } })))
-      .pipe(hydrate("sourceDisplay", { ...params, app }), refreshOnFocus, (source) =>
+      .pipe(hydrate("sourceDisplay", { ...params, app }), revalidated, (source) =>
         acknowledgedQuery(source, retainFailure),
       ),
   );
@@ -86,7 +86,7 @@ export const makeAppManagementAtoms = <R, E>(
   const history = Atom.family((app: AppId) =>
     runtime
       .atom(Effect.flatMap(client, (api) => api.history({ params: { ...params, app } })))
-      .pipe(hydrate("history", { ...params, app }), refreshOnFocus),
+      .pipe(hydrate("history", { ...params, app }), revalidated),
   );
   /**
    * Exact working bytes for an editor. The page's first read reaches the browser with the page;

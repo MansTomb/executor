@@ -12,6 +12,7 @@ import { dereference, validate } from "@cfworker/json-schema";
 import { JsonObject, ValidationError, type JsonValue } from "../contracts/schema.ts";
 
 import type { Field } from "@executor-js/app-data/contracts";
+import type { FieldExposure } from "../contracts/provider.ts";
 const StorageField = Symbol("apps.StorageField");
 
 const Decoder = Symbol("apps.Schema");
@@ -164,6 +165,73 @@ export function object<const F extends Fields>(fields: F): ObjectSchema<F> {
   ) as EffectSchema.Decoder<ObjectValue<F>>;
   return { ...wrap(decoder, false), fields: Object.freeze({ ...fields }) };
 }
+
+const Exposure: unique symbol = Symbol("apps.FieldExposure");
+
+/** A schema marked with how app code sees the field in a provider that declares hosts. */
+export type Exposed<S, E extends FieldExposure = FieldExposure> = S & { readonly [Exposure]: E };
+
+/** The marking of one account field, if any. */
+export const exposureOf = (schema: Schema<unknown, boolean>): FieldExposure | undefined =>
+  Exposure in schema && (schema[Exposure] === "plain" || schema[Exposure] === "raw")
+    ? schema[Exposure]
+    : undefined;
+
+const expose = <S extends Schema<unknown, boolean>, E extends FieldExposure>(
+  schema: S,
+  exposure: E,
+): Exposed<S, E> =>
+  // SAFETY: the copy keeps every member of S, and `optional` and `default` keep the marking.
+  ({
+    ...schema,
+    [Exposure]: exposure,
+    optional: () => expose(schema.optional(), exposure),
+    default: (value: never) => expose(schema.default(value), exposure),
+  }) as unknown as Exposed<S, E>;
+
+/**
+ * A field that is not secret, such as a subdomain or region. App code reads its real value and
+ * the connect form shows it.
+ */
+export const plain = <S extends Schema<unknown, boolean>>(schema: S): Exposed<S, "plain"> =>
+  expose(schema, "plain");
+
+/**
+ * A secret field that app code reads as its real value, for request signing and similar uses.
+ * The connect form warns that the app can read it. Prefer an unmarked field, which app code
+ * receives as a handle that only reaches the provider's declared hosts.
+ */
+export const raw = <S extends Schema<unknown, boolean>>(schema: S): Exposed<S, "raw"> =>
+  expose(schema, "raw");
+
+/** Marked fields of an account object, by name. */
+export const fieldExposure = (fields: Fields): Readonly<Record<string, FieldExposure>> =>
+  Object.fromEntries(
+    Object.entries(fields).flatMap(([name, field]) => {
+      const exposure = exposureOf(field);
+      return exposure === undefined ? [] : [[name, exposure]];
+    }),
+  );
+
+declare const Secret: unique symbol;
+/**
+ * A secret account value. In a provider that declares hosts it is a handle, which the host's
+ * outbound network replaces with the real value only on requests to those hosts. Pass it to
+ * clients and headers as an ordinary string; do not decode or transform it.
+ */
+export type SecretString = string & { readonly [Secret]: true };
+
+type Sealed<T> = T extends string ? SecretString : T;
+/** Account fields as app code receives them: unmarked string fields are secret. */
+export type SecretFields<F extends Fields> = {
+  readonly [Key in keyof ObjectValue<F>]: Key extends keyof F
+    ? F[Key] extends Exposed<unknown>
+      ? ObjectValue<F>[Key]
+      : Sealed<ObjectValue<F>[Key]>
+    : ObjectValue<F>[Key];
+};
+/** An account object without declared fields, such as a default OAuth projection. */
+export type SecretObject<T> = { readonly [Key in keyof T]: Sealed<T[Key]> };
 
 const ImportedJsonSchema = Symbol("apps.JsonSchemaDocument");
 

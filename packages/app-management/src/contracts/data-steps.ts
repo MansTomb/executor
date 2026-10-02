@@ -29,6 +29,11 @@ export interface DataStep<R> {
   readonly items: Effect.Effect<ReadonlyArray<DataStepItem<R>>, unknown, R>;
   /** Outcomes that a later pass revisits. The step is complete once a pass ends without them. */
   readonly retry: ReadonlyArray<string>;
+  /**
+   * Whether a report still walks the items after the step has applied, as an independent check
+   * of its result under a new report label. Otherwise an applied step has nothing to report.
+   */
+  readonly reportsAfterApply?: boolean;
 }
 
 /** Which product's journal tables a host uses; each is created by that product's migrations. */

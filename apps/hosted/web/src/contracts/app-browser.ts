@@ -1,5 +1,5 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { workflowBindings } from "./resources.ts";
 import type { HostedError } from "./errors.ts";
 import type { SkillBindings, WorkflowBindings } from "@executor-js/ui/contracts/app-browser";
@@ -30,7 +30,7 @@ const skills = Atom.family((key: AppKey) =>
         expectedProfileRevision: key.expectedProfileRevision,
       },
     }),
-  ).pipe(refreshOnFocus, protectedQuery),
+  ).pipe(revalidated, protectedQuery),
 );
 const bundle = Atom.family((key: AppKey) =>
   HostedClient.query(
@@ -44,7 +44,7 @@ const bundle = Atom.family((key: AppKey) =>
         expectedProfileRevision: key.expectedProfileRevision,
       },
     }),
-  ).pipe(refreshOnFocus, protectedQuery),
+  ).pipe(revalidated, protectedQuery),
 );
 /** Product-owned query bindings share stable identities between overview and detail sections. */
 export function appBrowserBindings(

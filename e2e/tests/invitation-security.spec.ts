@@ -5,6 +5,7 @@ import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { Actors } from "../support/actors.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { freeSeat } from "../support/seats.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Invitation = Schema.Struct({ id: Schema.String, email: Schema.String, role: Schema.String });
@@ -16,6 +17,8 @@ layer(HostedLive, { excludeTestServices: true })("Invitation privacy", (it) => {
         const api = yield* Api,
           actors = yield* Actors;
         const organizationId = actors.organization.id;
+        // Cloud's Free plan is full; free a seat for the invitation, then restore the member.
+        const seat = yield* freeSeat;
         const created = yield* api.request(
           actors.owner,
           "POST",
@@ -28,6 +31,7 @@ layer(HostedLive, { excludeTestServices: true })("Invitation privacy", (it) => {
         );
         expect(created.status).toBe(200);
         const invitation = yield* body(Invitation, created);
+        yield* seat.rejoin;
         const list = `/api/auth/organization/list-invitations?organizationId=${organizationId}`;
         const full = `/api/auth/organization/get-full-organization?organizationId=${organizationId}`;
         for (const administrator of [actors.owner, actors.admin]) {

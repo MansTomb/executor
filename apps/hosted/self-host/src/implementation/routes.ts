@@ -5,7 +5,11 @@ import {
 } from "@executor-js/hosted-server/provisioning";
 import { Schedule } from "effect";
 import { executorSelfHostApiDocument } from "../contracts/api.ts";
-import { startScheduleWorker, defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
+import {
+  startScheduleWorker,
+  defaultScheduleWorkerOptions,
+  ScheduleObservation,
+} from "@executor-js/sdk/scheduling";
 import { frameworkDocumentation, gitRoutes } from "@executor-js/app-management";
 import { hostedAppGitAccess } from "@executor-js/hosted-server/app-management";
 /** The route map is shared by native development and the packaged Worker. */
@@ -25,6 +29,7 @@ import {
   apiChallenge,
   apiProtectedResource,
   lazyHostedApiDocument,
+  ProductAnalytics,
 } from "@executor-js/hosted-server";
 import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 import { appAddresses, hostedAppUi } from "@executor-js/hosted-server/app-ui";
@@ -44,6 +49,7 @@ import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
 import { selfHostApi } from "./api.ts";
 import { selfHostMcp } from "../mcp.ts";
 import { selfHostAuth } from "../auth.ts";
+import { selfHostAnalytics } from "./product-analytics.ts";
 
 import type { SourceFile } from "@executor-js/sdk/core";
 import type { selfHostExecutorServices } from "./executor-services.ts";
@@ -59,6 +65,12 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
   Effect.gen(function* () {
     const { skills, egress, executorServices, dashboard } = options;
     const auth = yield* selfHostAuth;
+    const analytics = yield* selfHostAnalytics;
+    /** Requests and background schedules record through this instance's sink unless it opted out. */
+    const observed = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      analytics === undefined
+        ? effect
+        : effect.pipe(Effect.provideService(ProductAnalytics, analytics.product));
     yield* drainProvisioning(selfHostProvisioningServices).pipe(
       Effect.catch(() => Effect.logWarning("Provisioning queue processing failed")),
       Effect.repeat(Schedule.spaced("1 second")),
@@ -68,13 +80,18 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
     const scheduler = yield* Effect.gen(function* () {
       const executor = yield* Effect.flatten(HostedExecutor);
       const authorize = yield* ScheduledAuthority;
-      return yield* startScheduleWorker(executor, authorize, {
+      const concurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
+        Config.withDefault(defaultScheduleWorkerOptions.concurrency),
+      );
+      const worker = startScheduleWorker(executor, authorize, {
         ...defaultScheduleWorkerOptions,
         runner: "self-host",
-        concurrency: yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
-          Config.withDefault(defaultScheduleWorkerOptions.concurrency),
-        ),
+        concurrency,
       });
+      // The worker's polling fibers inherit the observer it starts with.
+      return yield* analytics === undefined
+        ? worker
+        : worker.pipe(Effect.provideService(ScheduleObservation, analytics.schedules));
     }).pipe(Effect.provide(executorServices));
     const addresses = appAddresses(auth.origin, yield* appUiBaseUrl(auth.origin));
     const appUi = hostedAppUi(addresses);
@@ -185,9 +202,9 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           if (Option.isSome(addresses.fromHost(request.headers.host)))
-            return yield* apps.pipe(requestTiming);
+            return yield* observed(apps.pipe(requestTiming));
           if (addresses.ownsHost(request.headers.host)) return notFound;
-          return yield* product;
+          return yield* observed(product);
         }).pipe(recordRequestRejections),
       ),
     );

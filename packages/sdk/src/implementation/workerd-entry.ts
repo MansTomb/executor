@@ -33,12 +33,14 @@ import {
   type FacetBundle,
 } from "@executor-js/app-data/cloudflare";
 import { makeAppRunner } from "./app-runner.ts";
+import { credentialFetch, credentialKey } from "./credential-handles.ts";
 import {
   defaultAppWorkerLimit,
   makeAppWorkerResidency,
   type AppWorkerResidency,
 } from "./app-worker-residency.ts";
 import { compileWorkerApp } from "../workerd-build.ts";
+import { assembleWorkerBundle } from "./worker-build-storage.ts";
 import {
   CompileWorkerApp,
   CompileWorkerResult,
@@ -123,33 +125,45 @@ const buildFailed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
     message: describeBuildCause(cause),
     ...(Schema.is(DatabaseFieldReserved)(cause) ? { declaration: cause } : {}),
   });
+/** What the runner binds to one app's outbound network. App code cannot set it. */
+const OutboundProps = Schema.Struct({ app: Schema.NonEmptyString });
+type OutboundProps = typeof OutboundProps.Type;
+/** Handles are sealed with a key derived from the secret only this host and its runner share. */
+const credentials = (env: Environment) => credentialKey(env.AUTH);
 /**
- * Every app isolate's global `fetch`. `global_fetch_strictly_public` cannot do this here: it
- * routes global fetch through workerd's `internet` service, which this runtime configures to
- * allow private addresses. Requests for this instance's own dashboard origin go to the product
- * through a service binding, so the bundled Executor app works when that origin resolves to a
- * private address. Everything else uses the public-only network service unless the operator
- * allows private fetch. Redirects return to the isolate, which sends each hop back here.
+ * Every app isolate's global `fetch`, bound to its app. It substitutes the credential handles the
+ * request carries when its target is allowed; see credential-handles.ts.
+ *
+ * `global_fetch_strictly_public` cannot do this here: it routes global fetch through workerd's
+ * `internet` service, which this runtime configures to allow private addresses. Requests for this
+ * instance's own dashboard origin go to the product through a service binding, so the bundled
+ * Executor app works when that origin resolves to a private address. Everything else uses the
+ * public-only network service unless the operator allows private fetch. Redirects return to the
+ * isolate, which sends each hop back here.
  */
 export class AppOutbound extends WorkerEntrypoint<Environment> {
   async fetch(request: Request): Promise<Response> {
     const self = URL.parse(this.env.SELF_ORIGIN)?.origin;
-    if (this.env.SELF !== undefined && new URL(request.url).origin === self)
-      return this.env.SELF.fetch(request);
-    return this.env.APPS_PRIVATE_FETCH ? fetch(request) : this.env.PUBLIC_FETCH.fetch(request);
+    return credentialFetch(request, {
+      app: Schema.decodeUnknownSync(OutboundProps)(this.ctx.props).app,
+      key: await Effect.runPromise(credentials(this.env)),
+      send: (request) => {
+        if (this.env.SELF !== undefined && new URL(request.url).origin === self)
+          return this.env.SELF.fetch(request);
+        return this.env.APPS_PRIVATE_FETCH ? fetch(request) : this.env.PUBLIC_FETCH.fetch(request);
+      },
+    });
   }
 }
+type OutboundLoopback = (options: { readonly props: OutboundProps }) => Fetcher;
 const OutboundExports = Schema.Struct({
-  AppOutbound: Schema.declare(
-    (value): value is Fetcher =>
-      ((typeof value === "object" && value !== null) || typeof value === "function") &&
-      "fetch" in value &&
-      typeof value.fetch === "function",
-  ),
+  AppOutbound: Schema.declare((value): value is OutboundLoopback => typeof value === "function"),
 });
 /** The loopback binding to `AppOutbound` that workerd supplies on every context's exports. */
-const appOutbound = (context: { readonly exports: unknown }): Fetcher =>
-  Schema.decodeUnknownSync(OutboundExports)(context.exports).AppOutbound;
+const appOutbound =
+  (context: { readonly exports: unknown }) =>
+  (app: string): Fetcher =>
+    Schema.decodeUnknownSync(OutboundExports)(context.exports).AppOutbound({ props: { app } });
 const rpcOptions = { onSendError: () => new Error("App runtime request failed") };
 const json = Schema.decodeUnknownSync(Schema.Json);
 const hostRequest = (env: Environment, command: WorkflowHostCommand) =>
@@ -180,6 +194,7 @@ const runner = (env: Environment, context: Pick<ExecutionContext, "waitUntil" | 
     loader: env.LOADER,
     residency: (residency ??= makeAppWorkerResidency(env.APP_WORKERS ?? defaultAppWorkerLimit)),
     outbound: appOutbound(context),
+    credentialKey: credentials(env),
     data: (app) => {
       const target = env.DATA.getByName(app);
       return {
@@ -248,9 +263,9 @@ class AppApi extends RpcTarget {
           request.files,
           this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY },
         );
-        const { bundle, ui } = compiled;
+        const { bundle, framework, ui } = compiled;
         const requirements = yield* runner(this.#env, this.#context)
-          .declare({ ...bundle, protocol: compiled.protocol }, {})
+          .declare({ ...assembleWorkerBundle(bundle, framework), protocol: compiled.protocol }, {})
           .pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(HostResponse)),
             Effect.flatMap((envelope) =>
@@ -266,6 +281,7 @@ class AppApi extends RpcTarget {
           ok: true as const,
           value: {
             bundle,
+            framework,
             protocol: compiled.protocol,
             requirements: json(yield* Schema.encodeEffect(DeclaredRequirements)(requirements)),
             ...(ui === undefined ? {} : { ui }),

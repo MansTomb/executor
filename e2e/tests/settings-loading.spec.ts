@@ -143,15 +143,13 @@ layer(HostedLive, { excludeTestServices: true })("Settings page loading", (it) =
                 allRequests: true,
               });
               yield* openThroughBrowser(
-                "Open API keys while tokens are held",
-                `/org/${actors.organization.slug}/api-keys`,
+                "Open account tokens while tokens are held",
+                `/account/tokens?organization=${actors.organization.slug}`,
               );
               yield* tokens.requested;
               expect(
-                yield* browser.use(
-                  "The API keys heading never becomes Organization settings",
-                  (page) =>
-                    page.getByRole("heading", { name: "API keys", exact: true }).isVisible(),
+                yield* browser.use("The Tokens heading is present before tokens resolve", (page) =>
+                  page.getByRole("heading", { name: "Tokens", exact: true }).isVisible(),
                 ),
               ).toBe(true);
               yield* browser.use("Only token values are pending", (page) =>
@@ -163,16 +161,11 @@ layer(HostedLive, { excludeTestServices: true })("Settings page loading", (it) =
                   .waitFor({ state: "visible" }),
               );
               expect(
-                yield* browser.use("Connection instructions are already visible", (page) =>
-                  page
-                    .getByRole("heading", {
-                      name: "Connect an MCP client",
-                      exact: true,
-                    })
-                    .isVisible(),
+                yield* browser.use("Token guidance is already visible", (page) =>
+                  page.getByText(/^Tokens have your current permissions/).isVisible(),
                 ),
               ).toBe(true);
-              yield* browser.checkpoint(`${viewport.width} API keys values pending`);
+              yield* browser.checkpoint(`${viewport.width} Tokens values pending`);
               yield* tokens.release;
               yield* browser.use("Tokens resolve", (page) =>
                 page
@@ -196,7 +189,7 @@ layer(HostedLive, { excludeTestServices: true })("Settings page loading", (it) =
               yield* browser.use("Close without creating a token", (page) =>
                 page.getByRole("button", { name: "Cancel", exact: true }).click(),
               );
-              yield* browser.checkpoint(`${viewport.width} API keys loaded`);
+              yield* browser.checkpoint(`${viewport.width} Tokens loaded`);
             }),
           );
         }

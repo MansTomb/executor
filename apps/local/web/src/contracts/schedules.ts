@@ -1,5 +1,5 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { browserApproval } from "@executor-js/ui/contracts/browser-approval";
 import { BrowserAtoms } from "./telemetry.ts";
 /** Product transport owns schedule atoms; each mutation belongs to one app and schedule. */
@@ -28,7 +28,7 @@ const settings = Atom.family((key: AppKey) =>
       params: key,
       query: { profile: key.profile },
     }),
-  ).pipe(refreshOnFocus, acknowledgedQuery),
+  ).pipe(revalidated, acknowledgedQuery),
 );
 const polledSettings = Atom.family((key: AppKey) => pollingQuery(settings(key), steadyPolling));
 const definitions = Atom.family((key: AppKey) =>
@@ -39,7 +39,7 @@ const definitions = Atom.family((key: AppKey) =>
       params: key,
       query: { profile: key.profile },
     }),
-  ).pipe(refreshOnFocus),
+  ).pipe(revalidated),
 );
 const controls = Atom.family((key: ScheduleKey) => {
   const saved = (get: Atom.FnContext, value: ScheduleSettings) =>
@@ -79,7 +79,7 @@ const runsSource = DashboardClient.query(
   "schedules",
   "runs",
   hydrated({ query: { pending: true } }),
-).pipe(refreshOnFocus, acknowledgedQuery);
+).pipe(revalidated, acknowledgedQuery);
 const runsQuery = pollingQuery(runsSource, steadyPolling);
 /** Join safe run metadata with app names; keep either read failure visible. */
 export const pendingApprovalsAtom = DashboardClient.runtime.atom((get) =>

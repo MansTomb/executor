@@ -68,6 +68,8 @@ it.live(
         );
         const origin = `http://127.0.0.1:${port}`;
         const environment: Record<string, string> = {
+          // Release scenarios never send product analytics, even from an image with a baked key.
+          DO_NOT_TRACK: "1",
           PORT: String(port),
           HOST: "127.0.0.1",
           BETTER_AUTH_URL: origin,

@@ -1,7 +1,11 @@
 import { publishedSkillRoutes, readExecutorSkills } from "@executor-js/app-templates/executor";
 import { localAppBrowserHandlers } from "./app-browser.ts";
 import { startupPhase } from "./startup-diagnostics.ts";
-import { startScheduleWorker, defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
+import {
+  startScheduleWorker,
+  defaultScheduleWorkerOptions,
+  ScheduleObservation,
+} from "@executor-js/sdk/scheduling";
 import { localScheduleHandlers } from "./schedules.ts";
 import { localMcpApproval } from "./mcp-approvals.ts";
 import { makeLocalMcpOAuth } from "./mcp-oauth.ts";
@@ -69,6 +73,9 @@ import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
 import { localManagementDocument } from "../contracts/management.ts";
 import { gitSourceStorage } from "@executor-js/app-source";
 import { nativeRepositories } from "@executor-js/app-source/node";
+import { feedbackDisabled } from "@executor-js/telemetry/product-analytics";
+import { LocalFeedbackApi } from "../contracts/feedback.ts";
+import { localAnalytics, observeLocalExecutor, scheduleAnalytics } from "./product-analytics.ts";
 
 /** Initialize local persistence and compose the API, without choosing a socket implementation. */
 export const localApi = (
@@ -138,8 +145,17 @@ export const localApi = (
         },
       }).pipe(startupPhase("sdk"));
       yield* Deferred.succeed(ready, executor);
+      const analytics = yield* localAnalytics({
+        directory,
+        product: options.product ?? "local",
+        platform: options.platform ?? { os: "unknown", arch: "unknown" },
+        sql,
+      });
+      /** Each product surface records its own use; host-owned work uses the plain executor. */
+      const observed = (source: "mcp" | "api" | "dashboard" | "app_ui") =>
+        observeLocalExecutor(executor, analytics, source);
       // Before background work, the Executor app's regeneration and serving; the data lock is held.
-      yield* runStartupDataSteps({ executor, repositories }, "private_local").pipe(
+      yield* runStartupDataSteps({ executor, repositories, blobs }, "private_local").pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
         startupPhase("data-steps"),
       );
@@ -155,13 +171,18 @@ export const localApi = (
           Effect.repeat(Schedule.spaced("5 seconds")),
         ),
       );
-      yield* startScheduleWorker(executor, () => Effect.void, {
+      const scheduleConcurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
+        Config.withDefault(defaultScheduleWorkerOptions.concurrency),
+      );
+      const scheduler = startScheduleWorker(executor, () => Effect.void, {
         ...defaultScheduleWorkerOptions,
         runner: "local",
-        concurrency: yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
-          Config.withDefault(defaultScheduleWorkerOptions.concurrency),
-        ),
+        concurrency: scheduleConcurrency,
       });
+      // The worker's polling fibers inherit the observer it starts with.
+      yield* analytics === undefined
+        ? scheduler
+        : scheduler.pipe(Effect.provideService(ScheduleObservation, scheduleAnalytics(analytics)));
       const managed = yield* installExecutorApp(executor, storage, credentialStore, config);
       const access = HttpRouter.middleware((httpEffect) =>
         Effect.gen(function* () {
@@ -197,7 +218,8 @@ export const localApi = (
         }),
       );
       const oauth = yield* makeLocalMcpOAuth(config, auth, crypto);
-      const mcp = yield* localMcp(executor, config.mcp, config, oauth);
+      const mcp = yield* localMcp(observed("mcp"), config.mcp, config, oauth);
+      const api = observed("api");
       const programmatic = Layer.mergeAll(
         HttpRouter.add(
           "GET",
@@ -207,9 +229,9 @@ export const localApi = (
         HttpApiBuilder.layer(ExecutorApi).pipe(
           Layer.provide(
             executorHandlers({
-              ...executor,
+              ...api,
               accountConnections: {
-                ...executor.accountConnections,
+                ...api.accountConnections,
                 create: (input) => {
                   if (input.account === managed.account)
                     return Effect.fail(new AccountNotFound({ account: input.account }));
@@ -221,10 +243,25 @@ export const localApi = (
             }),
           ),
         ),
+        HttpApiBuilder.layer(LocalFeedbackApi).pipe(
+          Layer.provide(
+            HttpApiBuilder.group(LocalFeedbackApi, "feedback", (handlers) =>
+              Effect.succeed(
+                handlers.handle("submit", ({ payload }) =>
+                  analytics === undefined
+                    ? Effect.fail(feedbackDisabled())
+                    : analytics
+                        .submit("feedback_submitted", { message: payload.message })
+                        .pipe(Effect.as({ status: "accepted" as const })),
+                ),
+              ),
+            ),
+          ),
+        ),
       ).pipe(Layer.provide(access.layer));
       const signIn = yield* appAuthentication(executor, auth, config, crypto);
       const ui = appUi(
-        executor,
+        observed("app_ui"),
         storage,
         toEffectRuntime(runtime, blobs),
         config,
@@ -272,10 +309,18 @@ export const localApi = (
         HttpRouter.add("GET", "/mcp/*", notFound),
         HttpRouter.add("GET", "*", ui.page),
       ).pipe(Layer.provide(appOriginAccess.layer), Layer.provide(privateResponses.layer));
-      const dashboardApi = dashboard(executor, storage, credentialStore, config, auth, egress, {
-        managedApp: managed.app,
-        managedAccount: managed.account,
-      });
+      const dashboardApi = dashboard(
+        observed("dashboard"),
+        storage,
+        credentialStore,
+        config,
+        auth,
+        egress,
+        {
+          managedApp: managed.app,
+          managedAccount: managed.account,
+        },
+      );
       const web = options.web ?? (yield* webFiles);
       // Dashboard-host routes never include the app-origin APIs.
       const publicSkills = yield* readExecutorSkills;
@@ -284,7 +329,7 @@ export const localApi = (
         auth,
         managed.app,
         {
-          executor,
+          executor: api,
           sources,
           repositories,
           registry,
@@ -326,7 +371,7 @@ export const localApi = (
           localMcpApproval(mcp.approvals, auth, config, executor, oauth),
         ),
         HttpApiBuilder.layer(AccountConnectApi).pipe(
-          Layer.provide(accountConnectHandlers(executor, config, crypto, managed)),
+          Layer.provide(accountConnectHandlers(observed("dashboard"), config, crypto, managed)),
           Layer.provide(privateResponses.layer),
         ),
         HttpApiBuilder.layer(DashboardApi).pipe(

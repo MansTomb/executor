@@ -141,6 +141,14 @@ function AccountsList({
                   />
                   <div>
                     <strong>{account.label || "Unnamed account"}</strong>
+                    {account.description && (
+                      <p
+                        className="account-description mt-0.5 truncate text-[12px] text-muted-foreground"
+                        title={account.description}
+                      >
+                        {account.description}
+                      </p>
+                    )}
                     <div className="row-meta flex flex-wrap gap-1.5 items-center mt-0.75 text-[11px] text-muted-foreground">
                       {account.providerName && (
                         <>

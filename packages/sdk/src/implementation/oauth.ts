@@ -645,6 +645,7 @@ export const makeOAuth = (
             const saved = stored ?? {
               ...account,
               label: input.label ?? (yield* defaultLabel(tx, input.owner, input.provider)),
+              description: null,
             };
             if (stored === undefined) {
               yield* query(() => tx.create("accounts", { ...saved, encryptedCredentials }));
@@ -961,6 +962,7 @@ export const makeOAuth = (
               provider: attempt.provider,
               owner: attempt.owner,
               label: attempt.label ?? (yield* defaultLabel(tx, attempt.owner, attempt.provider)),
+              description: null,
               method: attempt.method,
               createdAt: new Date(completedAt),
             }));

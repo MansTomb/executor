@@ -254,10 +254,38 @@ const accountChecks = table("executor_account_checks", {
   infoCheckedAt: column("info_checked_at", Schema.NullOr(Schema.Date)).default(null),
 }).unique("executor_account_checks_account_app", ["account", "app"]);
 
+/** Tables of the 4.0.3 layout. */
+export const version403Tables = { ...version402Tables, accountChecks };
+
+/**
+ * Version 4.0.4 adds an account description: free text agents read with the account's label to
+ * choose between accounts. Existing accounts have none.
+ */
+const describedAccounts = table("executor_accounts", {
+  ...accounts.columns,
+  description: column("description", Schema.NullOr(Schema.String)).default(null),
+});
+
+/** Tables of the 4.0.4 layout. */
+export const version404Tables = { ...version403Tables, accounts: describedAccounts };
+
+/**
+ * Version 4.0.5 records the hosts each account was connected for. Null for accounts connected
+ * without declared hosts, which allow whatever an app declares.
+ */
+const grantedAccounts = table("executor_accounts", {
+  ...describedAccounts.columns,
+  /**
+   * The hosts the account's secret values may be sent to, as declared by the app it was connected
+   * for. An app sends them only to the hosts it declares as well. See credential-handles.ts.
+   */
+  allowedHosts: column("allowed_hosts", Schema.NullOr(Schema.Json)).default(null),
+});
+
 /** Current ORM layout. Profiles own account selections; apps declare requirements. */
 export const storageSchema = schema({
-  version: "4.0.3",
-  tables: { ...version402Tables, accountChecks },
+  version: "4.0.5",
+  tables: { ...version404Tables, accounts: grantedAccounts },
   relations: {
     accounts: ({ one }) => ({
       providerDefinition: one("providers", ["provider", "id"]).foreignKey(),

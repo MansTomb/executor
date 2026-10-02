@@ -78,7 +78,7 @@ export const dashboard = (
 ) => {
   const owner = OwnerId.make("local");
   const appCatalog = createCatalog(egress, catalog);
-  const db = storage.orm("4.0.3");
+  const db = storage.orm("4.0.5");
   const signIn = accountSignIn(storage, credentials);
   const query = <A, E>(work: () => Effect.Effect<A, E>) =>
     Effect.suspend(work).pipe(Effect.mapError(() => new StorageError()));
@@ -377,7 +377,7 @@ export const dashboard = (
       .handle("checkCredentials", ({ params, payload }) =>
         executor.apps.checkCredentials({ ...params, ...payload }),
       )
-      .handle("renameAccount", ({ params, payload }) =>
+      .handle("updateAccount", ({ params, payload }) =>
         manage(params.account, executor.accounts.update({ ...params, ...payload })),
       )
       .handle("replaceAccountCredentials", ({ params, payload }) =>

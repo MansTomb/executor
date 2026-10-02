@@ -28,6 +28,32 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
           files: [{ path: "index.ts", content: accountToolSource }, appsManifest],
         });
         expect(deployed.status).toBe(200);
+        // The deploy writes its retained build to this data centre's Cache API in the background.
+        const deployRequest = (yield* evidence.requests).at(-1);
+        if (deployRequest === undefined)
+          return yield* Effect.die("Deploy request evidence missing");
+        const warmed = yield* telemetry.query(deployRequest.traceId).pipe(
+          Effect.flatMap((result) => {
+            // The record is always written; the framework only when the isolate did not hold it.
+            const write = result.data.find(
+              ({ span }) =>
+                span.operationName === "runtime.cloud.build.cache_write" &&
+                span.tags["executor.build.cache_part"] === "record",
+            );
+            return write === undefined
+              ? Effect.fail(new Error("The deploy's build cache write has not been delivered"))
+              : Effect.succeed({ result, write });
+          }),
+          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+        );
+        yield* evidence.json("deploy.json", warmed.result);
+        expect(warmed.write.span.tags["executor.build.cache_write"]).toBe("stored");
+        for (const { span } of warmed.result.data)
+          if (span.operationName === "runtime.cloud.build.cache_write")
+            expect(
+              span.tags["executor.build.cache_write"],
+              span.tags["executor.build.cache_part"],
+            ).toBe("stored");
         const app = yield* body(App, deployed);
         const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const accounts: string[] = [];
@@ -67,7 +93,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
           personal = yield* add("Personal", "personal");
 
         // Each account selection is a separate Worker identity, so each index starts a cold
-        // Worker for the same immutable build. Only the first must read the retained build.
+        // Worker for the same immutable build. The managed Worker serves every request from the
+        // isolate that deployed the build, so neither reads the retained build from R2.
         const coldIndex = (account: string, tool: string) =>
           Effect.gen(function* () {
             const selected = yield* selectProfileAccounts(
@@ -102,14 +129,17 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
             expect(loads, "One cold Worker start loads its build once").toHaveLength(1);
             return {
               source: loads[0]?.span.tags["executor.build.cache"],
+              framework: loads[0]?.span.tags["executor.build.framework_cache"],
               blobReads: trace.data.filter(({ span }) => span.operationName === "storage.blob.get")
                 .length,
             };
           });
 
         const first = yield* coldIndex(work, "work");
-        expect(first.source, "A new build is read from retained storage").toBe("miss");
-        expect(first.blobReads).toBe(1);
+        expect(first.source, "The deploying isolate kept the new build decoded").toBe("memory");
+        // The framework is stored apart from the record; the deploy kept it decoded as well.
+        expect(first.framework, "The deploying isolate kept the framework decoded").toBe("memory");
+        expect(first.blobReads, "A freshly deployed build is not read from R2").toBe(0);
         const second = yield* coldIndex(personal, "personal");
         expect(second.source, "The isolate reuses the build it already decoded").toBe("memory");
         expect(second.blobReads, "A reused build is not read from R2 again").toBe(0);

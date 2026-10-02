@@ -17,7 +17,7 @@ import {
   type OwnerId,
 } from "../contracts/shared.ts";
 import { AppNotFound } from "../contracts/apps.ts";
-import { validateFields } from "./provider.ts";
+import { grantedDefinition, validateFields } from "./provider.ts";
 import { StoredDeployment, type StoredAccount } from "../contracts/storage.ts";
 import { storedAccount } from "./accounts.ts";
 import { query, type Query } from "./database.ts";
@@ -217,7 +217,7 @@ export const makeAccountHealth = (
             accounts: Redacted.make({
               [target.slot]: {
                 id: account.id,
-                provider: definition,
+                provider: grantedDefinition(definition, account.allowedHosts),
                 method: account.method,
                 generation: account.credentialGeneration,
                 fields,

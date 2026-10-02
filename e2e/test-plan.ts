@@ -534,6 +534,19 @@ export const scenarios = {
       "self-host": na("Desktop data reset"),
     },
   },
+  localBootstrapRotation: {
+    file: "local-bootstrap.spec.ts",
+    title:
+      "local rotate-key replaces the saved API key where it is kept and retains the encryption key",
+    targets: {
+      local: {
+        status: "not-run",
+        reason: "Runs against the installed release archive with local-bootstrap.config.ts.",
+      },
+      cloud: na("Local key storage"),
+      "self-host": na("Local key storage"),
+    },
+  },
   memberControls: {
     fixtures: "actors",
     file: "member-controls.spec.ts",
@@ -674,6 +687,16 @@ export const scenarios = {
     fixtures: "actors",
     file: "seat-only-billing.spec.ts",
     title: "Seat-only billing runs HTTP and MCP without an execution balance",
+    targets: {
+      "self-host": na("Billing is cloud only."),
+      cloud: scheduled,
+      local: na("Billing is cloud only."),
+    },
+  },
+  memberLimit: {
+    fixtures: "actors",
+    file: "member-limit.spec.ts",
+    title: "A full Free plan refuses invitations and offers an upgrade",
     targets: {
       "self-host": na("Billing is cloud only."),
       cloud: scheduled,
@@ -938,7 +961,7 @@ export const scenarios = {
     file: "app-framework-pin.spec.ts",
     title: "Cloud reports the framework pin data step from the Worker's cron",
     targets: {
-      cloud: scheduled,
+      cloud: managedCloud,
       "self-host": na("Self-host runs the same step at its startup in the hosted scenario."),
       local: na("Local runs the same step at its startup in the local scenario."),
     },
@@ -1105,11 +1128,74 @@ export const scenarios = {
   feedback: {
     fixtures: "actors",
     file: "feedback.spec.ts",
-    title: "Cloud feedback enforces its API contract and reaches the local ingestion service",
+    title: "Hosted feedback enforces its API contract and reaches the local ingestion service",
     targets: {
       cloud: managedCloud,
-      "self-host": na("PostHog feedback belongs to Cloud."),
-      local: na("PostHog feedback belongs to Cloud."),
+      "self-host": scheduled,
+      local: na("Local feedback has no organization; the local analytics scenario covers it."),
+    },
+  },
+  selfHostAnalytics: {
+    fixtures: "actors",
+    file: "instance-analytics.spec.ts",
+    title:
+      "self-host analytics pseudonymize people, report a private domain and send no names or IDs",
+    managementProfiles: ["owner"],
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud sends request-owned analytics; the Cloud product analytics scenario."),
+      local: na("Local has no people; the local analytics scenario covers its install ID."),
+    },
+  },
+  selfHostAnalyticsOptOut: {
+    fixtures: "actors",
+    file: "instance-analytics.spec.ts",
+    title: "self-host with DO_NOT_TRACK sends nothing and reports feedback as disabled",
+    managementProfiles: ["owner"],
+    serverEnvironment: { DO_NOT_TRACK: "1" },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Operators of self-run installations opt out; Cloud has no such setting."),
+      local: na("The local opt-out scenario covers local."),
+    },
+  },
+  selfHostAnalyticsRootDomain: {
+    file: "instance-analytics.spec.ts",
+    title: "self-host analytics report the registrable domain of a public origin",
+    serverEnvironment: { BETTER_AUTH_URL: "https://executor.platform.acme.co.uk" },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Only self-host reports a root domain."),
+      local: na("Only self-host reports a root domain."),
+    },
+  },
+  selfHostAnalyticsTunnelDomain: {
+    file: "instance-analytics.spec.ts",
+    title: "self-host analytics report a tunnel origin as private",
+    serverEnvironment: { BETTER_AUTH_URL: "https://agent-box-7f3a.ngrok-free.app" },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Only self-host reports a root domain."),
+      local: na("Only self-host reports a root domain."),
+    },
+  },
+  localAnalytics: {
+    file: "instance-analytics.spec.ts",
+    title: "local analytics use the install ID, accept feedback and send no names or inputs",
+    targets: {
+      local: scheduled,
+      "self-host": na("The self-host analytics scenario covers hosted identity."),
+      cloud: na("Cloud sends request-owned analytics; the Cloud product analytics scenario."),
+    },
+  },
+  localAnalyticsOptOut: {
+    file: "instance-analytics.spec.ts",
+    title: "local with EXECUTOR_DISABLE_ANALYTICS sends nothing and reports feedback as disabled",
+    serverEnvironment: { EXECUTOR_DISABLE_ANALYTICS: "1" },
+    targets: {
+      local: scheduled,
+      "self-host": na("The self-host opt-out scenario covers self-host."),
+      cloud: na("Operators of self-run installations opt out; Cloud has no such setting."),
     },
   },
   groupFormErrors: {
@@ -1253,6 +1339,16 @@ export const scenarios = {
       local: na("This scenario exercises the Cloud compiler dependency resolver."),
     },
   },
+  cloudCompilerDeadline: {
+    fixtures: "actors",
+    file: "cloud-compiler.spec.ts",
+    title: "Cloud deploys fail promptly when the compiler does not answer",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("This scenario exercises the Cloud compiler Worker binding."),
+      local: na("This scenario exercises the Cloud compiler Worker binding."),
+    },
+  },
   cloudCompilerMemory: {
     fixtures: "actors",
     file: "cloud-compiler.spec.ts",
@@ -1392,6 +1488,69 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: managedCloud,
       local: na("Local workflow runs are covered by the local app Worker reuse scenario."),
+    },
+  },
+  credentialHostsRefused: {
+    fixtures: "actors",
+    file: "credential-hosts.spec.ts",
+    title:
+      "secret fields reach app code as handles that neither undeclared hosts nor other apps can use",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local runs apps through the same workerd runner and outbound as self-host."),
+    },
+  },
+  credentialHostsRefusedData: {
+    fixtures: "actors",
+    file: "credential-hosts.spec.ts",
+    title: "a data facet's secret fields are handles that undeclared hosts cannot use",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local runs apps through the same workerd runner and outbound as self-host."),
+    },
+  },
+  credentialHostsForm: {
+    fixtures: "actors",
+    file: "credential-hosts.spec.ts",
+    title: "the connect form says where credentials can go and shows plain fields",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The hosted and local dashboards share the credential form."),
+    },
+  },
+  credentialHostsGranted: {
+    fixtures: "actors",
+    file: "credential-hosts.spec.ts",
+    title:
+      "an account sends its secrets only to the hosts it was connected for, in every app that selects it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback service; Cloud app Workers reach only public addresses."),
+      local: na("Local runs apps through the same workerd runner and outbound as self-host."),
+    },
+  },
+  credentialHostsProduct: {
+    fixtures: "actors",
+    file: "credential-hosts.spec.ts",
+    title: "a sealed API key reaches the product's own API through the app's outbound network",
+    targets: {
+      "self-host": scheduled,
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local runs apps through the same workerd runner and outbound as self-host."),
+    },
+  },
+  credentialHostsSubstituted: {
+    fixtures: "actors",
+    file: "credential-hosts.spec.ts",
+    title:
+      "the outbound network substitutes secret fields for declared hosts and hides echoed values",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback service; Cloud app Workers reach only public addresses."),
+      local: na("Local runs apps through the same workerd runner and outbound as self-host."),
     },
   },
   appWorkerSharedContexts: {
@@ -1763,6 +1922,16 @@ export const scenarios = {
       local: na("Exercises the shared import and OAuth implementation through hosted APIs."),
     },
   },
+  importApprovals: {
+    fixtures: "actors",
+    file: "import-approvals.spec.ts",
+    title: "Imported destructive tools wait for approval through rules in the app's source",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud egress refuses loopback MCP hosts, so no Cloud scenario imports one."),
+      local: na("Exercises the hosted import, API key and MCP resume APIs."),
+    },
+  },
   mcpUrlDefaults: {
     fixtures: "actors",
     file: "mcp-url-defaults.spec.ts",
@@ -1969,6 +2138,33 @@ export const scenarios = {
       local: na("The hosted and local dashboards share the credential form and check contract."),
     },
   },
+  accountDescriptions: {
+    fixtures: "actors",
+    file: "account-descriptions.spec.ts",
+    title:
+      "An account description is set when naming a new account, shown in the account list, edited and cleared",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "The local dashboard shares the naming and edit forms; its API and MCP have their own scenario.",
+      ),
+    },
+  },
+  localAccountDescriptions: {
+    file: "local-account-descriptions.spec.ts",
+    title:
+      "An account description set through the account API is returned with the account, shown to agents with its tools, kept on rename and removed with null",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "The local account API and MCP backend; hosted descriptions have their own scenario.",
+      ),
+      cloud: na(
+        "The local account API and MCP backend; hosted descriptions have their own scenario.",
+      ),
+    },
+  },
   localPastedCredentialsNamedAfterSaving: {
     file: "local-account-naming.spec.ts",
     title:
@@ -2164,6 +2360,16 @@ export const scenarios = {
       local: scheduled,
     },
   },
+  oauthMetadataOverride: {
+    fixtures: "actors",
+    file: "oauth-metadata-override.spec.ts",
+    title: "OAuth metadata overrides validate ES256 and issuer while MCP challenges select scopes",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises the shared OAuth lifecycle through hosted APIs."),
+    },
+  },
   oauthDiscoveryFallback: {
     fixtures: "actors",
     file: "oauth-discovery-fallback.spec.ts",
@@ -2350,6 +2556,18 @@ export const scenarios = {
       local: na("This journey checks hosted query refresh after organization identity resolution."),
     },
   },
+  retainedReturn: {
+    fixtures: "actors",
+    file: "query-refresh.spec.ts",
+    title: "Returning to the apps list shows its apps at once and refreshes them in the background",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "This journey checks hosted query retention after organization identity resolution.",
+      ),
+    },
+  },
   membersRefresh: {
     fixtures: "actors",
     file: "query-refresh.spec.ts",
@@ -2474,7 +2692,7 @@ export const scenarios = {
   apiKeysLoading: {
     fixtures: "actors",
     file: "settings-loading.spec.ts",
-    title: "API keys loading keeps its page identity while tokens load",
+    title: "Account tokens loading keeps its page identity while tokens load",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -2536,12 +2754,34 @@ export const scenarios = {
       local: na("The API document and catalog installation are hosted product surfaces."),
     },
   },
+  appUiApiDocument: {
+    fixtures: "actors",
+    managementProfiles: ["owner"],
+    file: "app-ui.spec.ts",
+    title: "the API document and Executor app configuration keep browser-only app routes private",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted Better Auth and organization routes."),
+    },
+  },
+  appUiMcpSearch: {
+    fixtures: "actors",
+    managementProfiles: ["owner"],
+    file: "app-ui.spec.ts",
+    title: "MCP search lists the app URL tool without browser-only operations",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted Better Auth and organization routes."),
+    },
+  },
   appUiDiscovery: {
     fixtures: "actors",
     managementProfiles: ["owner"],
     file: "app-ui.spec.ts",
     appOrigin: true,
-    title: "MCP discovers private app URLs and preserves browser-only API boundaries",
+    title: "MCP discovers private app URLs only in the granted organization",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -2638,10 +2878,69 @@ export const scenarios = {
       local: na("Local keeps evaluated results in its single server process."),
     },
   },
+  buildFrameworkColdLoad: {
+    fixtures: "actors",
+    file: "build-framework-storage.spec.ts",
+    title: "A cold app load links its small build record with the stored framework",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na(
+        "Local retains builds through the same SDK storage; its deploys and cold loads run in the local Worker scenarios.",
+      ),
+    },
+  },
+  buildFrameworkShared: {
+    fixtures: "actors",
+    file: "build-framework-storage.spec.ts",
+    title: "Apps on the same apps release store its framework once",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na(
+        "Local retains builds through the same SDK storage; its deploys and cold loads run in the local Worker scenarios.",
+      ),
+    },
+  },
+  buildFrameworkVersions: {
+    fixtures: "actors",
+    file: "build-framework-storage.spec.ts",
+    title: "Builds on two apps releases each link their own stored framework",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na(
+        "Local retains builds through the same SDK storage; its deploys and cold loads run in the local Worker scenarios.",
+      ),
+    },
+  },
+  buildFrameworkMigration: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "build-framework-migration.spec.ts",
+    title: "Builds stored with an inlined framework are split by a data step at startup",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local runs the same step at its own startup; see the local scenario."),
+    },
+  },
+  localBuildFrameworkMigration: {
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "build-framework-migration.spec.ts",
+    title: "Builds stored with an inlined framework are split by a data step at local startup",
+    targets: {
+      local: scheduled,
+      "self-host": na("Self-host runs the same step at its startup in the hosted scenario."),
+      cloud: na("Cloud runs the same step from its Worker's cron; see the hosted scenario."),
+    },
+  },
   cloudBuildReuse: {
     fixtures: "actors",
     file: "cloud-build-reuse.spec.ts",
-    title: "Cold app Workers reuse a build already decoded in the isolate",
+    title: "Cold app Workers reuse a build the deploying isolate already decoded",
     targets: {
       cloud: managedCloud,
       "self-host": na("Self-host loads retained builds without the Cloud isolate cache."),
@@ -2794,6 +3093,27 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: scheduled,
       local: na("Local management routes have no organization."),
+    },
+  },
+  teamInstallationFromRequest: {
+    fixtures: "actors",
+    file: "team-installation.spec.ts",
+    title:
+      "A new Cloud team's Executor app is installed by its request while the workflow stands by",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host installs teams from its own provisioning worker."),
+      local: na("Local uses its configured instance and has no teams."),
+    },
+  },
+  teamInstallationConcurrent: {
+    fixtures: "actors",
+    file: "team-installation.spec.ts",
+    title: "Request and workflow attempts at one team leave one Executor app and one profile each",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host runs each provisioning job once, on its single worker."),
+      local: na("Local uses its configured instance and has no teams."),
     },
   },
   executorInstallationLoading: {
@@ -3005,6 +3325,17 @@ export const scenarios = {
         "The controlled upstream is loopback-only; hosted request authorization is shared.",
       ),
       local: na("Local uses its instance credential."),
+    },
+  },
+  accountSettings: {
+    fixtures: "actors",
+    file: "account-settings.spec.ts",
+    title:
+      "Account settings rename the signed-in user, list and revoke their sessions, and change the self-host password",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local pairs a device instead of signing a user in."),
     },
   },
   namedApiKeys: {
@@ -3232,10 +3563,31 @@ export const scenarios = {
       local: na("This scenario uses hosted profiles, API keys and MCP."),
     },
   },
+  workflowStarts: {
+    fixtures: "actors",
+    file: "workflows.spec.ts",
+    title:
+      "app workflow starts enforce permissions, input and idempotency keys in isolated app code",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app and account management routes."),
+    },
+  },
+  workflowsInUse: {
+    fixtures: "actors",
+    file: "workflows.spec.ts",
+    title: "running app workflows keep their account and app from deletion",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app and account management routes."),
+    },
+  },
   workflows: {
     fixtures: "actors",
     file: "workflows.spec.ts",
-    title: "app workflows pin deployments and accounts, retry steps, and enforce permissions",
+    title: "app workflows pin deployments and accounts and retry steps",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -3255,7 +3607,37 @@ export const scenarios = {
   workflowFailures: {
     fixtures: "actors",
     file: "workflows.spec.ts",
-    title: "app workflows enforce approval, failure, timeout rollback and termination",
+    title: "app workflow runs report approval and execution failure reasons",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app and account management routes."),
+    },
+  },
+  workflowFailureDetails: {
+    fixtures: "actors",
+    file: "workflows.spec.ts",
+    title: "errored app workflow runs name the failing step and redact account credentials",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app and account management routes."),
+    },
+  },
+  workflowStepTimeout: {
+    fixtures: "actors",
+    file: "workflows.spec.ts",
+    title: "app workflow step timeouts roll back the step's writes",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app and account management routes."),
+    },
+  },
+  workflowTermination: {
+    fixtures: "actors",
+    file: "workflows.spec.ts",
+    title: "terminating an app workflow requires permission and stops later steps",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,

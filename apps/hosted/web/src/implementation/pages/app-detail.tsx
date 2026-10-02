@@ -261,10 +261,10 @@ export function AppDetailPage({
                     ? "Checking organization access…"
                     : role === "owner" || role === "admin"
                       ? manageReason
-                      : "Only organization owners and admins can publish apps."
+                      : "Only organization owners and admins can share apps publicly."
                 }
               >
-                Publish
+                Share publicly
               </Button>
             )}
           </>

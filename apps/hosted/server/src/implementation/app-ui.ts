@@ -2,7 +2,7 @@ import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { CurrentUsage, recordUsage } from "../contracts/product-analytics.ts";
 import { fullAuthority } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
-import { requireAppAccess, requireAppUse } from "./resource-policy.ts";
+import { requireAccountAccess, requireAppAccess, requireAppUse } from "./resource-policy.ts";
 /** Hosted policy around the shared app browser protocol and retained asset renderer. */
 import {
   ProfileId,
@@ -12,10 +12,13 @@ import {
   AccountSelectionInvalid,
   OAuthReconnectRequired,
   AppNotFound,
+  credentialsRejected,
+  profileAccountProblems,
   DeploymentId,
   DeploymentNotFound,
   type App,
   type DeploymentMetadata,
+  type SelectedAccounts,
 } from "@executor-js/sdk/core";
 import {
   AppSignInCallback,
@@ -57,7 +60,7 @@ import {
   organizationOwner,
   type OrganizationAccess,
 } from "../contracts/organization.ts";
-import { checkAccounts, selectedProfile } from "./access.ts";
+import { checkAccounts, ownProfile, selectedProfile } from "./access.ts";
 import type { appAddresses } from "./app-addresses.ts";
 
 /** Authorization belongs to one HTTP request, never a shared or timed cache. */
@@ -71,6 +74,8 @@ class CurrentAppUi extends Context.Service<
 >()("hosted/CurrentAppUi") {}
 
 const unavailable = () => new UiFailed({ reason: "unavailable" });
+const accountIds = (accounts: SelectedAccounts) =>
+  Object.values(accounts).flatMap((value) => (typeof value === "string" ? [value] : value));
 const privateJson = (value: unknown, status = 200) =>
   HttpServerResponse.jsonUnsafe(value, { status, headers: appPrivateHeaders });
 const failure = (error: UiUnauthorized | UiForbidden | UiFailed) =>
@@ -490,6 +495,21 @@ export const hostedAppUi = <R = never>(
     const current = authorized.value;
     const version = yield* deployment(current.app);
     const url = new URL(request.url, current.target.origin);
+    /** The dashboard chooser for this app, returning to the page without its profile. */
+    const chooser = () =>
+      Effect.gen(function* () {
+        const back = new URL(url);
+        back.searchParams.delete("profile");
+        const returnTo = yield* Schema.decodeUnknownEffect(AppReturnPath)(
+          back.pathname + back.search,
+        ).pipe(Effect.mapError(() => new UiForbidden()));
+        const page = new URL(
+          `/org/${encodeURIComponent(current.target.slug)}/apps/${current.app.id}/open`,
+          addresses.dashboardOrigin,
+        );
+        page.searchParams.set("returnTo", returnTo);
+        return page.href;
+      });
     const requested = url.searchParams.get("profile");
     const profile = yield* Schema.decodeUnknownEffect(Schema.optional(ProfileId))(
       requested ?? undefined,
@@ -526,25 +546,31 @@ export const hostedAppUi = <R = never>(
             Effect.mapError(unavailable),
           ),
       );
+      // A lone profile opens directly only when none of its accounts was rejected.
+      const usable = (accounts: SelectedAccounts) =>
+        Effect.forEach(accountIds(accounts), (account) =>
+          executor.accounts.health({ owner: current.access.owner, account }).pipe(
+            Effect.map((health) => !credentialsRejected(health, current.app.id)),
+            Effect.catchTag("AccountNotFound", () => Effect.succeed(false)),
+            Effect.provideService(CurrentOrganization, current.access),
+            Effect.provideService(CurrentUserId, current.access.userId),
+            Effect.mapError(unavailable),
+          ),
+        ).pipe(Effect.map((results) => results.every(Boolean)));
       const only = candidates[0];
-      if (candidates.length === 1 && only !== undefined) {
+      if (candidates.length === 1 && only !== undefined && (yield* usable(only.accounts))) {
         url.searchParams.set("profile", only.id);
         return HttpServerResponse.redirect(url.href, { status: 302, headers: appPrivateHeaders });
       }
-      const returnTo = yield* Schema.decodeUnknownEffect(AppReturnPath)(
-        url.pathname + url.search,
-      ).pipe(Effect.mapError(() => new UiForbidden()));
-      const chooser = new URL(
-        `/org/${encodeURIComponent(current.target.slug)}/apps/${current.app.id}/open`,
-        addresses.dashboardOrigin,
-      );
-      chooser.searchParams.set("returnTo", returnTo);
-      return HttpServerResponse.redirect(chooser.href, { status: 302, headers: appPrivateHeaders });
+      return HttpServerResponse.redirect(yield* chooser(), {
+        status: 302,
+        headers: appPrivateHeaders,
+      });
     }
     const selected =
       profile === undefined
         ? undefined
-        : yield* selectedProfile(executor, current.access.owner, current.app.id, profile).pipe(
+        : yield* ownProfile(executor, current.access.owner, current.app.id, profile).pipe(
             Effect.provideService(CurrentOrganization, current.access),
             Effect.provideService(CurrentUserId, current.access.userId),
             Effect.mapError(() => new UiForbidden()),
@@ -554,9 +580,40 @@ export const hostedAppUi = <R = never>(
       (!selected.enabled || selected.status === "removing" || selected.status === "removed")
     )
       return yield* new UiForbidden();
+    const accountNotice = (profile: ProfileId, accounts: SelectedAccounts) =>
+      Effect.gen(function* () {
+        const found = yield* Effect.forEach(accountIds(accounts), (account) =>
+          requireAccountAccess(account, "use").pipe(
+            Effect.andThen(
+              Effect.all({
+                account: executor.accounts.get({ owner: current.access.owner, account }),
+                health: executor.accounts.health({ owner: current.access.owner, account }),
+              }),
+            ),
+            Effect.map((entry) => [[account, entry] as const]),
+            Effect.catchTag("AccountNotFound", () => Effect.succeed([])),
+            Effect.provideService(CurrentOrganization, current.access),
+            Effect.provideService(CurrentUserId, current.access.userId),
+            Effect.mapError((error) =>
+              error._tag === "OrganizationForbidden" ? new UiForbidden() : unavailable(),
+            ),
+          ),
+        );
+        const problems = profileAccountProblems(current.app, accounts, new Map(found.flat()));
+        if (problems.length === 0) return undefined;
+        const fix = new URL(
+          `/org/${encodeURIComponent(current.target.slug)}/apps/${current.app.id}`,
+          addresses.dashboardOrigin,
+        );
+        fix.searchParams.set("view", "accounts");
+        fix.searchParams.set("profile", profile);
+        return { app: current.app.name, problems, fix: fix.href, choose: yield* chooser() };
+      });
     const document = yield* appDocument({
       profile: selected?.id,
       expectedProfileRevision: selected?.revision,
+      accounts:
+        selected === undefined ? undefined : yield* accountNotice(selected.id, selected.accounts),
       origin: current.target.origin,
       deployment: version.id,
       asset: (path) => assets(version, path),

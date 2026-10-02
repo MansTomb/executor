@@ -58,6 +58,7 @@ value that does not match the directory stops startup and changes nothing.
 | `EXECUTOR_BROWSER_ORIGIN` | Exact HTTPS origin for generated browser links. |
 | `EXECUTOR_WEBHOOK_ORIGIN` | Exact HTTPS origin that receives webhooks. |
 | `EXECUTOR_KEY_STORAGE` | `file` or `os`: key storage for a new data directory. |
+| `DO_NOT_TRACK` or `EXECUTOR_DISABLE_ANALYTICS` | Set to `1` to turn off anonymous [usage analytics](/run/usage-analytics) and feedback. |
 
 To keep keys in a secret manager instead, supply both `EXECUTOR_API_KEY` (at
 least 32 characters) and `EXECUTOR_ENCRYPTION_KEY` (exactly 64 hexadecimal

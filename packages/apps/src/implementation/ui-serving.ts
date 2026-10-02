@@ -2,16 +2,25 @@
 import { CurrentTelemetryConfig } from "@executor-js/telemetry";
 import { Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { UiForbidden, type AppUiAsset } from "../contracts/ui.ts";
+import { UiForbidden, type AppUiAsset, type UiAccountNotice } from "../contracts/ui.ts";
+import {
+  accountBlockedPage,
+  accountNoticeBootstrap,
+  accountProblemBlocks,
+} from "./ui-account-notice.ts";
 import { appPrivateHeaders } from "./ui-auth.ts";
 import { appFailureBootstrap } from "./ui-errors.ts";
 
-/** Render an authorized deployment with a host-owned deployment watcher. */
+/**
+ * Render an authorized deployment with a host-owned deployment watcher. Account problems that stop
+ * the app replace its document with a page that links to their fix; others add a dismissible card.
+ */
 export const appDocument = <E, R>(options: {
   readonly deployment: string;
   readonly profile?: string | undefined;
   readonly expectedProfileRevision?: number | undefined;
   readonly origin: string;
+  readonly accounts?: UiAccountNotice | undefined;
   readonly asset: (path: string) => Effect.Effect<AppUiAsset | undefined, E, R>;
 }) =>
   Effect.gen(function* () {
@@ -27,6 +36,13 @@ export const appDocument = <E, R>(options: {
       });
     if (pathname.includes(".") && pathname !== "/index.html")
       return HttpServerResponse.empty({ status: 404 });
+    const notice = options.accounts;
+    if (notice?.problems.some(accountProblemBlocks))
+      return HttpServerResponse.text(accountBlockedPage(notice), {
+        status: 409,
+        contentType: "text/html",
+        headers: appPrivateHeaders,
+      });
     const document = yield* options.asset("index.html");
     if (document === undefined)
       return HttpServerResponse.text("This app has no UI.", {
@@ -45,7 +61,7 @@ export const appDocument = <E, R>(options: {
       telemetry === undefined
         ? ""
         : `<meta name="executor-build" content="${attribute(telemetry.version)}"><meta name="executor-environment" content="${attribute(telemetry.environment)}">`;
-    const boot = `${metadata}<base href="/_executor/assets/${attribute(options.deployment)}/"><script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}<script src="/_executor/watch.js" defer></script>`;
+    const boot = `${metadata}<base href="/_executor/assets/${attribute(options.deployment)}/"><script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script src="/_executor/watch.js" defer></script>`;
     return HttpServerResponse.text(
       new TextDecoder().decode(document.body).replace("<!--executor-ui-->", boot),
       { contentType: "text/html", headers: appPrivateHeaders },

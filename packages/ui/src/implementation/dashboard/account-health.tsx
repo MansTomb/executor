@@ -1,4 +1,4 @@
-import type { AccountAppHealth, AccountHealth } from "@executor-js/sdk";
+import type { AccountAppHealth, AccountCheckStatus, AccountHealth } from "@executor-js/sdk";
 import { Exit, Match, type Cause } from "effect";
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import type { AccountDetail, FailureProps } from "../../contracts/dashboard.ts";
@@ -6,12 +6,11 @@ import { Button } from "../components/button.tsx";
 import { LocalTime, shortMoment } from "../components/local-time.tsx";
 import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
 
-type Check = NonNullable<AccountAppHealth["check"]>;
 type AccountInfo = NonNullable<AccountHealth["info"]>;
 
 /** What one app's latest check means for the reader; tone matches the other status pills. */
-const describe = (check: Check) =>
-  Match.value(check.status).pipe(
+export const describeAccountCheck = (status: AccountCheckStatus) =>
+  Match.value(status).pipe(
     Match.when("healthy", () => ({ label: "Working", tone: "good" as const })),
     Match.when("credentials_rejected", () => ({
       label: "Sign-in rejected",
@@ -42,7 +41,7 @@ export function AccountCheckDot({ health }: { readonly health: AccountAppHealth 
   const format = useDisplayFormat();
   const check = health?.check;
   if (check === null || check === undefined) return null;
-  const { label, tone } = describe(check);
+  const { label, tone } = describeAccountCheck(check.status);
   const text = check.current ? label : `${label} (outdated)`;
   return (
     <span
@@ -186,7 +185,7 @@ export function AccountCheckResult({ health }: { readonly health: AccountAppHeal
     return <span className="text-[12px] text-muted-foreground">No check</span>;
   if (health.check === null)
     return <span className="text-[12px] text-muted-foreground">Not checked</span>;
-  const { label, tone } = describe(health.check);
+  const { label, tone } = describeAccountCheck(health.check.status);
   return (
     <span className="inline-flex items-center gap-2 text-[12px] text-muted-foreground">
       <span

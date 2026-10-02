@@ -1,6 +1,6 @@
 /** Typed browser OAuth operations. Client secrets and callback URLs stay redacted in Atom state. */
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Data, Effect, Option, Schema, type Redacted } from "effect";
 import { Atom } from "effect/unstable/reactivity";
 import {
@@ -21,7 +21,7 @@ class OAuthSetupKey extends Data.Class<{
 const setupQuery = Atom.family((key: OAuthSetupKey) =>
   DashboardClient.query("dashboard", "oauthSetup", hydrated({ payload: key })).pipe(
     Atom.setIdleTTL("5 minutes"),
-    refreshOnFocus,
+    revalidated,
   ),
 );
 /** Share read-only client requirements across local forms without creating connection attempts. */

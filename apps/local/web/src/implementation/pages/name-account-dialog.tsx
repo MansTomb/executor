@@ -14,7 +14,7 @@ import {
   accountAtom,
   accountToNameAtom,
   checkAccountAtom,
-  renameAccountAtom,
+  updateAccountAtom,
 } from "../../contracts/accounts.ts";
 import { Failure, LoadingRows } from "../components/common.tsx";
 
@@ -89,7 +89,7 @@ function LocalNameAccount({
   readonly onPendingChange: (pending: boolean) => void;
   readonly onDone: () => void;
 }) {
-  const rename = useAtomSet(renameAccountAtom(account.id), { mode: "promiseExit" });
+  const update = useAtomSet(updateAccountAtom(account.id), { mode: "promiseExit" });
   const check = useAtomSet(checkAccountAtom(account.id), { mode: "promiseExit" });
   // The account is saved before the app selects it, so follow the live account and check as soon
   // as a selecting app can. A passing check may name the upstream account.
@@ -119,7 +119,7 @@ function LocalNameAccount({
     <NameAccountForm
       account={account}
       providerName={providerName}
-      rename={rename}
+      update={update}
       Failure={Failure}
       identity={
         resolving ? { resolving: true } : { resolving: false, name: suggestedAccountName(health) }

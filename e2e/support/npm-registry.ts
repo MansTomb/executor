@@ -12,6 +12,12 @@ import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const upstream = "https://registry.npmjs.org";
+/**
+ * A synthetic package whose metadata response starts and never finishes, so a build that imports
+ * it leaves the compiler without an answer, as a lost compiler isolate does.
+ */
+export const stalledPackage = "@executor-fixture/stalled-package";
+const stalledPath = `/@${encodeURIComponent(stalledPackage.slice(1))}`;
 const JsonObject = Schema.Record(Schema.String, Schema.Json);
 const Manifest = Schema.Struct({ name: Schema.Literal("apps"), version: Schema.NonEmptyString });
 class RegistryFailed extends Schema.TaggedError<RegistryFailed>()("RegistryFailed", {
@@ -127,6 +133,11 @@ const serveRegistry = Effect.fnUntraced(function* (hostname: string) {
         new Promise<ReturnType<typeof createServer>>((resolve, reject) => {
           const server = createServer((request, response) => {
             const url = request.url ?? "/";
+            if (url.toLowerCase() === stalledPath.toLowerCase()) {
+              response.writeHead(200, { "Content-Type": "application/json" });
+              response.write("{");
+              return;
+            }
             // Archive links use the origin the client addressed, loopback or a container's gateway.
             const base = `http://${request.headers.host ?? ""}`;
             // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- node:http request handlers are plain callbacks
@@ -146,7 +157,15 @@ const serveRegistry = Effect.fnUntraced(function* (hostname: string) {
         }),
       catch: () => new RegistryFailed({ reason: "registry listener" }),
     }),
-    (server) => Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
+    (server) =>
+      Effect.promise(
+        () =>
+          new Promise<void>((resolve) => {
+            server.close(() => resolve());
+            // Stalled responses stay open until the registry stops.
+            server.closeAllConnections();
+          }),
+      ),
   );
   const address = server.address();
   if (address === null || typeof address === "string")

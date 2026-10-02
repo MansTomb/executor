@@ -121,8 +121,13 @@ const packagedCli = (options: {
       EXECUTOR_NPM_REGISTRY: registry.url,
       ...extra,
     });
-    const command = (directory: string, port: number, extra: Readonly<Record<string, string>>) =>
-      ChildProcess.make("node", [...options.nodeArgs, entry, "serve"], {
+    const command = (
+      directory: string,
+      port: number,
+      extra: Readonly<Record<string, string>>,
+      subcommand = "serve",
+    ) =>
+      ChildProcess.make("node", [...options.nodeArgs, entry, subcommand], {
         cwd: path.dirname(directory),
         env: environment(directory, port, extra),
         extendEnv: false,
@@ -142,6 +147,8 @@ const packagedCli = (options: {
       options: {
         readonly apiKey?: () => Effect.Effect<string, unknown>;
         readonly env?: Readonly<Record<string, string>>;
+        /** A replaced key that must now be refused. */
+        readonly previousKey?: string;
       } = {},
     ) =>
       Effect.scoped(
@@ -185,6 +192,14 @@ const packagedCli = (options: {
             );
             expect(other.status).toBe(401);
           }
+          if (options.previousKey !== undefined) {
+            const previous = yield* http.execute(
+              HttpClientRequest.get(`${origin}/openapi.json`).pipe(
+                HttpClientRequest.bearerToken(options.previousKey),
+              ),
+            );
+            expect(previous.status).toBe(401);
+          }
           return { stdout: yield* Ref.get(stdout), stderr: yield* Ref.get(stderr) };
         }),
       );
@@ -203,7 +218,24 @@ const packagedCli = (options: {
           return { code: Number(code), message };
         }),
       );
-    return { start, refuse, readRecord };
+    /** Run `executor rotate-key` to exit and return its exit code and output. */
+    const rotate = (directory: string, env: Readonly<Record<string, string>> = {}) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const port = yield* freePort;
+          const child = yield* processes.spawn(command(directory, port, env, "rotate-key"));
+          const [code, stdout, stderr] = yield* Effect.all(
+            [
+              child.exitCode,
+              child.stdout.pipe(Stream.decodeText, Stream.mkString),
+              child.stderr.pipe(Stream.decodeText, Stream.mkString),
+            ],
+            { concurrency: 3 },
+          );
+          return { code: Number(code), stdout, stderr };
+        }),
+      );
+    return { start, refuse, rotate, readRecord };
   });
 
 it.live(scenarios.localBootstrap.title, () =>
@@ -640,6 +672,109 @@ it.live(scenarios.localBootstrapKeyStorage.title, () =>
       expect(unknown.message).toContain('or "os"');
       expect(yield* fs.exists(invalid)).toBe(false);
       expect(yield* fingerprint(storeFile)).toBe(storeFingerprint);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer), Effect.provide(FetchHttpClient.layer)),
+);
+
+it.live(scenarios.localBootstrapRotation.title, () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-rotation-e2e-" });
+      const cli = yield* packagedCli({
+        keys: ["PATH", "HOME", "USERPROFILE", "SystemRoot", "APPDATA", "LOCALAPPDATA"],
+        nodeArgs: yield* standInKeyring(root),
+      });
+      const storeFile = path.join(root, "stand-in-store.json");
+      const as = (mode: string, storage?: string) => ({
+        EXECUTOR_E2E_STAND_IN: mode,
+        EXECUTOR_E2E_STAND_IN_FILE: storeFile,
+        ...(storage === undefined ? {} : { EXECUTOR_KEY_STORAGE: storage }),
+      });
+      const rotated = "Rotated the local API key.";
+      const unchanged = "The API key was not changed.";
+      const readKeys = (directory: string) =>
+        fs
+          .readFileString(path.join(directory, "keys.json"))
+          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(KeyFile))));
+      const storedKeys = (id: string) =>
+        fs.readFileString(storeFile).pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(
+              Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+            ),
+          ),
+          Effect.flatMap((saved) =>
+            Schema.decodeUnknownEffect(Schema.fromJsonString(KeyFile))(saved[id]),
+          ),
+        );
+      /** The server accepts the new key and refuses the one it replaced. */
+      const accepts = (
+        directory: string,
+        env: Readonly<Record<string, string>>,
+        key: string,
+        previousKey: string,
+      ) => cli.start(directory, { env, apiKey: () => Effect.succeed(key), previousKey });
+
+      // A directory with no saved keys has nothing to rotate and is left untouched.
+      const empty = path.join(root, "empty");
+      const nothing = yield* cli.rotate(empty, as("granted"));
+      expect(nothing.code).toBe(1);
+      expect(nothing.stderr).toContain("This directory has no saved keys.");
+      expect(nothing.stderr).toContain(unchanged);
+      expect(yield* fs.exists(path.join(empty, "installation.json"))).toBe(false);
+
+      // keys.json: the API key is replaced in place, the encryption key and record are kept.
+      const file = path.join(root, "file");
+      const keyFile = path.join(file, "keys.json");
+      yield* cli.start(file, { env: as("granted", "file") });
+      const fileRecord = yield* cli.readRecord(file);
+      const before = yield* readKeys(file);
+      const fileRotation = yield* cli.rotate(file, as("granted"));
+      expect(fileRotation.code).toBe(0);
+      expect(fileRotation.stdout).toContain(rotated);
+      const after = yield* readKeys(file);
+      expect(after.apiKey).not.toBe(before.apiKey);
+      expect(after.apiKey).toMatch(/^[a-f0-9]{64}$/);
+      expect(after.encryptionKey).toBe(before.encryptionKey);
+      expect(`${fileRotation.stdout}${fileRotation.stderr}`).not.toContain(after.apiKey);
+      expect(yield* cli.readRecord(file)).toEqual(fileRecord);
+      if (process.platform !== "win32") expect((yield* fs.stat(keyFile)).mode & 0o777).toBe(0o600);
+      expect(yield* fs.exists(storeFile)).toBe(false);
+      yield* accepts(file, as("granted"), after.apiKey, before.apiKey);
+
+      // OS credential store: the same credential entry is rewritten, and keys.json never appears.
+      const ready = path.join(root, "ready");
+      yield* cli.start(ready, { env: as("granted") });
+      const readyRecord = yield* cli.readRecord(ready);
+      expect(readyRecord.state).toBe("ready");
+      const stored = yield* storedKeys(readyRecord.id);
+      const storeRotation = yield* cli.rotate(ready, as("granted"));
+      expect(storeRotation.code).toBe(0);
+      const restored = yield* storedKeys(readyRecord.id);
+      expect(restored.apiKey).not.toBe(stored.apiKey);
+      expect(restored.encryptionKey).toBe(stored.encryptionKey);
+      expect(yield* fs.exists(path.join(ready, "keys.json"))).toBe(false);
+      expect(yield* cli.readRecord(ready)).toEqual(readyRecord);
+      yield* accepts(ready, as("granted"), restored.apiKey, stored.apiKey);
+
+      // Denied store access changes nothing and says so.
+      const denied = yield* cli.rotate(ready, as("denied"));
+      expect(denied.code).toBe(1);
+      expect(denied.stderr).toContain("Access to the OS credential store was denied");
+      expect(denied.stderr).toContain(unchanged);
+      expect(yield* storedKeys(readyRecord.id)).toEqual(restored);
+
+      // Supplied keys are never stored, so they cannot be rotated here.
+      const supplied = yield* cli.rotate(file, {
+        ...as("granted"),
+        EXECUTOR_API_KEY: after.apiKey,
+        EXECUTOR_ENCRYPTION_KEY: after.encryptionKey,
+      });
+      expect(supplied.code).toBe(1);
+      expect(supplied.stderr).toContain("are never stored");
+      expect(yield* readKeys(file)).toEqual(after);
     }),
   ).pipe(Effect.provide(NodeServices.layer), Effect.provide(FetchHttpClient.layer)),
 );

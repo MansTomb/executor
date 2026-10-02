@@ -1,6 +1,6 @@
 /** Sharing state and mutations are keyed by organization and resource, with confirmed updates. */
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { pollingQuery, whileLoaded } from "@executor-js/ui/contracts/polling";
 import { Data, Effect } from "effect";
 import { Atom, AsyncResult } from "effect/unstable/reactivity";
@@ -11,7 +11,7 @@ import type {
   SharedAudience,
   AccessRevision,
 } from "@executor-js/hosted-server/resource-access";
-import { acknowledge, invalidate, upsert } from "@executor-js/ui/contracts/mutations";
+import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";
 import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 import { HostedClient } from "./api.ts";
 import { protectedQuery } from "./protected-query.ts";
@@ -39,20 +39,20 @@ const directory = Atom.family((key: DirectoryKey) =>
       query: { view: key.view },
     }),
   ).pipe(
-    refreshOnFocus,
+    revalidated,
     (source) => pollingQuery(source, { active: whileLoaded(({ pendingApp }) => pendingApp) }),
     protectedQuery,
   ),
 );
 const appAccess = Atom.family((key: AppKey) =>
   HostedClient.query("resourceAccess", "app", hydrated({ params: key })).pipe(
-    refreshOnFocus,
+    revalidated,
     protectedQuery,
   ),
 );
 const accountAccess = Atom.family((key: AccountKey) =>
   HostedClient.query("resourceAccess", "account", hydrated({ params: key })).pipe(
-    refreshOnFocus,
+    revalidated,
     protectedQuery,
   ),
 );
@@ -69,13 +69,16 @@ export const accountAccessAtom = (key: {
   organization: OrganizationReference;
   account: AccountId;
 }) => accountAccess(new AccountKey(key));
-/** Discard outdated lists after a sharing change before reconciling from the server. */
+/**
+ * Read the lists again after a change to apps or sharing. They stay visible while they reconcile;
+ * the server's access verdict still clears them when the change removed this user's access.
+ */
 export const refreshResourceDirectory = (
   get: Atom.FnContext,
   organization: OrganizationReference,
 ) => {
-  invalidate(get, resourceDirectoryAtom(organization));
-  invalidate(get, resourceDirectoryAtom(organization, "managed"));
+  get.refresh(resourceDirectoryAtom(organization));
+  get.refresh(resourceDirectoryAtom(organization, "managed"));
   get.refresh(inventoryAtom(organization));
 };
 /**

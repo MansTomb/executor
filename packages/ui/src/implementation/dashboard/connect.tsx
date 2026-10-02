@@ -17,12 +17,15 @@ export function McpInstallInstructions({
   endpoint,
   docs = publicDocsBaseUrl,
   next = "help me get my first app set up",
+  token,
   children,
 }: {
   readonly endpoint: string;
   readonly docs?: string;
   /** What the agent should do once connected. */
   readonly next?: string;
+  /** Bearer-token setup for scripts and headless agents, where the product offers tokens. */
+  readonly token?: ReactNode;
   readonly children?: ReactNode;
 }) {
   const prompt = mcpSetupPrompt(endpoint, docs, next);
@@ -48,6 +51,15 @@ export function McpInstallInstructions({
           >
             Command
           </TabsTrigger>
+          {token && (
+            <TabsTrigger
+              data-product-area="connect"
+              data-product-action="select_token"
+              value="token"
+            >
+              Personal access token
+            </TabsTrigger>
+          )}
         </TabsList>
         <TabsContent value="prompt" className="mt-4">
           <p className="text-[13px] leading-5 text-muted-foreground">
@@ -87,6 +99,11 @@ export function McpInstallInstructions({
             <Code code={command} path="install.sh" />
           </div>
         </TabsContent>
+        {token && (
+          <TabsContent value="token" className="mt-4">
+            {token}
+          </TabsContent>
+        )}
       </Tabs>
       {children && (
         <p className="field-hint mt-4 text-xs leading-5 text-muted-foreground">{children}</p>

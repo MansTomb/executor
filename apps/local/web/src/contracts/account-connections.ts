@@ -1,6 +1,6 @@
 /** Typed browser handoff. Submitted credentials remain redacted in mutation state. */
 import { dashboardHttpClient, hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { AccountConnectApi, ConnectionGrant } from "@executor-js/local-server/account-connections";
 import { HttpUrl } from "@executor-js/sdk";
 import { Data, Effect, Schema } from "effect";
@@ -47,7 +47,7 @@ class ConnectionSetupKey extends Data.Class<ConnectionGrant & { readonly method:
 const connectionSetup = Atom.family((key: ConnectionSetupKey) =>
   ConnectionClient.query("accountConnect", "oauthSetup", hydrated({ payload: key })).pipe(
     Atom.setIdleTTL("5 minutes"),
-    refreshOnFocus,
+    revalidated,
   ),
 );
 /** Setup metadata is limited to the exact connection grant supplied by this page. */

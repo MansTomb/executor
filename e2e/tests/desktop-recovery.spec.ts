@@ -74,6 +74,8 @@ const desktopHome = (keys: "supplied" | "file" | "unreachable-store" = "supplied
     );
     const common = {
       ...display,
+      // Release scenarios never send product analytics, even from a build with a baked key.
+      DO_NOT_TRACK: "1",
       PATH: runtimePath,
       EXECUTOR_PORT: String(port),
       EXECUTOR_DESKTOP_DATA_DIR: data,
@@ -232,6 +234,7 @@ it.live(scenarios.desktopReset.title, () =>
 
       expect(yield* menuLabels(electron, "Help")).toEqual([
         "Show diagnostics folder",
+        "Export diagnostics…",
         "",
         "Reset Executor data…",
       ]);

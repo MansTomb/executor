@@ -157,10 +157,14 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
     }).annotate(RequiredAction, "manage"),
   )
   .add(
-    HttpApiEndpoint.patch("rename", `${prefix}/accounts/:account`, {
+    HttpApiEndpoint.patch("update", `${prefix}/accounts/:account`, {
       params: { ...params, account: AccountId },
+      /** Only supplied fields change; a null description removes it. */
       payload: Schema.Struct({
-        label: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120)),
+        label: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120))),
+        description: Schema.optional(
+          Schema.NullOr(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500))),
+        ),
       }),
       success: Account,
       error: [StorageError, AccountNotFound, OrganizationForbidden],

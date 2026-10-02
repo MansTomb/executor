@@ -75,7 +75,15 @@ export function hostedPageTitle(
   if (pathname === "/invite") return "Invitation";
   if (pathname === "/mcp/authorize") return "Authorize client";
   if (pathname === "/oauth/callback") return "Connecting account";
-  const [root, , page, item, action] = pathname.split("/").filter(Boolean);
+  const [root, section, page, item, action] = pathname.split("/").filter(Boolean);
+  if (root === "account")
+    return section === "tokens"
+      ? "Tokens"
+      : section === "security"
+        ? "Security"
+        : section === "profile"
+          ? "Profile"
+          : "Account";
   if (root !== "org" || page === undefined) return "Organizations";
   if (extraPages[page] !== undefined) return extraPages[page];
   if (page === "organization") return "Settings";
@@ -108,6 +116,17 @@ export const keepFragment = (url: string): string =>
 /** Return providers through sign-in completion without changing the encoded final destination. */
 export const signInCallback = (redirect: string): string =>
   `/login?redirect=${encodeURIComponent(redirect)}`;
+
+/** Account pages can carry the organization a visitor came from; it only preselects choices. */
+export function parseAccountSearch(search: Record<string, unknown>): {
+  readonly organization?: string | undefined;
+} {
+  return {
+    organization: Option.getOrUndefined(
+      Schema.decodeUnknownOption(Schema.NonEmptyString)(search.organization),
+    ),
+  };
+}
 
 /** Account setup targets an explicit personal selection, or starts a new one. */
 export function parseSetupSearch(search: Record<string, unknown>): {

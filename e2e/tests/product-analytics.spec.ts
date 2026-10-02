@@ -250,11 +250,11 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({
         );
         yield* recordedAfter(snapshots().length);
         yield* browser.checkpoint("tool-error-live");
-        yield* open(`/org/${actors.organization.slug}/api-keys`);
-        yield* browser.use("Wait for excluded API keys page", (page) =>
-          page.getByRole("heading", { name: "API keys", exact: true }).waitFor(),
+        yield* open(`/account/tokens?organization=${actors.organization.slug}`);
+        yield* browser.use("Wait for excluded tokens page", (page) =>
+          page.getByRole("heading", { name: "Tokens", exact: true }).waitFor(),
         );
-        yield* browser.use("Insert a sentinel on the excluded API keys page", (page) =>
+        yield* browser.use("Insert a sentinel on the excluded tokens page", (page) =>
           page.evaluate(() => document.body.append("PRIVATE_API_KEY_PAGE")),
         );
         yield* open(`${dashboard}?private=PRIVATE_QUERY`);

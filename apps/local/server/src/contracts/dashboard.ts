@@ -560,9 +560,15 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
       }),
     )
     .add(
-      HttpApiEndpoint.patch("renameAccount", "/dashboard/api/accounts/:account", {
+      HttpApiEndpoint.patch("updateAccount", "/dashboard/api/accounts/:account", {
         params: { account: AccountId },
-        payload: Schema.Struct({ label: Schema.NonEmptyString }),
+        /** Only supplied fields change; a null description removes it. */
+        payload: Schema.Struct({
+          label: Schema.optional(Schema.NonEmptyString),
+          description: Schema.optional(
+            Schema.NullOr(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500))),
+          ),
+        }),
         success: Account,
         error: [StorageError, AccountNotFound, AccountManagementBlocked],
       }),

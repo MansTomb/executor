@@ -12,9 +12,12 @@ import {
   type RouterIcon,
 } from "../contracts/router.ts";
 import { fromPromise } from "./authoring.ts";
+import type { Approval } from "../approval.ts";
 import {
   NativeRouterKey as NativeRouter,
+  approvedOperation,
   nativeOperation,
+  operationDeclaration,
   type OperationDeclaration,
   type RouterChild,
   type RouterDeclaration,
@@ -214,3 +217,61 @@ export const declaredOperations = (
         return [];
     }
   });
+
+/**
+ * Choose an approval for each operation a router contains, including tools a dynamic router
+ * resolves later. `policy` receives the operation and its name relative to this router; returning
+ * undefined keeps the operation's own approval. Read hints with `toolAnnotations(operation)`.
+ * Apply it to each account's router before `accountRouter` combines them, so every account keeps
+ * its own tools' hints.
+ */
+export const withApprovals = <Query, Mutation>(
+  source: RouterDeclaration<Query, Mutation>,
+  policy: (
+    operation: OperationDeclaration<"query" | "mutation", never>,
+    name: string,
+  ) => Approval | undefined,
+): RouterDeclaration<Query, Mutation> => {
+  const native = nativeRouter(source);
+  if (native === undefined) throw new Error("withApprovals expects a router");
+  const operation = (node: AppOperation, name: string): AppOperation => {
+    const approval = policy(operationDeclaration(node), name);
+    return approval === undefined ? node : approvedOperation(node, approval);
+  };
+  const child = (node: AppNode, name: string): AppNode => {
+    switch (node.kind) {
+      case "query":
+      case "mutation":
+        return operation(node, name);
+      case "router":
+      case "dynamic":
+        return walk(node, name);
+    }
+  };
+  const walk = (node: AppRouter | DynamicRouter, path: string): AppRouter | DynamicRouter =>
+    node.kind === "dynamic"
+      ? {
+          ...node,
+          resolve: (name) =>
+            node.resolve(name).pipe(
+              Effect.flatMap((resolved) =>
+                resolved === undefined
+                  ? Effect.succeed(undefined)
+                  : Effect.try({
+                      try: () => operation(resolved, joinPath(path, name)),
+                      catch: (error) => error,
+                    }),
+              ),
+            ),
+        }
+      : {
+          ...node,
+          children: Object.fromEntries(
+            Object.entries(node.children).map(([key, value]) => [
+              key,
+              child(value, joinPath(path, key)),
+            ]),
+          ),
+        };
+  return routerDeclaration(walk(native, ""));
+};

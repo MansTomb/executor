@@ -33,6 +33,7 @@
     "fumadb-effect": "workspace:*",
     "kysely": "0.29.6",
     "proper-lockfile": "4.1.2",
+    "tldts": "7.4.13",
     "zod": "4.5.4"
   },
   "devDependencies": {

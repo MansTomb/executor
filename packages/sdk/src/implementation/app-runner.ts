@@ -2,12 +2,13 @@
  * The one app Worker runner. It runs beside the Worker Loader on every host: in the Cloud API
  * Worker, and in the trusted apps Worker of self-host and local. It names each Worker, loads it,
  * wraps the authored modules and delivers each call's accounts, run, approval, replay and deadline.
+ * Secret fields of providers that declare hosts leave the runner only as sealed handles.
  * A host supplies only its bindings and, per invocation, a build loader that the runner calls from
  * the Worker Loader's cold-start callback, so a warm call reads and transfers no code. Every
  * request and reply passes through the adapter of the protocol the build's framework speaks.
  */
 import type { Fetcher, WorkerLoader } from "@cloudflare/workers-types";
-import { Effect, Exit, Option, Schema, Semaphore } from "effect";
+import { Effect, Exit, Option, Redacted, Schema, Semaphore } from "effect";
 import {
   ElicitationReply,
   type HostRequest,
@@ -38,6 +39,7 @@ import { describeBuildCause, RuntimeProtocolFailed } from "../contracts/runtime.
 import type { LoadedWorkerBuild, WorkerBundle } from "../contracts/worker-build.ts";
 import { appProtocol, type AppProtocol } from "./app-protocols.ts";
 import { appFacetBridge, appRpcBridge } from "./worker-bridge.ts";
+import { sealAccounts } from "./credential-handles.ts";
 import { AppRpcEntrypoint, AppRpcInvocation } from "./worker-elicitation.ts";
 import { invocationWorkflow } from "./worker-workflow-rpc.ts";
 import type { AppWorkerResidency } from "./app-worker-residency.ts";
@@ -59,8 +61,13 @@ export interface AppDataHost {
 /** Host bindings. None of them reaches authored code except the outbound network. */
 export interface AppRunnerHost {
   readonly loader: Pick<WorkerLoader, "get">;
-  /** The network every app isolate's global `fetch` uses. */
-  readonly outbound: Fetcher;
+  /**
+   * The network an app's isolates use for global `fetch`, bound to that app. It opens the
+   * credential handles the runner seals with `credentialKey`; see credential-handles.ts.
+   */
+  readonly outbound: (app: string) => Fetcher;
+  /** Seals the secret fields of providers that declare hosts. App code never holds it. */
+  readonly credentialKey: Effect.Effect<CryptoKey>;
   readonly data: (app: string) => AppDataHost;
   /** Keep a successful call's release, including its cache refreshes, alive after it returns. */
   readonly waitUntil: (task: Promise<unknown>) => void;
@@ -228,6 +235,28 @@ export const appWorker = (
       name: `${invocation.app}:${identity}`,
     })),
   );
+
+/**
+ * A workflow whose steps read their accounts as this app's invocations do: secret fields of
+ * providers with hosts are sealed. The host resolves current credentials for each step.
+ */
+const sealedWorkflow = (
+  execution: WorkflowExecution,
+  app: string,
+  key: Effect.Effect<CryptoKey>,
+): WorkflowExecution => ({
+  ...execution,
+  resolve: () =>
+    execution
+      .resolve()
+      .pipe(
+        Effect.flatMap((context) =>
+          sealAccounts(Redacted.value(context.accounts), { app, key }).pipe(
+            Effect.map((accounts) => ({ ...context, accounts: Redacted.make(accounts) })),
+          ),
+        ),
+      ),
+});
 
 /** Build the runner for one host's bindings. */
 export const makeAppRunner = (host: AppRunnerHost) => {
@@ -406,6 +435,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         .invoke(
           {
             id,
+            app: invocation.app,
             identity,
             cacheNamespace: invocation.build,
             body,
@@ -466,9 +496,13 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         // A command this protocol's bundles would not run as asked fails without reaching them.
         const refused = protocol.refuse(invocation.command);
         if (refused !== undefined) return { ok: false, error: refused };
+        const accounts = yield* sealAccounts(invocation.accounts, {
+          app: invocation.app,
+          key: host.credentialKey,
+        });
         const body = protocol.invocation({
           command: invocation.command,
-          accounts: invocation.accounts,
+          accounts,
           ...(invocation.approval === undefined ? {} : { approval: invocation.approval }),
           ...(invocation.replay === undefined ? {} : { replay: invocation.replay }),
           ...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),
@@ -522,12 +556,16 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         const reply = yield* start(name, load, {
           body,
           headers: invocation.headers,
-          globalOutbound: host.outbound,
+          globalOutbound: host.outbound(invocation.app),
           elicit: capabilities.elicit,
           controls: capabilities.controls,
           ...(capabilities.workflow === undefined
             ? {}
-            : { workflow: protocol.workflow(capabilities.workflow) }),
+            : {
+                workflow: protocol.workflow(
+                  sealedWorkflow(capabilities.workflow, invocation.app, host.credentialKey),
+                ),
+              }),
           cache,
         });
         const result = yield* protocol.response(invocation.command, reply);

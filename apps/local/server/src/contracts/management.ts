@@ -5,6 +5,7 @@ import { ExecutorApi } from "@executor-js/sdk/core";
 import { HttpApi, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
 import { AccountConnectApi } from "./account-connections.ts";
 import { LocalWebhookSetupApi } from "./webhook-setup.ts";
+import { LocalFeedbackApi } from "./feedback.ts";
 
 const api = HttpApi.make("local-management")
   .add(ExecutorApi.groups.apps)
@@ -37,7 +38,8 @@ const api = HttpApi.make("local-management")
   )
   .add(LocalWebhookSetupApi.groups.webhookLinks)
   .addHttpApi(LocalAppManagementApi)
-  .addHttpApi(LocalFrameworkApi);
+  .addHttpApi(LocalFrameworkApi)
+  .addHttpApi(LocalFeedbackApi);
 
 /** Browser secret exchange, raw delivery, subscriptions and approval protocols are not management tools. */
 export const localManagementDocument = (): OpenApi.OpenAPISpec => {

@@ -16,7 +16,6 @@ import {
   Globe02Icon,
   LockKeyIcon,
   Tick02Icon,
-  Upload04Icon,
 } from "@hugeicons/core-free-icons";
 import type { AppManagementProps } from "../../contracts/app-management.ts";
 import { Button } from "../components/button.tsx";
@@ -25,6 +24,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../compon
 import { CopyButton } from "./code.tsx";
 import { ProviderIcon } from "./common.tsx";
 import { QueryView } from "./context.tsx";
+import { cn } from "../lib/utils.ts";
 
 type PublishableSource = Omit<typeof AppSourceDisplay.Type, "publication"> & {
   readonly publication: typeof PublicationReadiness.Type;
@@ -159,7 +159,7 @@ function PublicationProblem({
           aria-hidden
         />
         <div className="min-w-0">
-          <p className="text-sm font-medium">This app can’t be published yet</p>
+          <p className="text-sm font-medium">This app can’t be shared publicly yet</p>
           <p className="mt-1 text-sm">{repair.title}</p>
           <p className="mt-2 text-sm leading-6 text-muted-foreground">{repair.detail}</p>
         </div>
@@ -195,7 +195,7 @@ function PublicationProblem({
             app or its connected accounts. You can also copy a prompt and have your agent do it.
           </>
         ) : (
-          "Copy a prompt and have your agent fix this, then open Publish again."
+          "Copy a prompt and have your agent fix this, then open Share publicly again."
         )}
       </p>
     </div>
@@ -303,8 +303,11 @@ export function PublishApp<E>({
         metadata.canPublish ? (
           <PublishAction app={app} atoms={atoms} Failure={Failure} />
         ) : (
-          <Button variant="outline" disabledReason="Publishing is not available on this server.">
-            Publish
+          <Button
+            variant="outline"
+            disabledReason="Public sharing is not available on this server."
+          >
+            Share publicly
           </Button>
         )
       }
@@ -326,9 +329,9 @@ function PublishAction<E>({
   const publishing = useAtomValue(atoms.publish(app.id));
   return (
     <>
-      <Button onClick={() => setOpen(true)}>
-        <HugeiconsIcon icon={Upload04Icon} size={16} strokeWidth={1.8} aria-hidden />
-        Publish
+      <Button variant="outline" onClick={() => setOpen(true)}>
+        <HugeiconsIcon icon={Globe02Icon} size={16} strokeWidth={1.8} aria-hidden />
+        Share publicly
       </Button>
       <Dialog
         open={open}
@@ -342,10 +345,10 @@ function PublishAction<E>({
           <DialogContent className="max-h-[calc(100dvh-2rem)] gap-0 overflow-y-auto p-0 sm:max-w-xl">
             <div className="px-7 pb-6 pt-7 max-[740px]:px-5">
               <DialogTitle className="pr-5 text-2xl leading-tight tracking-tight">
-                Publish {app.name}
+                Share {app.name} publicly
               </DialogTitle>
               <DialogDescription className="mt-2 leading-6">
-                Share your app so anyone can find it and make their own copy.
+                List your app in Add app so anyone can find it and make their own copy.
               </DialogDescription>
             </div>
             <QueryView
@@ -380,7 +383,7 @@ function PublishAction<E>({
                     onRenamed={setRenamed}
                   />
                 ) : (
-                  <p className="px-7 pb-6 text-sm">Publishing is not available for this app.</p>
+                  <p className="px-7 pb-6 text-sm">Public sharing is not available for this app.</p>
                 )
               }
             </QueryView>
@@ -419,9 +422,14 @@ function PublishDialog<E>({
         ) : (
           <>
             <p className="mb-3 text-xs font-medium text-muted-foreground">Your app’s listing</p>
-            <div className="flex items-start gap-4 rounded-xl border bg-muted/15 p-5">
+            <div
+              className={cn(
+                "flex gap-4 rounded-xl border bg-muted/15 p-5",
+                publication.manifest.description ? "items-start" : "items-center",
+              )}
+            >
               <ProviderIcon name={publication.manifest.name} large />
-              <div className="min-w-0 py-0.5">
+              <div className={cn("min-w-0", publication.manifest.description && "py-0.5")}>
                 <p className="break-words text-base font-semibold tracking-tight">
                   {publication.manifest.name}
                 </p>
@@ -545,21 +553,21 @@ function PublicationActions<E>({
           <HugeiconsIcon icon={Tick02Icon} size={18} className="mt-0.5 shrink-0" aria-hidden />
           <div>
             <p className="font-medium">
-              {completed === "unpublished" ? "App unpublished" : "Your app is published"}
+              {completed === "unpublished" ? "Stopped sharing" : "Your app is listed publicly"}
             </p>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
               {completed === "unpublished"
-                ? "It no longer appears in discovery. Existing copies keep working."
+                ? "It no longer appears in Add app. Existing copies keep working."
                 : completed === "published"
                   ? "People can find it in Add app and make their own copy."
-                  : "Your latest saved changes are already published."}
+                  : "Your latest saved changes are already shared."}
             </p>
           </div>
         </div>
       )}
       {publishedCommit !== undefined && !current && completed === null && (
         <p className="border-t px-7 py-4 text-sm leading-6 text-muted-foreground max-[740px]:px-5">
-          Publish your latest saved changes as the new public version. Existing copies stay as they
+          Share your latest saved changes as the new public version. Existing copies stay as they
           are.
         </p>
       )}
@@ -571,7 +579,7 @@ function PublicationActions<E>({
             rel="noopener noreferrer"
             className="inline-flex min-h-9 items-center gap-2 text-sm font-medium underline underline-offset-4 hover:text-muted-foreground"
           >
-            View published app <span aria-hidden>↗</span>
+            View public listing <span aria-hidden>↗</span>
           </a>
         </div>
       )}
@@ -589,7 +597,7 @@ function PublicationActions<E>({
                 if (Exit.isSuccess(result)) setCompleted("unpublished");
               }}
             >
-              Unpublish
+              Stop sharing
             </Button>
           )}
         </div>
@@ -614,10 +622,10 @@ function PublicationActions<E>({
                 }}
               >
                 {publishing.waiting
-                  ? "Publishing…"
+                  ? "Sharing…"
                   : publishedCommit === undefined
-                    ? "Publish app"
-                    : "Publish new version"}
+                    ? "List publicly"
+                    : "Update public listing"}
               </Button>
             </>
           )}

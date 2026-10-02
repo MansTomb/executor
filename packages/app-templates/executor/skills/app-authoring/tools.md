@@ -176,7 +176,9 @@ A custom synchronous or async callback receives `toolName`, decoded `toolInput`,
 and `signal`. Return `approved`, `denied`, or `user-approval`. The constructors infer the callback input from its schema. Annotate a shared
 function with `Approval<Input>` from `apps/operations/approval`.
 Assign the same function to several tools to share a policy. Attach approval to
-MCP, OpenAPI or GraphQL operations with `withApproval(operation, policy)`.
+one shared operation with `withApproval(operation, policy)`, and to the tools of
+an MCP, OpenAPI or GraphQL router with `withApprovals(router, (tool, name) => policy)`
+([integrations.md](integrations.md#approvals-for-imported-tools)).
 
 Only the selected tool's callback runs, after input validation. Omitted approval
 permits execution. Invalid decisions and callback failures prevent the tool body

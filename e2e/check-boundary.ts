@@ -8,6 +8,7 @@ import { Console, Effect, FileSystem, Path, Schema, type PlatformError } from "e
 const allowed = new Set([
   "playwright",
   "autumn-js",
+  "fflate",
   "@effect/vitest",
   "@kitlangton/terminal-control",
   "@modelcontextprotocol/sdk/client/index.js",

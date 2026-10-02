@@ -1,5 +1,5 @@
 import { dashboardHttpClient, hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { DashboardRuntime } from "./telemetry.ts";
 /** Local auth state uses the same HTTP contracts as the server. Credentials never enter storage. */
 import { LocalAuthApi, type BootstrapToken } from "@executor-js/local-server/auth";
@@ -21,7 +21,7 @@ export const pairingTokenAtom = Atom.make<typeof BootstrapToken.Type | undefined
   Atom.keepAlive,
 );
 /** Session checks expose only authenticated status, never the HttpOnly credential. */
-export const sessionAtom = AuthClient.query("auth", "session", hydrated({})).pipe(refreshOnFocus);
+export const sessionAtom = AuthClient.query("auth", "session", hydrated({})).pipe(revalidated);
 /** Exchange each received link before mounting authenticated reads. */
 export const bootstrapAtom = AuthClient.runtime
   .atom((get) =>

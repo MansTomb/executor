@@ -131,6 +131,73 @@ const keyFileUnusable = (
     message: `Executor's key file ${keyFile} is missing or invalid. Restore it from your backup. Keys have not been replaced.`,
   });
 
+const randomKey = () =>
+  Redacted.make(Encoding.encodeHex(crypto.getRandomValues(new Uint8Array(32))));
+
+/** Hold the directory's bootstrap lock for the current scope. */
+const lockDirectory = (directory: string, message: string) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    return yield* Effect.acquireRelease(
+      Effect.tryPromise({
+        try: () =>
+          lock(directory, { retries: 0, lockfilePath: path.join(directory, ".bootstrap.lock") }),
+        catch: () => new LocalConfigurationError({ reason: "locked", message }),
+      }),
+      (unlock) => Effect.promise(() => unlock()),
+    );
+  });
+
+/** Stage, fsync and atomically rename so an interrupted write never leaves a partial file. */
+const writeAtomically = (
+  platform: string,
+  directory: string,
+  destination: string,
+  contents: string,
+) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const temporary = yield* fs.makeTempDirectoryScoped({
+        directory,
+        prefix: ".bootstrap-",
+      });
+      const staged = path.join(temporary, path.basename(destination));
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const file = yield* fs.open(staged, { flag: "wx", mode: 0o600 });
+          yield* file.writeAll(new TextEncoder().encode(contents));
+          yield* file.sync;
+        }),
+      );
+      // The create mode is masked by umask; set it explicitly as v1 did.
+      yield* fs.chmod(staged, 0o600);
+      yield* fs.rename(staged, destination);
+      // Windows does not allow opening directories as ordinary file handles.
+      if (platform !== "win32") {
+        const parent = yield* fs.open(directory);
+        yield* parent.sync;
+      }
+    }),
+  );
+
+/** One installation's OS credential. Construction failures mean the store is absent. */
+const credentialEntry = (id: string) =>
+  Effect.gen(function* () {
+    const { AsyncEntry } = yield* Effect.tryPromise({
+      try: () => import("@napi-rs/keyring"),
+      catch: absent,
+    });
+    return yield* Effect.try({
+      try: () =>
+        new AsyncEntry(LocalCredentialService, id, {
+          linux: { store: "secret-service" },
+        }),
+      catch: absent,
+    });
+  });
+
 /** Resolve one profile's keys. Existing data never causes a new credential to be generated. */
 export const localConfiguration = (platform: string) =>
   Effect.scoped(
@@ -159,18 +226,9 @@ export const localConfiguration = (platform: string) =>
       );
 
       yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
-      yield* Effect.acquireRelease(
-        Effect.tryPromise({
-          try: () =>
-            lock(directory, { retries: 0, lockfilePath: path.join(directory, ".bootstrap.lock") }),
-          catch: () =>
-            new LocalConfigurationError({
-              reason: "locked",
-              message:
-                "Executor could not lock its data directory. Start one instance per directory.",
-            }),
-        }),
-        (unlock) => Effect.promise(() => unlock()),
+      yield* lockDirectory(
+        directory,
+        "Executor could not lock its data directory. Start one instance per directory.",
       );
 
       const databases = yield* Effect.forEach(
@@ -201,32 +259,8 @@ export const localConfiguration = (platform: string) =>
 
       const keyFile = path.join(directory, "keys.json");
 
-      // Stage, fsync and atomically rename so an interrupted write never leaves a partial file.
       const writeFile = (destination: string, contents: string) =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const temporary = yield* fs.makeTempDirectoryScoped({
-              directory,
-              prefix: ".bootstrap-",
-            });
-            const staged = path.join(temporary, path.basename(destination));
-            yield* Effect.scoped(
-              Effect.gen(function* () {
-                const file = yield* fs.open(staged, { flag: "wx", mode: 0o600 });
-                yield* file.writeAll(new TextEncoder().encode(contents));
-                yield* file.sync;
-              }),
-            );
-            // The create mode is masked by umask; set it explicitly as v1 did.
-            yield* fs.chmod(staged, 0o600);
-            yield* fs.rename(staged, destination);
-            // Windows does not allow opening directories as ordinary file handles.
-            if (platform !== "win32") {
-              const parent = yield* fs.open(directory);
-              yield* parent.sync;
-            }
-          }),
-        );
+        writeAtomically(platform, directory, destination, contents);
       const writeMarker = (state: typeof Installation.Type.state) =>
         writeFile(marker, JSON.stringify({ ...installation, state }));
       const configure = (keys: typeof Keys.Type) =>
@@ -290,8 +324,6 @@ export const localConfiguration = (platform: string) =>
         return yield* configure(keys);
       }
 
-      const randomKey = () =>
-        Redacted.make(Encoding.encodeHex(crypto.getRandomValues(new Uint8Array(32))));
       const generated = () => Keys.make({ apiKey: randomKey(), encryptionKey: randomKey() });
       const saveKeyFile = (notice: string) =>
         Effect.gen(function* () {
@@ -314,17 +346,7 @@ export const localConfiguration = (platform: string) =>
             : Effect.fail(unavailable(failure.reason, firstStart));
 
       const store = yield* Effect.gen(function* () {
-        const { AsyncEntry } = yield* Effect.tryPromise({
-          try: () => import("@napi-rs/keyring"),
-          catch: absent,
-        });
-        const entry = yield* Effect.try({
-          try: () =>
-            new AsyncEntry(LocalCredentialService, installation.id, {
-              linux: { store: "secret-service" },
-            }),
-          catch: absent,
-        });
+        const entry = yield* credentialEntry(installation.id);
         const stored = yield* Effect.tryPromise({
           try: (signal) => entry.getPassword(signal),
           catch: classify(platform),
@@ -364,6 +386,113 @@ export const localConfiguration = (platform: string) =>
           message:
             "Executor could not read or write its installation record. Check the data directory permissions and available disk space. Existing keys have not been replaced.",
         }),
+      ),
+    ),
+  );
+
+const unchanged = (reason: LocalConfigurationReason, message: string) =>
+  new LocalConfigurationError({ reason, message: `${message} The API key was not changed.` });
+
+/**
+ * Replace one directory's saved API key where it is kept, in the OS credential store or
+ * keys.json. The encryption key is retained, so saved accounts and MCP sign-ins still decrypt.
+ * The bootstrap lock serializes this with a starting server. A running server keeps its current key
+ * until it restarts; its next start also updates the managed Executor account.
+ */
+export const rotateApiKey = (platform: string) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = path.resolve(
+        yield* Config.String("EXECUTOR_DATA_DIR").pipe(Config.withDefault(".local/executor")),
+      );
+      const explicitApi = yield* Config.Redacted("EXECUTOR_API_KEY").pipe(Config.option);
+      const explicitEncryption = yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY").pipe(
+        Config.option,
+      );
+      if (Option.isSome(explicitApi) || Option.isSome(explicitEncryption))
+        return yield* unchanged(
+          "misconfigured",
+          "Supplied EXECUTOR_API_KEY and EXECUTOR_ENCRYPTION_KEY are never stored. Change EXECUTOR_API_KEY where you set it.",
+        );
+      const marker = path.join(directory, "installation.json");
+      if (!(yield* fs.exists(marker)))
+        return yield* unchanged(
+          "credential-missing",
+          "This directory has no saved keys. Start Executor once to create them.",
+        );
+      yield* lockDirectory(
+        directory,
+        "Executor is starting with this data directory. Try again once it has started. The API key was not changed.",
+      );
+      const installation = yield* fs
+        .readFileString(marker)
+        .pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Installation))),
+          Effect.mapError(invalid),
+        );
+      const encode = Schema.encodeEffect(Schema.fromJsonString(Keys));
+      const rotated = (keys: typeof Keys.Type) =>
+        Keys.make({ apiKey: randomKey(), encryptionKey: keys.encryptionKey });
+      switch (installation.state) {
+        case "external":
+          return yield* unchanged(
+            "misconfigured",
+            "This directory uses supplied keys, which Executor never stores. Change EXECUTOR_API_KEY where you set it.",
+          );
+        case "pending":
+          return yield* unchanged(
+            "credential-missing",
+            "This directory has not finished its first start. Start Executor once to create its keys.",
+          );
+        case "file": {
+          const keyFile = path.join(directory, "keys.json");
+          const keys = yield* fs.readFileString(keyFile).pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Keys))),
+            Effect.mapError((error) => keyFileUnusable(keyFile, error)),
+          );
+          yield* writeAtomically(platform, directory, keyFile, yield* encode(rotated(keys)));
+          return;
+        }
+        case "ready": {
+          const storeFailed = (failure: StoreFailure) =>
+            failure.kind === "denied"
+              ? unchanged(
+                  "credential-denied",
+                  `Access to the OS credential store was denied, or the store is locked (${failure.reason}). Allow access or unlock the store, then try again.`,
+                )
+              : unavailable(failure.reason, false);
+          const entry = yield* credentialEntry(installation.id).pipe(Effect.mapError(storeFailed));
+          const stored = yield* Effect.tryPromise({
+            try: (signal) => entry.getPassword(signal),
+            catch: classify(platform),
+          }).pipe(Effect.mapError(storeFailed));
+          if (stored === undefined || stored === null)
+            return yield* new LocalConfigurationError({
+              reason: "credential-missing",
+              message:
+                "Executor's OS credential is missing for an existing installation. Restore that credential from your backup. It has not been replaced.",
+            });
+          const keys = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Keys))(stored).pipe(
+            Effect.mapError(invalid),
+          );
+          const encoded = yield* encode(rotated(keys));
+          yield* Effect.tryPromise({
+            try: (signal) => entry.setPassword(encoded, signal),
+            catch: classify(platform),
+          }).pipe(Effect.mapError(storeFailed));
+          return;
+        }
+      }
+    }),
+  ).pipe(
+    Effect.catchTag("PlatformError", () =>
+      Effect.fail(
+        unchanged(
+          "io",
+          "Executor could not read or write its installation record or key file. Check the data directory permissions and available disk space.",
+        ),
       ),
     ),
   );

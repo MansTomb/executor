@@ -5,7 +5,7 @@ import {
   AccountActionsMenu,
   AccountDialog,
   DisconnectAccountForm,
-  RenameAccountForm,
+  EditAccountForm,
 } from "@executor-js/ui/dashboard/account-actions";
 import { QueryView } from "@executor-js/ui/dashboard/context";
 import { Button } from "@executor-js/ui/components/button";
@@ -19,13 +19,13 @@ import {
   accountAtom,
   checkAccountAtom,
   disconnectAccountAtom,
-  renameAccountAtom,
+  updateAccountAtom,
 } from "../../contracts/accounts.ts";
 import { AccountHealthPanel } from "@executor-js/ui/dashboard/account-health";
 import { Failure, LoadingRows } from "../components/common.tsx";
 
 /** The list page owns an open dialog, so it outlives the row if the account changes underneath it. */
-export type AccountDialogKind = "rename" | "disconnect" | "health";
+export type AccountDialogKind = "edit" | "disconnect" | "health";
 
 const managed = "This account is managed by the local server.";
 
@@ -49,7 +49,7 @@ export function LocalAccountActions({
         </Button>
       )}
       <AccountActionsMenu account={account}>
-        <DropdownMenuItem onSelect={() => open("rename")}>Rename</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => open("edit")}>Edit details</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
         <DropdownMenuItem asChild>
           <Link to="/accounts/$accountId/credentials" params={{ accountId: account.id }}>
@@ -65,7 +65,7 @@ export function LocalAccountActions({
   );
 }
 
-/** Rename and disconnect load the account themselves and report it if it disappears. */
+/** Editing and disconnecting load the account themselves and report it if it disappears. */
 export function LocalAccountDialog({
   id,
   dialog,
@@ -77,8 +77,8 @@ export function LocalAccountDialog({
 }) {
   const [busy, setBusy] = useState(false);
   const title =
-    dialog === "rename"
-      ? "Rename account"
+    dialog === "edit"
+      ? "Edit account"
       : dialog === "health"
         ? "Account health"
         : "Disconnect account?";
@@ -91,8 +91,8 @@ export function LocalAccountDialog({
     >
       <QueryView query={accountAtom(id)} Failure={Failure} pending={<LoadingRows />}>
         {(data) =>
-          dialog === "rename" ? (
-            <RenameBody data={data} onPendingChange={setBusy} onClose={onClose} />
+          dialog === "edit" ? (
+            <EditBody data={data} onPendingChange={setBusy} onClose={onClose} />
           ) : dialog === "health" ? (
             <HealthBody data={data} onClose={onClose} />
           ) : (
@@ -126,7 +126,7 @@ function HealthBody({
   );
 }
 
-function RenameBody({
+function EditBody({
   data,
   onPendingChange,
   onClose,
@@ -135,11 +135,11 @@ function RenameBody({
   readonly onPendingChange: (pending: boolean) => void;
   readonly onClose: () => void;
 }) {
-  const rename = useAtomSet(renameAccountAtom(data.account.id), { mode: "promiseExit" });
+  const update = useAtomSet(updateAccountAtom(data.account.id), { mode: "promiseExit" });
   return (
-    <RenameAccountForm<DashboardError>
+    <EditAccountForm<DashboardError>
       account={data.account}
-      rename={rename}
+      update={update}
       Failure={Failure}
       disabledReason={data.canManage ? undefined : managed}
       onPendingChange={onPendingChange}

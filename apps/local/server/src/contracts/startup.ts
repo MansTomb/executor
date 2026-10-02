@@ -63,3 +63,10 @@ export const serveCommand = Command.make("serve").pipe(
 export const pairCommand = Command.make("pair").pipe(
   Command.withDescription("Print a new connection link for the running server"),
 );
+
+/** Replace the saved local API key. A running server uses the new key after it restarts. */
+export const rotateKeyCommand = Command.make("rotate-key").pipe(
+  Command.withDescription(
+    "Replace the saved local API key. Restart Executor to use it, then update clients that used the old key",
+  ),
+);

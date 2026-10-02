@@ -104,8 +104,13 @@ export const runDataSteps = <R>(steps: ReadonlyArray<DataStep<R>>, options: Data
             Effect.flatMap(Schema.decodeUnknownEffect(Completed)),
             Effect.map((rows) => rows[0]?.completed === true),
           );
-        // An applied step has nothing left to report.
-        if (options.mode === "report" && (yield* completed("apply"))) return "complete" as const;
+        // An applied step has nothing left to report, unless its report checks the applied result.
+        if (
+          options.mode === "report" &&
+          step.reportsAfterApply !== true &&
+          (yield* completed("apply"))
+        )
+          return "complete" as const;
         yield* sql`insert into ${journal} (name, run, mode)
           values (${step.name}, ${run}, ${options.mode}) on conflict do nothing`;
         // A background run waits for the lease and, before a retry pass, for its backoff.

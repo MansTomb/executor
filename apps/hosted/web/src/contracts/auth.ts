@@ -1,4 +1,4 @@
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { signInCallback } from "./navigation.ts";
 import { BrowserSession } from "@executor-js/hosted-server/browser/contracts";
 import { clearLastOrganization } from "../implementation/last-organization.ts";
@@ -120,7 +120,7 @@ const sessionQuery = Atom.readable(
     refresh(entrySession);
     refresh(liveSessionQuery);
   },
-).pipe(refreshOnFocus);
+).pipe(revalidated);
 /** The server-verified session, revalidated by the browser; APIs enforce authorization. */
 export const sessionAtom = acknowledgedQuery(sessionQuery);
 /** Server rendering starts from the session it verified for this request. */
@@ -164,6 +164,17 @@ export const signOutAtom = BrowserAtoms.fn(() =>
     Effect.asVoid,
   ),
 );
+
+/** Personal account operations; every one of them acts on the signed-in user only. */
+export const accountOperations = (options: AuthCallOptions) => ({
+  rename: (name: string) => authClient.updateUser({ name }, options),
+  current: () => authClient.getSession({}, options),
+  sessions: () => authClient.listSessions({}, options),
+  revokeSession: (token: string) => authClient.revokeSession({ token }, options),
+  revokeOtherSessions: () => authClient.revokeOtherSessions({}, options),
+  changePassword: (input: { readonly currentPassword: string; readonly newPassword: string }) =>
+    authClient.changePassword({ ...input, revokeOtherSessions: false }, options),
+});
 
 /** Only explicit organization operations are available to dashboard contracts. */
 export const organizationOperations = (options: AuthCallOptions) => ({

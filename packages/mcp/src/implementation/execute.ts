@@ -414,7 +414,10 @@ function catalog(backend: McpBackend<Error>, progress: ExecutionProgress) {
             failed.push(entry);
             namespaces.set(`${namespace}.${toolPath(router.path)}`, entry);
           }
-          const description = `${app.name}${target.kind === "profile" ? ` (${target.label})` : ""}`;
+          const description =
+            target.kind === "app"
+              ? app.name
+              : `${app.name} (${target.label})${target.accounts === undefined ? "" : ` [${target.accounts}]`}`;
           parts.push({ namespace, description, tools: catalog.tools });
           const projected = yield* Effect.forEach(catalog.tools, (tool) =>
             renderSchemas(tool).pipe(

@@ -41,20 +41,31 @@ export default AppCompiler.make(
     );
     const version = yield* Config.String("EXECUTOR_APPS_VERSION").pipe(Config.option);
     const env = yield* WorkerEnvironment;
-    const files = yield* Effect.cached(
-      Effect.gen(function* () {
-        const assets = yield* Schema.decodeUnknownEffect(FrameworkAssets)(env.ASSETS);
-        const response = yield* Effect.tryPromise(() =>
-          assets.fetch(new Request("https://framework.invalid/framework.json")),
-        );
-        return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(FrameworkFiles))(
-          yield* Effect.tryPromise(() => response.text()),
-        );
-      }).pipe(
-        Effect.mapError(
-          () => new RuntimeBuildFailed({ stage: "dependencies", dependency: "apps" }),
-        ),
-      ),
+    const read = Effect.gen(function* () {
+      const assets = yield* Schema.decodeUnknownEffect(FrameworkAssets)(env.ASSETS);
+      const response = yield* Effect.tryPromise(() =>
+        assets.fetch(new Request("https://framework.invalid/framework.json")),
+      );
+      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(FrameworkFiles))(
+        yield* Effect.tryPromise(() => response.text()),
+      );
+    }).pipe(
+      Effect.mapError(() => new RuntimeBuildFailed({ stage: "dependencies", dependency: "apps" })),
+    );
+    // Only read files are kept for later compiles. A compile that finds none reads them itself:
+    // waiting on another request's read would resume in that request's I/O context, whose timers
+    // are dropped when it ends, and the compile would never finish.
+    let kept: typeof FrameworkFiles.Type | undefined;
+    const files = Effect.suspend(() =>
+      kept !== undefined
+        ? Effect.succeed(kept)
+        : read.pipe(
+            Effect.tap((value) =>
+              Effect.sync(() => {
+                kept = value;
+              }),
+            ),
+          ),
     );
     const host = {
       ...(registry === undefined ? {} : { registry }),

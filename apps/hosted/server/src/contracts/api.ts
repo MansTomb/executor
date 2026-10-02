@@ -25,6 +25,7 @@ import { HostedWorkflows } from "./workflows.ts";
 import { HostedWebhooks } from "./webhooks.ts";
 import { HostedTools } from "./tools.ts";
 import { HostedSkills } from "./skills.ts";
+import { HostedFeedback } from "./feedback.ts";
 
 /** Process liveness only; this does not probe integrations.sh or future storage. */
 export const Health = Schema.Struct({ status: Schema.Literal("ok") });
@@ -169,6 +170,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedResourceAccess,
     HostedAppData,
     HostedMcpConnections,
+    HostedFeedback,
   )
   .add(
     HttpApiGroup.make("context").add(

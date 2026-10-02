@@ -263,16 +263,17 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
             ),
           );
           const build = BuildId.make(`bld_${crypto.randomUUID()}`);
-          const ui = yield* retainWorkerBuild(
+          const { record } = yield* retainWorkerBuild(
             build,
             {
               ...compiled.bundle,
               database: requirements.database !== undefined,
               protocol: compiled.protocol,
             },
+            compiled.framework,
             compiled.ui,
           ).pipe(provideBlobs);
-          return { build, requirements, ...(ui === undefined ? {} : { ui }) };
+          return { build, requirements, ...(record.ui === undefined ? {} : { ui: record.ui }) };
         }),
       asset: ({ build, path }) => workerBuildAsset(build, path).pipe(provideBlobs),
       changes: transport.changes,

@@ -1,8 +1,13 @@
 /** Portable workerd app compilation, protocol adapters, and immutable build storage. */
 export * from "./contracts/worker-build.ts";
 export {
-  retainWorkerBuild,
+  assembleWorkerBundle,
+  frameworkIdentity,
+  linkWorkerBuild,
+  loadStoredWorkerBuild,
   loadWorkerBuild,
+  loadWorkerFramework,
+  retainWorkerBuild,
   workerBuildAsset,
 } from "./implementation/worker-build-storage.ts";
 export { bindingWorkerdApps } from "./implementation/binding-workerd-apps.ts";
@@ -16,3 +21,14 @@ export {
   type AppCapabilities,
 } from "./implementation/app-runner.ts";
 export { appRuntime, buildLoadSpan, type AppRuntimeHost } from "./implementation/app-runtime.ts";
+export {
+  remoteAppRunner,
+  serveAppRunner,
+  type RemoteAppRunner,
+  type RemoteCapabilities,
+} from "./implementation/remote-app-runner.ts";
+export {
+  credentialFetch,
+  credentialKey,
+  type CredentialOutbound,
+} from "./implementation/credential-handles.ts";

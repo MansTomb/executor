@@ -166,7 +166,7 @@ export const pageContext = (pathname: string, search = "") => {
     "connect",
     "settings",
     "groups",
-    "api-keys",
+    "account",
     "approvals",
     "billing",
   ]);

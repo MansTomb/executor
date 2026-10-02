@@ -18,7 +18,6 @@
   font-style: normal;
   font-display: swap;
 }
-@custom-variant dark (&:is(.dark *));
 @theme inline {
   --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;

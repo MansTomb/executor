@@ -96,18 +96,39 @@ export const operationOptions = <Input, Output>(options: OperationOptions<Input,
         }),
   };
 };
+/**
+ * Replace a native operation's approval. Property descriptors are copied so an output schema that
+ * a protocol adapter builds only when read stays lazy.
+ */
+export const approvedOperation = <Input, Native extends AppOperation<Input, unknown>>(
+  operation: Native,
+  approval: Approval<Input>,
+): Native => {
+  // SAFETY: the copy has every own property of `operation`, with only `approval` replaced below.
+  const copy = Object.defineProperties({}, Object.getOwnPropertyDescriptors(operation)) as Native;
+  return Object.defineProperty(copy, "approval", {
+    enumerable: true,
+    value: (context: Parameters<Approval<Input>>[0]) =>
+      Effect.tryPromise({ try: async () => approval(context), catch: (error) => error }),
+  });
+};
+
 /** Attach the same approval function to a generated or shared operation. */
 export const withApproval = <Input, Output, Kind extends "query" | "mutation", Context>(
   operation: Operation<Input, Output, Kind, Context>,
   approval: Approval<Input>,
 ): Operation<Input, Output, Kind, Context> => ({
   ...operation,
-  [NativeOperation]: {
-    ...operation[NativeOperation],
-    approval: (context) =>
-      Effect.tryPromise({ try: async () => approval(context), catch: (error) => error }),
-  },
+  [NativeOperation]: approvedOperation(operation[NativeOperation], approval),
 });
+
+/**
+ * The advisory hints an operation carries, such as an MCP server's `destructiveHint`. App code
+ * reads them to choose an approval; the framework never infers one from them.
+ */
+export const toolAnnotations = (
+  operation: OperationDeclaration<"query" | "mutation", never>,
+): ToolAnnotations | undefined => nativeOperation(operation)?.annotations;
 
 const make = <Input, Output, Kind extends "query" | "mutation", Context extends AppContext>(
   kind: Kind,

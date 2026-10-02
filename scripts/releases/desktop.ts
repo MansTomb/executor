@@ -12,6 +12,7 @@ import {
 } from "./config.ts";
 import { developerIdMac, unsignedMac } from "./macos-signing.ts";
 import { installNodeRuntime } from "./node-runtime.ts";
+import { launcherAnalytics } from "./analytics.ts";
 
 const build = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -82,7 +83,7 @@ const build = Effect.gen(function* () {
     `import { packagedRuntimeEnvironment } from "./runtime-env.mjs";
 Object.assign(process.env, packagedRuntimeEnvironment(process.env));
 process.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};
-await import("./runtime/desktop.mjs");
+${yield* launcherAnalytics}await import("./runtime/desktop.mjs");
 `,
   );
   yield* run("node", ["apps/local/desktop/scripts/build.mjs"], root);

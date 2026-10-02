@@ -12,7 +12,7 @@ import {
   AccountDialog,
   AccountDialogIdentity,
   DisconnectAccountForm,
-  RenameAccountForm,
+  EditAccountForm,
 } from "@executor-js/ui/dashboard/account-actions";
 import { QueryView } from "@executor-js/ui/dashboard/context";
 import { AccountHealthPanel } from "@executor-js/ui/dashboard/account-health";
@@ -24,14 +24,14 @@ import {
   checkAccountAtom,
   disconnectAccountAtom,
   reconnectAccountAtom,
-  renameAccountAtom,
+  updateAccountAtom,
 } from "../../contracts/accounts.ts";
 import type { HostedError } from "../../contracts/errors.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
 /** The list page owns an open dialog, so it outlives the row if the account changes underneath it. */
-export type AccountDialogKind = "rename" | "health" | "access" | "delete";
+export type AccountDialogKind = "edit" | "health" | "access" | "delete";
 
 /** Row actions replace the account page: credentials, name, access and deletion, in place. */
 export function HostedAccountActions({
@@ -66,7 +66,7 @@ export function HostedAccountActions({
         </Button>
       )}
       <AccountActionsMenu account={account}>
-        <DropdownMenuItem onSelect={() => open("rename")}>Rename</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => open("edit")}>Edit details</DropdownMenuItem>
         <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
         <DropdownMenuItem
           disabled={credentialsReason !== undefined || reconnect.pending}
@@ -115,13 +115,13 @@ function useReconnect(account: AccountId) {
 }
 
 const titles = {
-  rename: "Rename account",
+  edit: "Edit account",
   health: "Account health",
   access: "Manage access",
   delete: "Delete account?",
 } satisfies Record<AccountDialogKind, string>;
 
-/** Rename, access and deletion load the account themselves and report it if it disappears. */
+/** Editing, access and deletion load the account themselves and report it if it disappears. */
 export function HostedAccountDialog({
   id,
   dialog,
@@ -146,8 +146,8 @@ export function HostedAccountDialog({
         Failure={HostedFailure}
       >
         {(data) =>
-          dialog === "rename" ? (
-            <RenameDialogBody data={data} onPendingChange={setBusy} onClose={onClose} />
+          dialog === "edit" ? (
+            <EditDialogBody data={data} onPendingChange={setBusy} onClose={onClose} />
           ) : dialog === "health" ? (
             <HealthDialogBody data={data} onClose={onClose} />
           ) : dialog === "access" ? (
@@ -195,7 +195,7 @@ function HealthDialogBody({
   );
 }
 
-function RenameDialogBody({
+function EditDialogBody({
   data,
   onPendingChange,
   onClose,
@@ -205,13 +205,13 @@ function RenameDialogBody({
   readonly onClose: () => void;
 }) {
   const { organization } = useOrganizationRoute();
-  const rename = useAtomSet(renameAccountAtom({ organization, account: data.account.id }), {
+  const update = useAtomSet(updateAccountAtom({ organization, account: data.account.id }), {
     mode: "promiseExit",
   });
   return (
-    <RenameAccountForm<HostedError>
+    <EditAccountForm<HostedError>
       account={data.account}
-      rename={rename}
+      update={update}
       Failure={HostedFailure}
       disabledReason={
         data.canManage

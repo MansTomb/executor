@@ -323,7 +323,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               "Delete app",
               "Save access",
               "Reset changes",
-              "Publish",
+              "Share publicly",
             ])
               expect(
                 yield* browser.use(`Restricted ${label} remains visible`, (page) =>
@@ -377,12 +377,20 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               ),
             ).toBe("true");
             yield* browser.use("Close the account menu", (page) => page.keyboard.press("Escape"));
-            yield* openAccountAction("Rename");
+            yield* openAccountAction("Edit details");
             expect(
-              yield* browser.use("Save name is disabled", (page) =>
+              yield* browser.use("Save is disabled", (page) =>
                 page
                   .getByRole("dialog")
-                  .getByRole("button", { name: "Save name", exact: true })
+                  .getByRole("button", { name: "Save", exact: true })
+                  .isDisabled(),
+              ),
+            ).toBe(true);
+            expect(
+              yield* browser.use("Account description remains visible and disabled", (page) =>
+                page
+                  .getByRole("dialog")
+                  .getByRole("textbox", { name: "Description for agents", exact: true })
                   .isDisabled(),
               ),
             ).toBe(true);

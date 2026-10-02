@@ -21,6 +21,8 @@ export const FacetBundle = WorkerBundle;
 /** The outer host has already authorized this exact app invocation. No credentials are persisted here. */
 export const FacetInvocation = Schema.Struct({
   id: Schema.NonEmptyString,
+  /** The app, which binds the facet's outbound network to it. */
+  app: Schema.NonEmptyString,
   identity: Schema.NonEmptyString,
   body: Schema.String,
   cacheNamespace: Schema.optionalKey(Schema.String),
@@ -165,11 +167,10 @@ export const makeFacetSupervisor = (
   state: DurableObjectState,
   loader: Pick<WorkerLoader, "get">,
   /**
-   * Network the facet's global `fetch` uses. Cloudflare has no private network to reach, so it
-   * passes nothing and relies on the compatibility flag. A local workerd host passes its own
-   * outbound entrypoint, which applies a rule the flag cannot express there.
+   * Network the facet's global `fetch` uses, bound to its app. It substitutes credential handles
+   * and applies the host's routing rules.
    */
-  globalOutbound?: Fetcher,
+  globalOutbound: (app: string) => Fetcher,
   /**
    * Unload the Worker of a facet replaced for another account selection. A workerd host whose
    * process never unloads named Workers itself sets this; Cloudflare unloads them.
@@ -238,14 +239,14 @@ export const makeFacetSupervisor = (
           state.facets.abort("data", "Execution context changed");
           active = loaded;
         }
-        if (!unloadReplacedFacets) return yield* select(name, load);
+        if (!unloadReplacedFacets) return yield* select(name, invocation.app, load);
         // Also covers a facet an evicted supervisor left loaded, which `active` never saw.
         const replaced = loadedFacets.get(supervisor);
         loadedFacets.set(supervisor, { name, loaded });
         if (replaced !== undefined && replaced.loaded !== loaded) yield* unloadReplaced(replaced);
-        return yield* select(name, load);
+        return yield* select(name, invocation.app, load);
       });
-    const select = (name: string, load: () => Promise<typeof FacetBundle.Type>) =>
+    const select = (name: string, app: string, load: () => Promise<typeof FacetBundle.Type>) =>
       Effect.try({
         try: () =>
           // An abort invalidates stubs. Reacquire on every serialized invocation.
@@ -257,16 +258,9 @@ export const makeFacetSupervisor = (
                   ...bundle,
                   modules: workerModules(bundle.modules),
                   compatibilityDate: "2026-07-30",
-                  ...(globalOutbound === undefined
-                    ? // Same-zone URLs must use their public Worker routes, not the underlying origin.
-                      {
-                        compatibilityFlags: ["nodejs_compat", "global_fetch_strictly_public"],
-                      }
-                    : // The flag would override this outbound and send fetch to the shared network.
-                      {
-                        compatibilityFlags: ["nodejs_compat"],
-                        globalOutbound,
-                      }),
+                  // The strictly-public flag would override this outbound and bypass it.
+                  compatibilityFlags: ["nodejs_compat"],
+                  globalOutbound: globalOutbound(app),
                 };
               });
               return { class: worker.getDurableObjectClass("ExecutorAppData") };

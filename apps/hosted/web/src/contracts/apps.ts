@@ -1,5 +1,5 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { pollingQuery } from "@executor-js/ui/contracts/polling";
 import { refreshProfiles } from "./profiles.ts";
 import { refreshResourceDirectory } from "./resource-access.ts";
@@ -29,7 +29,7 @@ import { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { Data, Effect, Option, Schema, type Redacted } from "effect";
 import { HostedClient } from "./api.ts";
-import { acknowledge, upsert, currentQuery, invalidate } from "@executor-js/ui/contracts/mutations";
+import { acknowledge, upsert, invalidate } from "@executor-js/ui/contracts/mutations";
 import { inventoryAtom } from "./organization.ts";
 import { accountAtom, acknowledgeAccount } from "./accounts.ts";
 import { selectedIds, type ToolCatalog } from "@executor-js/ui/contracts/dashboard";
@@ -61,10 +61,7 @@ class OAuthSetupKey extends Data.Class<{
   readonly method: string;
 }> {}
 const oauthSetupQuery = Atom.family((key: OAuthSetupKey) =>
-  HostedClient.query("accounts", "oauthSetup", hydrated({ params: key })).pipe(
-    Atom.setIdleTTL("5 minutes"),
-    refreshOnFocus,
-  ),
+  HostedClient.query("accounts", "oauthSetup", hydrated({ params: key })).pipe(revalidated),
 );
 /** Safe client capability hints are shared across forms for the same organization, provider, and method. */
 export const oauthSetupAtom = (key: {
@@ -75,13 +72,10 @@ export const oauthSetupAtom = (key: {
 
 const appQuery = Atom.family(
   (key: { readonly organization: OrganizationReference; readonly app: AppId }) =>
-    HostedClient.query("apps", "get", hydrated({ params: key })).pipe(
-      refreshOnFocus,
-      protectedQuery,
-    ),
+    HostedClient.query("apps", "get", hydrated({ params: key })).pipe(revalidated, protectedQuery),
 );
 const deploymentsQuery = Atom.family((key: AppKey) =>
-  HostedClient.query("apps", "deployments", hydrated({ params: key })).pipe(refreshOnFocus),
+  HostedClient.query("apps", "deployments", hydrated({ params: key })).pipe(revalidated),
 );
 const sourceQuery = Atom.family((key: SourceKey) =>
   HostedClient.query(
@@ -91,7 +85,7 @@ const sourceQuery = Atom.family((key: SourceKey) =>
       params: { organization: key.organization, app: key.app },
       query: { deployment: key.deployment },
     }),
-  ),
+  ).pipe(Atom.setIdleTTL("5 minutes")),
 );
 const sourceFileQuery = Atom.family((key: SourceFileKey) =>
   HostedClient.query(
@@ -125,7 +119,7 @@ const toolsQuery = Atom.family((key: ToolKey) =>
         expectedProfileRevision: key.expectedProfileRevision,
       },
     }),
-  ).pipe(currentQuery),
+  ).pipe(revalidated),
 );
 /** Pending credentials are fetched without reading saved secrets. */
 const connectionQuery = Atom.family(
@@ -478,11 +472,11 @@ function connectionSaved(
   if (app !== null) {
     const target = { organization: key.organization, app };
     refreshProfiles(get, target);
-    invalidate(get, appAtom(target));
+    get.refresh(appAtom(target));
     get.refresh(toolsAtom(target));
   }
   // The inventory response contains selected accounts, which the account response does not.
-  invalidate(get, inventoryAtom(key.organization));
+  get.refresh(inventoryAtom(key.organization));
 }
 
 const toolCatalogs = Atom.family((key: ToolKey) =>
@@ -509,17 +503,15 @@ const toolDetailQueries = Atom.family((key: ToolDetailKey) =>
         expectedProfileRevision: key.expectedProfileRevision,
       },
     }),
-  ),
+  ).pipe(revalidated),
 );
 const toolDetails = Atom.family((key: ToolDetailKey) =>
-  HostedClient.runtime
-    .atom((get) =>
-      get
-        .result(toolDetailQueries(key))
-        // A tool that left the catalog since the list was read is not a failure.
-        .pipe(Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined))),
-    )
-    .pipe(currentQuery),
+  HostedClient.runtime.atom((get) =>
+    get
+      .result(toolDetailQueries(key))
+      // A tool that left the catalog since the list was read is not a failure.
+      .pipe(Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined))),
+  ),
 );
 /** One tool's schemas for the same catalog identity as the list. */
 export const toolDetailAtom = (key: ConstructorParameters<typeof ToolDetailKey>[0]) =>
@@ -560,7 +552,7 @@ const connectionToolLists = Atom.family((key: ToolKey) =>
         return tools;
       }),
     )
-    .pipe(currentQuery),
+    .pipe(Atom.setIdleTTL("5 minutes")),
 );
 /** Load the complete selected catalog on demand so connection search includes every tool. */
 export const connectionToolListAtom = (key: ConstructorParameters<typeof ToolKey>[0]) =>

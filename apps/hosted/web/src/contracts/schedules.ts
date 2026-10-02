@@ -1,5 +1,5 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { protectedQuery } from "./protected-query.ts";
 import { browserApproval } from "@executor-js/ui/contracts/browser-approval";
 import { BrowserAtoms } from "./telemetry.ts";
@@ -33,7 +33,7 @@ const settings = Atom.family((key: AppKey) =>
       params: key,
       query: { profile: key.profile },
     }),
-  ).pipe(refreshOnFocus, protectedQuery),
+  ).pipe(revalidated, protectedQuery),
 );
 const polledSettings = Atom.family((key: AppKey) =>
   pollingQuery(settings(key), { active: runningSchedules }),
@@ -46,7 +46,7 @@ const definitions = Atom.family((key: AppKey) =>
       params: key,
       query: { profile: key.profile },
     }),
-  ).pipe(refreshOnFocus),
+  ).pipe(revalidated),
 );
 const controls = Atom.family((key: ScheduleKey) => {
   const saved = (get: Atom.FnContext, value: ScheduleSettings) =>
@@ -102,7 +102,7 @@ const runsSource = Atom.family((organization: OrganizationReference) =>
       params: { organization },
       query: { pending: true },
     }),
-  ).pipe(refreshOnFocus, protectedQuery),
+  ).pipe(revalidated, protectedQuery),
 );
 const runsQuery = Atom.family((organization: OrganizationReference) =>
   // Approval requests expire, and this queue exists to receive them.
@@ -112,8 +112,11 @@ const runsQuery = Atom.family((organization: OrganizationReference) =>
 export const pendingApprovalsAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.runtime.atom((get) =>
     Effect.gen(function* () {
-      const runs = yield* get.result(runsQuery(organization));
-      const inventory = yield* get.result(inventoryAtom(organization));
+      // App names come from the inventory; read it alongside the runs rather than after them.
+      const [runs, inventory] = yield* Effect.all(
+        [get.result(runsQuery(organization)), get.result(inventoryAtom(organization))],
+        { concurrency: "unbounded" },
+      );
       return runs.map((run): ApprovalListItem => ({
         run,
         app: {

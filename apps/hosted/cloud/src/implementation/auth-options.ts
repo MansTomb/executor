@@ -22,6 +22,7 @@ import { passkeyEnrollmentCookie } from "../contracts/passkey-enrollment.ts";
 import { cloudEmulators } from "../infrastructure/emulators.ts";
 import { emulatedSocialProviders } from "./emulated-auth.ts";
 import { cloudSso, ssoVerifiedEmail } from "./sso.ts";
+import { cloudMemberLimit } from "./member-limit.ts";
 
 /** The better-auth endpoint that creates accounts from a verified email code. */
 const emailCodeSignInPath = "/sign-in/email-otp";
@@ -313,6 +314,7 @@ export const cloudAuthOptions = (
             ),
           ),
       }),
+      ...(billing === undefined ? [] : [cloudMemberLimit(billing)]),
       // The native migrator creates tables in plugin order; SSO references organization.
       cloudSso(billing),
       emailOTP({

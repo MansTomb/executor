@@ -124,6 +124,14 @@ directory needs an OS store and there is none), `credential-denied`,
 `locked` or `io`. The desktop backend also sends that reason on its private fd4
 pipe so the desktop can choose recovery actions.
 
+`executor rotate-key` replaces the saved API key in place, in the OS credential
+store or `keys.json`, and keeps the encryption key, so saved accounts and MCP
+sign-ins keep working. The record is unchanged. A running server keeps using its
+current key until it restarts; the next start also updates the managed Executor
+account. Rotation refuses supplied keys, a directory without saved keys, and a
+store that is locked or denied, and changes nothing in those cases.
+Account-connection links signed with the old key stop working.
+
 SDK routes, including `/mcp` and `/openapi.json`, require `Authorization: Bearer …`.
 The local token grants access to the whole local instance. Owner filters do not
 represent user authentication. SDK and MCP requests with a browser `Origin`

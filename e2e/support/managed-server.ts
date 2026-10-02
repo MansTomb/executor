@@ -28,6 +28,7 @@ import {
   HttpServerResponse,
 } from "effect/unstable/http";
 import type { Target } from "./platform.ts";
+import { startAnalyticsCollector } from "./analytics-collector.ts";
 
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
@@ -68,6 +69,8 @@ export const startManagedServer = (
             ],
           };
 
+    // Each product process sends its analytics to its own loopback collector, kept across restarts.
+    const analyticsPort = yield* startAnalyticsCollector(target.directory);
     const gate = yield* Semaphore.make(1);
     let current: Scope.Closeable | undefined;
     /** The running product process, for an abrupt kill that runs none of its shutdown. */
@@ -97,6 +100,7 @@ export const startManagedServer = (
       EXECUTOR_WORKER_BUNDLE: path.resolve(".local/test-runtime/host.json"),
       ...(Option.isSome(npmRegistry) ? { EXECUTOR_NPM_REGISTRY: npmRegistry.value } : {}),
       EXECUTOR_TEST_CLOCK_OFFSET_MS: "0",
+      EXECUTOR_ANALYTICS_TEST_PORT: String(analyticsPort),
       ...environment,
     };
     const stop = Effect.suspend(() =>

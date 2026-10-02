@@ -155,7 +155,10 @@ export default defineConfig({
         ],
       },
       { label: "Build", items: ["/build/author-an-app"] },
-      { label: "Run Executor yourself", items: ["/run/cli", "/run/self-host", "/run/tracing"] },
+      {
+        label: "Run Executor yourself",
+        items: ["/run/cli", "/run/self-host", "/run/tracing", "/run/usage-analytics"],
+      },
     ],
   },
 });

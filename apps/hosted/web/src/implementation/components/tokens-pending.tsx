@@ -2,8 +2,13 @@ import { Button } from "@executor-js/ui/components/button";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 
+/** The page heading and copy are the same on every visit. */
+export const tokensTitle = "Tokens";
+export const tokensDescription =
+  "Personal access tokens for scripts and agents. They belong to you, not to an organization.";
+
 /** Static token guidance stays visible independently of account and token requests. */
-export function ApiKeysIntro() {
+export function TokensIntro() {
   return (
     <p className="mb-5 max-w-2xl text-sm text-muted-foreground">
       Tokens have your current permissions. Limit a token to one organization, or give it your full
@@ -20,7 +25,7 @@ export function TokenListPending() {
       <table className="w-full text-left text-sm" aria-hidden>
         <thead className="border-b text-xs text-muted-foreground">
           <tr>
-            {["Name", "Organization", "Last used", "Expires", "Status", ""].map((label) => (
+            {["Name", "Scope", "Last used", "Expires", "Status", ""].map((label) => (
               <th key={label} className="px-4 py-3 font-medium">
                 {label}
               </th>
@@ -34,7 +39,7 @@ export function TokenListPending() {
               <Skeleton className="h-3 w-20" />
               <Skeleton className="h-3 w-36" />
             </td>
-            {["Organization", "Last used", "Expires", "Status"].map((label) => (
+            {["Scope", "Last used", "Expires", "Status"].map((label) => (
               <td key={label} className="px-4 py-4">
                 <Skeleton className="h-3 w-20" />
               </td>
@@ -53,13 +58,13 @@ export function TokenListPending() {
 }
 
 /** Lazy route loading keeps the token page identity and its static controls. */
-export function ApiKeysPending() {
+export function TokensPending() {
   return (
     <PageFrame>
-      <PageHeader title="API keys" description="Personal access tokens for scripts and agents.">
+      <PageHeader title={tokensTitle} description={tokensDescription}>
         <Button disabled>Create token</Button>
       </PageHeader>
-      <ApiKeysIntro />
+      <TokensIntro />
       <div className="overflow-hidden rounded-xl border">
         <div className="flex items-center justify-between border-b px-4 py-3">
           <h2 className="text-sm font-medium">Your tokens</h2>

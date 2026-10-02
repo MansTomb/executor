@@ -200,11 +200,14 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({
           read.requested,
         );
         // The modal prompt hides the page from assistive technology while it is open.
-        yield* browser.use("The pending profile read has a loading state", (page) =>
-          page
-            .getByRole("status", { name: "Loading accounts", exact: true, includeHidden: true })
-            .waitFor({ state: "visible" }),
-        );
+        // The Accounts tab keeps its previous content while the profile read is held.
+        expect(
+          yield* browser.use("The pending profile read keeps the tab on screen", (page) =>
+            page
+              .getByRole("status", { name: "Loading accounts", exact: true, includeHidden: true })
+              .count(),
+          ),
+        ).toBe(0);
         yield* browser.use("Type a name while the Accounts tab reloads", (page) =>
           accountNameField(page).fill(name),
         );

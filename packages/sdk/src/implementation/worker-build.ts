@@ -10,17 +10,12 @@ import type { SourceFiles } from "../contracts/deployment.ts";
 import { prepareUiBuild } from "./ui-build.ts";
 import { Effect, Option, Path, Schema } from "effect";
 import type { Plugin } from "esbuild";
-import {
-  PublishedAppFramework,
-  WorkerBundle,
-  type AppFramework,
-} from "../contracts/worker-build.ts";
+import { PublishedAppFramework, WorkerBundle } from "../contracts/worker-build.ts";
 import { appProtocol } from "./app-protocols.ts";
 import { browserBuild } from "./worker-browser-build.ts";
 import { wasmBuild } from "./worker-wasm-build.ts";
 import { workerDependencies } from "./worker-dependencies.ts";
 import apps from "apps/package.json" with { type: "json" };
-export type WorkerFramework = AppFramework;
 
 /**
  * What the compiling host contributes. `registry` replaces the public npm registry. A host has no
@@ -49,17 +44,18 @@ const frameworkExports = [
   "apps/skills/effect",
   "apps/operations/approval",
 ];
-const frameworkModules = (framework: AppFramework["server"]) => ({
-  ...Object.fromEntries(Object.entries(framework).filter(([name]) => name.endsWith(".js"))),
-  ...Object.fromEntries(
-    frameworkExports.map((name) => [
-      name,
-      {
-        js: `export * from "${name === "apps" ? "./" : "../".repeat(name.split("/").length - 1)}node_modules/apps/${name === "apps" ? "index" : name.slice(5)}.js";`,
-      },
-    ]),
-  ),
-});
+/**
+ * The build's own entry for each framework import. These re-exports belong to this host's export
+ * list, not to the release, so they stay with the app and the stored framework is the release's.
+ */
+const frameworkEntries = Object.fromEntries(
+  frameworkExports.map((name) => [
+    name,
+    {
+      js: `export * from "${name === "apps" ? "./" : "../".repeat(name.split("/").length - 1)}node_modules/apps/${name === "apps" ? "index" : name.slice(5)}.js";`,
+    },
+  ]),
+);
 const quietCompiler: Plugin = {
   name: "private-build-diagnostics",
   setup(build) {
@@ -138,7 +134,9 @@ const selectedFramework = (filesystem: InMemoryFileSystem) =>
 
 /**
  * Compilation returns browser bytes separately; neither imports nor credentials cross from server
- * execution. The selected framework's protocol must be supported before anything compiles.
+ * execution. The selected framework's protocol must be supported before anything compiles. The
+ * bundle holds only the app's modules; `framework` holds the release's server modules, which a
+ * host stores once and links on load (see `assembleWorkerBundle`).
  */
 export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
   Effect.gen(function* () {
@@ -187,7 +185,7 @@ export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
     });
     const bundle = yield* Schema.decodeUnknownEffect(Schema.toType(WorkerBundle))({
       ...compiled,
-      modules: { ...compiled.modules, ...frameworkModules(selected.server), ...wasm.modules },
+      modules: { ...compiled.modules, ...frameworkEntries, ...wasm.modules },
     }).pipe(
       Effect.mapError(
         (cause) =>
@@ -200,5 +198,10 @@ export const compileWorkerApp = (files: SourceFiles, host: WorkerHost) =>
       ),
     );
     const ui = browser === undefined ? undefined : yield* browser.finish();
-    return { bundle, ui, protocol: selected.protocol };
+    return {
+      bundle,
+      framework: { version: selected.version, modules: selected.server },
+      ui,
+      protocol: selected.protocol,
+    };
   }).pipe(Effect.provide(Path.layer), Effect.withSpan("runtime.cloud.compile"));

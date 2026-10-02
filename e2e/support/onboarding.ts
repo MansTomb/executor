@@ -382,8 +382,11 @@ const make = Effect.gen(function* () {
         return teams[0];
       }),
     signOut: Effect.gen(function* () {
+      yield* browser.use("Open the account menu", (page) =>
+        page.getByRole("button", { name: /^Account: / }).click(),
+      );
       yield* browser.use("Sign out of Cloud", (page) =>
-        page.getByRole("button", { name: "Sign out", exact: true }).click(),
+        page.getByRole("menuitem", { name: "Sign out", exact: true }).click(),
       );
       yield* browser.use("Return to the public entry", (page) =>
         page.waitForURL((url) => url.origin === target.metadata.origin && url.pathname === "/"),

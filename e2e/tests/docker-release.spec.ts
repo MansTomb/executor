@@ -127,6 +127,8 @@ for (const mode of ["explicit", "local", "railway"] as const)
             "chown 0:0 /app/data && chmod 755 /app/data",
           ]);
         const environment: Record<string, string> = {
+          // Release scenarios never send product analytics, even from an image with a baked key.
+          DO_NOT_TRACK: "1",
           PORT: String(containerPort),
           EXECUTOR_APP_UI_BASE_URL: origin,
           ...(mode === "explicit"
@@ -933,6 +935,8 @@ it.live("released image serves management tools at a tailnet origin with private
         () => run(["network", "rm", id]).pipe(Effect.orDie),
       );
       const environment: Record<string, string> = {
+        // Release scenarios never send product analytics, even from an image with a baked key.
+        DO_NOT_TRACK: "1",
         PORT: String(containerPort),
         BETTER_AUTH_URL: origin,
         BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
@@ -1237,6 +1241,8 @@ it.live(
             const port = yield* freePort;
             const origin = `http://localhost:${port}`;
             const environment: Record<string, string> = {
+              // Release scenarios never send product analytics, even from an image with a baked key.
+              DO_NOT_TRACK: "1",
               PORT: String(containerPort),
               BETTER_AUTH_URL: origin,
               BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
@@ -1476,6 +1482,8 @@ const workflowServer = (source: string) =>
     );
     const origin = `http://localhost:${port}`;
     const environment: Record<string, string> = {
+      // Release scenarios never send product analytics, even from an image with a baked key.
+      DO_NOT_TRACK: "1",
       PORT: "8080",
       BETTER_AUTH_URL: origin,
       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),

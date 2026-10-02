@@ -64,8 +64,25 @@ Because the function sees the input, the decision can depend on it. A refund
 under a threshold can run; a larger one can ask. Annotate a shared function with
 `Approval<Input>` and assign it to several tools to reuse one rule.
 
-Attach an approval to an imported MCP, OpenAPI or GraphQL operation with
-`withApproval(operation, policy)`.
+Attach an approval to one shared operation with `withApproval(operation, policy)`.
+For an imported MCP, OpenAPI or GraphQL router, `withApprovals(router, policy)`
+picks a policy for each of its tools. The rule stays in the app's own code:
+
+```ts
+import { toolAnnotations, withApprovals } from "apps";
+import { always } from "apps/operations/approval";
+
+// Ask before every write to an OpenAPI or GraphQL API.
+withApprovals(api, (tool) => (tool.kind === "mutation" ? always() : undefined));
+// Ask before MCP tools the server marks destructive.
+withApprovals(server, (tool) =>
+  toolAnnotations(tool)?.destructiveHint === true ? always() : undefined,
+);
+```
+
+MCP servers added from the dashboard are generated with the second rule. Edit
+the app's source to change it. Apps added earlier keep the source they were
+generated with.
 
 ## What happens when a tool asks
 
@@ -95,7 +112,5 @@ a tool; only the approval decides whether it runs.
 ## What is coming later
 
 - Remembering a decision, so the same action is not asked twice.
-- Approval defaults derived from an imported document, such as treating a `GET`
-  as safe and a `DELETE` as needing confirmation.
 - Browser approval for a tool called from an app's own web page. Today such a
   call fails instead of asking.

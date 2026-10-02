@@ -2,9 +2,15 @@ import { useState, type ComponentType, type ReactNode } from "react";
 import { Exit, Match, Option, Redacted, type Cause } from "effect";
 import type { Account, CredentialCheck, Provider } from "@executor-js/sdk";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { AlertCircleIcon, CheckmarkCircle02Icon } from "@hugeicons/core-free-icons";
+import {
+  AlertCircleIcon,
+  CheckmarkCircle02Icon,
+  SquareLock02Icon,
+  ViewIcon,
+} from "@hugeicons/core-free-icons";
 import type { FailureProps } from "../../contracts/dashboard.ts";
 import {
+  type AccountFormFields,
   accountFields,
   credentialsComplete,
   credentialValues,
@@ -147,6 +153,11 @@ export function AccountForm<A, E>({
       )}
       {auth?.type === "oauth2" ? (
         <div key={method} className="oauth-fields flex flex-col gap-4">
+          <CredentialAccess
+            hosts={provider.definition.hosts}
+            hidden={provider.definition.hosts !== undefined}
+            readable={provider.definition.hosts === undefined}
+          />
           {oauth({ method, disabled, onPendingChange: updatePending })}
         </div>
       ) : fields ? (
@@ -156,8 +167,13 @@ export function AccountForm<A, E>({
               ? "This connection sends no credentials. Continue only if the service supports public access."
               : `Get these credentials from your ${provider.definition.name} account settings.`}
           </p>
+          <CredentialAccess
+            hosts={provider.definition.hosts}
+            {...secretAccess(fields, provider.definition.hosts)}
+          />
           <CredentialFields
             fields={fields}
+            hosts={provider.definition.hosts}
             values={values}
             onChange={changeValues}
             pending={pending}
@@ -196,6 +212,82 @@ export function AccountForm<A, E>({
         </p>
       )}
     </form>
+  );
+}
+
+/** Whether a form has secret fields the hosts hide, and secret fields the app reads. */
+const secretAccess = (fields: AccountFormFields, hosts: readonly string[] | undefined) => {
+  const secrets = Object.entries(fields.properties)
+    .filter(([name, field]) => field.type === "string" && !fields.plain?.includes(name))
+    .map(([name]) => hosts !== undefined && !fields.raw?.includes(name));
+  return { hidden: secrets.includes(true), readable: secrets.includes(false) };
+};
+
+/**
+ * What the app gets for the entered credentials, explaining each field tag the form shows. A
+ * provider that declares hosts gives the app placeholders for hidden values; Executor substitutes
+ * the real values only on requests to those hosts. `raw()` fields, and every secret of a provider
+ * without hosts, are readable by the app.
+ */
+function CredentialAccess({
+  hosts,
+  hidden,
+  readable,
+}: {
+  readonly hosts?: readonly string[] | undefined;
+  readonly hidden: boolean;
+  readonly readable: boolean;
+}) {
+  if (!hidden && !readable) return null;
+  return (
+    <div className="flex flex-col gap-1.5 text-xs leading-relaxed" data-credential-hosts>
+      {hidden && hosts !== undefined && (
+        <p
+          className="flex items-start gap-1.5 text-muted-foreground"
+          data-credential-access="hidden"
+        >
+          <HugeiconsIcon
+            icon={SquareLock02Icon}
+            className="mt-0.5 size-3.5 shrink-0 text-emerald-600"
+          />
+          <span>
+            <span className="font-medium text-emerald-700 dark:text-emerald-400">
+              Hidden from app.
+            </span>{" "}
+            The app and your agent only get a placeholder. Executor swaps in the real value{" "}
+            {hosts.length === 0 ? (
+              "on no request."
+            ) : (
+              <>
+                on requests to{" "}
+                {hosts.map((host, index) => (
+                  <span key={host}>
+                    <span className="rounded border border-border bg-muted/50 px-1 py-px font-mono text-[11px] text-foreground">
+                      {host}
+                    </span>
+                    {index < hosts.length - 1 ? " " : "."}
+                  </span>
+                ))}
+              </>
+            )}
+          </span>
+        </p>
+      )}
+      {readable && (
+        <p
+          className="flex items-start gap-1.5 text-muted-foreground"
+          data-credential-access="readable"
+        >
+          <HugeiconsIcon icon={ViewIcon} className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+          <span>
+            <span className="font-medium text-amber-700 dark:text-amber-400">Readable by app.</span>{" "}
+            The app reads these values and can send them anywhere.
+            {hosts === undefined &&
+              " You can ask your agent to use stubbed secrets instead if possible."}
+          </span>
+        </p>
+      )}
+    </div>
   );
 }
 

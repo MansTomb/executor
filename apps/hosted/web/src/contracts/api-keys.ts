@@ -1,5 +1,5 @@
 import { dashboardHttpClient, hydratedResult } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { observeBrowserUsage } from "./product-analytics.ts";
 import { Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/unstable/http";
@@ -91,7 +91,7 @@ export const apiKeysAtom = Atom.family((offset: number) =>
         })),
       })),
     (refresh) => refresh(apiKeyPageAtom(offset)),
-  ).pipe(refreshOnFocus),
+  ).pipe(revalidated),
 );
 /** Creation returns a redacted token; the page keeps it only in the one-time copy dialog. */
 export const createApiKeyAtom = BrowserAtoms.fn((input: typeof CreateApiKey.Type) =>

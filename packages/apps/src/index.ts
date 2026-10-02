@@ -21,12 +21,19 @@ import { decodeJson as decodeJsonEffect } from "./implementation/http.ts";
 import { oauth2 as oauth2Effect, secrets as nativeSecrets } from "./implementation/provider.ts";
 import {
   decoderOf,
+  fieldExposure,
+  isSchema,
   type Fields,
   type Infer,
   type ObjectSchema,
   type Schema,
+  type SecretFields,
+  type SecretObject,
   wrap,
 } from "./implementation/schema.ts";
+
+const isFields = (value: unknown): value is Fields =>
+  typeof value === "object" && value !== null && Object.values(value).every(isSchema);
 
 export { type JsonObject, type JsonValue, ValidationError } from "./contracts/schema.ts";
 export {
@@ -44,6 +51,9 @@ export {
   object,
   record,
   string,
+  plain,
+  raw,
+  type SecretString,
 } from "./implementation/schema.ts";
 
 export {
@@ -63,6 +73,7 @@ export { accountRouter } from "./implementation/account-router.ts";
 export {
   router,
   dynamicRouter,
+  withApprovals,
   type RouterDeclaration,
   type RouterChild,
   type RouterOptions,
@@ -71,14 +82,32 @@ export type { RouterIcon } from "./contracts/router.ts";
 export { dynamicSkills } from "./implementation/dynamic-skills.ts";
 export type { HostedTool as OperationDescription } from "./contracts/host.ts";
 
+/** Account fields as app code receives them from a method declared with this schema. */
+type AccountFields<S> = S extends ObjectSchema<infer F> ? SecretFields<F> : SecretObject<Infer<S>>;
 /** A secrets declaration inferred from an author schema. */
 export type SecretsMethod<Shape extends ObjectSchema<Fields>> = NativeSecretsMethod<
-  EffectSchema.Decoder<Infer<Shape>>
+  EffectSchema.Decoder<AccountFields<Shape>>
 >;
 /** An OAuth declaration inferred from its author-facing response schema. */
 export type OAuth2Method<Response extends Schema<unknown, boolean>> = NativeOAuth2Method<
-  EffectSchema.Decoder<Infer<Response>>
+  EffectSchema.Decoder<AccountFields<Response>>
 >;
+
+/**
+ * The native decoder for account fields, typed as app code receives them. `SecretString` is a
+ * brand on `string`, so the decoder's values already satisfy it.
+ */
+const accountDecoder = <S extends Schema<unknown, boolean>>(
+  schema: S,
+): EffectSchema.Decoder<AccountFields<S>> =>
+  // SAFETY: the brand exists only in types; secret values are strings at runtime.
+  decoderOf(schema) as unknown as EffectSchema.Decoder<AccountFields<S>>;
+
+/** The `plain()` and `raw()` fields of an object schema, or none. */
+const exposureOf = (schema: Schema<unknown, boolean>) => {
+  const marked = "fields" in schema && isFields(schema.fields) ? fieldExposure(schema.fields) : {};
+  return Object.keys(marked).length === 0 ? {} : { exposure: marked };
+};
 /** Default OAuth fields visible to app code. Host-only grants and clients stay private. */
 export const OAuth2AccessToken = wrap(NativeAccessToken, false);
 
@@ -100,7 +129,11 @@ export const secrets = <const F extends Fields>(options: {
   readonly label: string;
   readonly fields: ObjectSchema<F>;
 }): SecretsMethod<ObjectSchema<F>> =>
-  nativeSecrets({ label: options.label, fields: decoderOf(options.fields) });
+  nativeSecrets({
+    label: options.label,
+    fields: accountDecoder(options.fields),
+    ...exposureOf(options.fields),
+  });
 
 /**
  * Declare OAuth discovery/endpoints and an optional app-visible response projection.
@@ -119,7 +152,9 @@ export function oauth2(
   },
 ): OAuth2Method<Schema<unknown, boolean>> {
   const { response = OAuth2AccessToken, ...config } = options;
-  return Effect.runSync(oauth2Effect(config, decoderOf(response)));
+  return Effect.runSync(
+    oauth2Effect(config, accountDecoder(response), exposureOf(response).exposure),
+  );
 }
 
 export type { AccountSlots } from "./contracts/app.ts";
@@ -194,6 +229,7 @@ export {
   query,
   mutation,
   withApproval,
+  toolAnnotations,
   type Operation,
   type OperationOptions,
 } from "./implementation/operations.ts";

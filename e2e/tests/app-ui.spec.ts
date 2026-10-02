@@ -112,13 +112,34 @@ const appFixture = Effect.gen(function* () {
   return { api, actors, browser, target, prefix, app, url, bookmark };
 });
 
+/** The owner's browser grants an MCP client that addresses the owner's Executor profile. */
+const mcpSession = Effect.gen(function* () {
+  const actors = yield* Actors,
+    browser = yield* Browser,
+    oauth = yield* McpOAuth,
+    mcp = yield* McpClient;
+  yield* browser.login(actors.owner);
+  const { profile } = yield* managementApp(actors.owner);
+  expect(profile.accounts.service).toBeTypeOf("string");
+  const tools = `tools.executor.profiles[${JSON.stringify(profile.id)}]`;
+  const grant = yield* oauth.authorize;
+  yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
+  const client = yield* mcp.connect(
+    Redacted.make(Redacted.value(grant.tokens).access_token),
+    "app-ui-discovery",
+  );
+  return { tools, client };
+});
+
 layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
-  it.effect(scenarios.appUiDiscovery.title, (context) =>
+  it.effect(scenarios.appUiApiDocument.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, browser, prefix, app, url, target } = yield* appFixture;
-        yield* browser.login(actors.owner);
+        const api = yield* Api,
+          actors = yield* Actors,
+          target = yield* Target;
+        const prefix = `/api/organizations/${actors.organization.id}`;
         const anonymous = yield* api.session();
         const apiDocument = yield* body(
           Schema.Struct({
@@ -136,7 +157,6 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(Object.keys(apiDocument.paths)).toContain("/api/viewer");
         const { app: management, profile } = yield* managementApp(actors.owner);
         expect(profile.accounts.service).toBeTypeOf("string");
-        const tools = `tools.executor.profiles[${JSON.stringify(profile.id)}]`;
         const source = yield* body(
           Schema.Struct({
             files: Schema.Array(
@@ -165,14 +185,14 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(configuration.baseUrl).toBe(target.metadata.origin);
         expect(configuration.allowedOrigin).toBe(new URL(target.metadata.origin).origin);
         expect(configuration.securitySchemes).toEqual(apiDocument.components.securitySchemes);
-        const oauth = yield* McpOAuth;
-        const mcp = yield* McpClient;
-        const grant = yield* oauth.authorize;
-        yield* Effect.addFinalizer(() => oauth.revoke(grant).pipe(Effect.orDie));
-        const client = yield* mcp.connect(
-          Redacted.make(Redacted.value(grant.tokens).access_token),
-          "app-ui-discovery",
-        );
+      }),
+    ),
+  );
+  it.effect(scenarios.appUiMcpSearch.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { tools, client } = yield* mcpSession;
         const search = yield* client.use(
           "Discover the app URL tool through MCP",
           (client, signal) =>
@@ -199,6 +219,15 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(discovered.items.map((item) => item.path)).not.toContain(
           `${tools}.appData.subscribe`,
         );
+      }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
+    ),
+  );
+  it.effect(scenarios.appUiDiscovery.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { actors, app, url } = yield* appFixture;
+        const { tools, client } = yield* mcpSession;
         const lookup = yield* client.use(
           "Get the canonical app URL using the MCP grant",
           (client, signal) =>

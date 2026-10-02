@@ -106,6 +106,8 @@ export const startBackend = (options: {
   readonly directory: string;
   readonly collectorBundle: string;
   readonly development: boolean;
+  /** The saved desktop port. Undefined keeps an inherited EXECUTOR_PORT or the server default. */
+  readonly port: number | undefined;
   readonly token: (typeof DesktopBootstrap.Type)["token"];
 }) =>
   Effect.gen(function* () {
@@ -123,6 +125,7 @@ export const startBackend = (options: {
             EXECUTOR_DATA_DIR: options.directory,
             EXECUTOR_MOTEL_BUNDLE: options.collectorBundle,
             EXECUTOR_DESKTOP_DEV: options.development ? "1" : "0",
+            ...(options.port === undefined ? {} : { EXECUTOR_PORT: String(options.port) }),
             // A desktop callback must return to its owned loopback listener.
             EXECUTOR_BROWSER_ORIGIN: undefined,
           },

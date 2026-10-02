@@ -119,3 +119,33 @@ export class BrowserOpenFailed extends Schema.TaggedError<BrowserOpenFailed>()(
   "BrowserOpenFailed",
   {},
 ) {}
+
+/** A listener port a user may choose. Privileged ports and port 0 are reserved for other callers. */
+export const DesktopPort = Schema.Number.check(
+  Schema.isInt(),
+  Schema.isBetween({ minimum: 1024, maximum: 65535 }),
+);
+
+/** `desktop.json` in the desktop data directory. An absent file means the server's default port. */
+export const DesktopSettings = Schema.Struct({
+  version: Schema.Literal(1),
+  port: DesktopPort,
+});
+
+/** Settings failures never expose the file contents. */
+export class SettingsFailed extends Schema.TaggedError<SettingsFailed>()("SettingsFailed", {
+  reason: Schema.Literals(["invalid", "unavailable", "write"]),
+}) {}
+
+/** Diagnostics export failures never include the files being collected. */
+export class DiagnosticsFailed extends Schema.TaggedError<DiagnosticsFailed>()(
+  "DiagnosticsFailed",
+  {},
+) {}
+
+/** The rotation child's one stdout line. `message` is sanitized configuration text, never a key. */
+export const RotationResult = Schema.Struct({
+  version: Schema.Literal(1),
+  rotated: Schema.Boolean,
+  message: Schema.String,
+});

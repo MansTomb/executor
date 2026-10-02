@@ -1,5 +1,4 @@
 import type { ReactNode } from "react";
-import { ApiKeysPending } from "./api-keys-pending.tsx";
 import { OrganizationSettingsPending } from "./organization-settings-pending.tsx";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { AppDetailPending } from "@executor-js/ui/dashboard/app-loading";
@@ -40,7 +39,6 @@ export function PagePending({
       />
     );
   if (/\/accounts\/?$/.test(pathname)) return <InventoryPageSkeleton kind="accounts" />;
-  if (/\/api-keys\/?$/.test(pathname)) return <ApiKeysPending />;
   if (/\/organization\/?$/.test(pathname))
     return <OrganizationSettingsPending>{organizationSettings}</OrganizationSettingsPending>;
   const title = /\/apps\/add/.test(pathname)

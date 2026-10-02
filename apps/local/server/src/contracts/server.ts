@@ -44,6 +44,10 @@ export interface LocalWeb {
 
 /** Optional adapters owned by the local browser or desktop composition. */
 export interface LocalServerOptions {
+  /** The product reported by analytics; the desktop backend is `desktop`. */
+  readonly product?: "local" | "desktop" | undefined;
+  /** The Node edge supplies its platform names for analytics. */
+  readonly platform?: { readonly os: string; readonly arch: string } | undefined;
   readonly oauthCallback?: LocalOAuthCallback | undefined;
   readonly web?: LocalWeb | undefined;
   /** Only the development entry point supplies local session shortcuts. */

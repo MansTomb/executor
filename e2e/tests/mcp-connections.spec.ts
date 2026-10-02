@@ -427,6 +427,21 @@ export default defineApp({ accounts: { service } }, async () => ({ tools: router
         yield* browser.use("Open Connections", (page) =>
           page.goto(`/org/${actors.organization.slug}/connect`),
         );
+        yield* browser.use("Choose personal access token setup", (page) =>
+          page.getByRole("tab", { name: "Personal access token", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("Token setup names this organization's MCP address", (page) =>
+            page
+              .getByRole("tabpanel")
+              .getByText(`/org/${actors.organization.slug}/mcp`, { exact: false })
+              .first()
+              .waitFor()
+              .then(() =>
+                page.getByRole("link", { name: "Manage tokens", exact: true }).getAttribute("href"),
+              ),
+          ),
+        ).toBe(`/account/tokens?organization=${actors.organization.slug}`);
         yield* browser.use("Start a new connection", (page) =>
           page.getByRole("button", { name: "Create a scoped connection", exact: true }).click(),
         );

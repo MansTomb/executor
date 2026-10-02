@@ -14,6 +14,10 @@ const operations = new Set([
   "/api-key/delete",
   "/passkey/verify-registration",
   "/passkey/delete-passkey",
+  "/update-user",
+  "/change-password",
+  "/revoke-session",
+  "/revoke-other-sessions",
   "/sign-out",
 ]);
 /** Only server-established identity and authored operation names cross this callback. */

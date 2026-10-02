@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -41,6 +42,15 @@ func randomKey() string {
 		panic(err)
 	}
 	return hex.EncodeToString(b)
+}
+func randomUUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 func exists(path string) bool { _, err := os.Stat(path); return err == nil }
 func saveKey(path, value string) error {
@@ -77,7 +87,7 @@ func configuration(directory string, exporting bool) (map[string]string, error) 
 	values := map[string]string{}
 	for _, entry := range os.Environ() {
 		name, value, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(name, "EXECUTOR_") || strings.HasPrefix(name, "OTEL_") || strings.HasPrefix(name, "BETTER_AUTH_") || strings.HasPrefix(name, "SSO_") || strings.HasPrefix(name, "FIRST_PARTY_") || name == "NODE_ENV" {
+		if strings.HasPrefix(name, "EXECUTOR_") || strings.HasPrefix(name, "OTEL_") || strings.HasPrefix(name, "BETTER_AUTH_") || strings.HasPrefix(name, "SSO_") || strings.HasPrefix(name, "FIRST_PARTY_") || name == "NODE_ENV" || name == "DO_NOT_TRACK" {
 			values[name] = value
 		}
 	}
@@ -140,6 +150,43 @@ func configuration(directory string, exporting bool) (map[string]string, error) 
 		}
 		values[key.name] = value
 	}
+	// Analytics identity is not needed to read existing data: a missing or invalid file is replaced.
+	identities := []struct {
+		name, file string
+		valid      func(string) bool
+		generate   func() string
+	}{
+		{"EXECUTOR_INSTALL_ID", "install-id", func(v string) bool {
+			return regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(v)
+		}, randomUUID},
+		{"EXECUTOR_ANALYTICS_SECRET", "analytics-secret.key", func(v string) bool { return regexp.MustCompile(`^[0-9a-fA-F]{64}$`).MatchString(v) }, randomKey},
+	}
+	for _, identity := range identities {
+		if value := os.Getenv(identity.name); identity.valid(value) {
+			values[identity.name] = value
+			continue
+		}
+		path := filepath.Join(directory, identity.file)
+		content, err := os.ReadFile(path)
+		value := strings.TrimSpace(string(content))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		if err != nil || !identity.valid(value) {
+			value = identity.generate()
+			if err = saveKey(path, value); err != nil {
+				return nil, err
+			}
+		}
+		values[identity.name] = value
+	}
+	// Node's platform names, matching the native hosts.
+	arch := runtime.GOARCH
+	if arch == "amd64" {
+		arch = "x64"
+	}
+	values["EXECUTOR_HOST_OS"] = runtime.GOOS
+	values["EXECUTOR_HOST_ARCH"] = arch
 	return values, nil
 }
 

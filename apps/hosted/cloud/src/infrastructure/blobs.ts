@@ -34,6 +34,15 @@ export const cloudBlobs = Effect.gen(function* () {
         ),
         Effect.mapError(() => new BlobStoreError({ operation: "get" })),
       ),
+    exists: (key) =>
+      bucket.head(key).pipe(
+        Effect.map((object) => object !== null),
+        Effect.provide(RuntimeContext.phantom),
+        Effect.tapError((error) =>
+          Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
+        ),
+        Effect.mapError(() => new BlobStoreError({ operation: "exists" })),
+      ),
     put: (key, body) =>
       bucket.put(key, body).pipe(
         // Builds own UUID keys; onboarding icons use content hashes. Rejected

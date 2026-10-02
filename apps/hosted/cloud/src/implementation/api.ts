@@ -1,5 +1,4 @@
 import { billingHandlers } from "./billing.ts";
-import { feedbackHandlers } from "./feedback.ts";
 import { onboardingHandlers } from "./onboarding-handlers.ts";
 import { organizationRemovalHandlers } from "./organization-removal.ts";
 import {
@@ -18,7 +17,6 @@ export const cloudApi = (document: LazyHostedApiDocument) =>
       Layer.mergeAll(
         hostedHandlers,
         billingHandlers,
-        feedbackHandlers,
         onboardingHandlers,
         organizationRemovalHandlers,
       ),

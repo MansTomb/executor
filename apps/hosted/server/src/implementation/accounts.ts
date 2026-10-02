@@ -144,11 +144,18 @@ export const disconnectAccount = (owner: OwnerId, account: AccountId) =>
     yield* executor.accounts.get({ owner, account });
     return yield* executor.accounts.remove({ owner, account });
   });
-/** Update metadata using the owner-filtered SDK primitive. */
-export const renameAccount = (owner: OwnerId, account: AccountId, label: string) =>
+/** Update the label or description using the owner-filtered SDK primitive. */
+export const updateAccount = (
+  owner: OwnerId,
+  account: AccountId,
+  metadata: {
+    readonly label?: string | undefined;
+    readonly description?: string | null | undefined;
+  },
+) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    return yield* executor.accounts.update({ owner, account, label });
+    return yield* executor.accounts.update({ ...metadata, owner, account });
   });
 /** Create a sign-in request for an app requirement belonging to this organization. */
 export const connectAccount = (
@@ -272,9 +279,9 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
           disconnectAccount(owner, params.account),
         ),
       )
-      .handle("rename", ({ params, payload }) =>
+      .handle("update", ({ params, payload }) =>
         Effect.flatMap(accountManagerOwner(params.account), (owner) =>
-          renameAccount(owner, params.account, payload.label),
+          updateAccount(owner, params.account, payload),
         ),
       )
       .handle("oauthSetup", ({ params }) =>

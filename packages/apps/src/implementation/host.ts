@@ -53,6 +53,7 @@ import {
   AccountCheckResult,
   ManyAccounts,
   type AuthMethods,
+  type FieldExposure,
   type Provider,
 } from "../contracts/provider.ts";
 import { JsonValue } from "../contracts/schema.ts";
@@ -136,6 +137,18 @@ const declarationSafe = <A>(work: () => Effect.Effect<A, unknown>, summary: stri
     ),
   );
 
+/** Marked field names, sorted; unmarked providers declare nothing, keeping their identity. */
+function declaredExposure(exposure: Readonly<Record<string, FieldExposure>> | undefined) {
+  const named = (kind: FieldExposure) =>
+    Object.entries(exposure ?? {})
+      .filter(([, value]) => value === kind)
+      .map(([field]) => field)
+      .sort();
+  const plain = named("plain");
+  const raw = named("raw");
+  return { ...(plain.length === 0 ? {} : { plain }), ...(raw.length === 0 ? {} : { raw }) };
+}
+
 function providerDeclaration(provider: Provider<AuthMethods>) {
   return declarationSafe(
     () =>
@@ -148,6 +161,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
                 type: "secrets",
                 label: method.label,
                 fields: yield* jsonSchemaDocument(method.fields),
+                ...declaredExposure(method.exposure),
               });
               break;
             case "oauth2":
@@ -155,6 +169,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
                 type: "oauth2",
                 ...method.config,
                 response: yield* jsonSchemaDocument(method.response),
+                ...declaredExposure(method.exposure),
               });
               break;
           }
@@ -162,6 +177,8 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
         return yield* Schema.decodeUnknownEffect(DeclaredProvider)({
           name: provider.name,
           auth: Object.fromEntries(auth),
+          // Order and repetition carry no meaning, so neither changes the provider's identity.
+          ...(provider.hosts === undefined ? {} : { hosts: [...new Set(provider.hosts)].sort() }),
         });
       }),
     `Account provider "${provider.name}" has an invalid declaration`,
@@ -203,6 +220,14 @@ function canonical(value: JsonValue): string {
   return JSON.stringify(value);
 }
 
+/**
+ * A provider without its hosts. The host sends each account's granted hosts, which can be narrower
+ * than the app's declaration, so they are not part of matching an account to its slot.
+ */
+function withoutHosts({ hosts: _hosts, ...provider }: DeclaredProvider): JsonValue {
+  return provider;
+}
+
 function bindAccounts(
   slots: AccountSlots,
   declarations: DeclaredRequirements,
@@ -234,7 +259,8 @@ function bindAccounts(
             if (ids.has(account.id)) return yield* Effect.fail(new HostAccountsInvalid());
             ids.add(account.id);
             if (
-              canonical(account.provider) !== canonical(requirement.definition) ||
+              canonical(withoutHosts(account.provider)) !==
+                canonical(withoutHosts(requirement.definition)) ||
               !Object.hasOwn(provider.auth, account.method)
             )
               return yield* Effect.fail(new HostAccountsInvalid());

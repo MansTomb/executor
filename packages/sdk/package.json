@@ -13,6 +13,7 @@
     "./skill-source": "./src/skill-source.ts",
     "./workerd": "./src/workerd.ts",
     "./workerd/build": "./src/workerd-build.ts",
+    "./workerd/migration": "./src/workerd-migration.ts",
     "./scheduling": "./src/scheduling.ts",
     "./testing": "./src/testing.ts",
     "./node/workerd": "./src/node-workerd.ts"
@@ -30,7 +31,6 @@
     "@executor-js/utils": "workspace:*",
     "ajv": "^8.17.1",
     "apps": "workspace:*",
-    "bun": "1.4.2",
     "capnweb": "0.12.0",
     "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
     "esbuild": "0.28.2",
@@ -39,7 +39,6 @@
     "parse5": "8.0.0",
     "tailwindcss": "4.3.3",
     "tailwindcss-iso": "1.0.7",
-    "tar": "7.5.22",
     "ws": "8.21.0"
   },
   "devDependencies": {

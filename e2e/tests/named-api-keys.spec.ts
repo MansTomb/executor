@@ -338,8 +338,35 @@ layer(HostedLive, { excludeTestServices: true })("Personal access tokens", (it) 
         );
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.owner);
-        yield* browser.use("Open API key settings", (page) =>
-          page.goto(`/org/${actors.organization.slug}/api-keys`),
+        yield* browser.use("Open the organization dashboard", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps`),
+        );
+        expect(
+          yield* browser.use("The organization navigation has no API keys page", (page) =>
+            page
+              .getByRole("link", { name: "Apps", exact: true })
+              .first()
+              .waitFor()
+              .then(() => page.getByRole("link", { name: "API keys", exact: true }).count()),
+          ),
+        ).toBe(0);
+        yield* browser.use("Open the account menu", (page) =>
+          page.getByRole("button", { name: /^Account: / }).click(),
+        );
+        yield* browser.use("Open account settings", (page) =>
+          page.getByRole("menuitem", { name: "Account settings", exact: true }).click(),
+        );
+        yield* browser.use("Account settings open on the profile", (page) =>
+          page.waitForURL((url) => url.pathname === "/account/profile"),
+        );
+        yield* browser.use("Open the account Tokens page", (page) =>
+          page.getByRole("link", { name: "Tokens", exact: true }).click(),
+        );
+        yield* browser.use("Tokens live under the account", (page) =>
+          page.waitForURL((url) => url.pathname === "/account/tokens"),
+        );
+        yield* browser.use("The organization switcher gives way to a way back", (page) =>
+          page.getByRole("link", { name: /^Back to / }).waitFor(),
         );
         yield* browser.use("Start key creation", (page) =>
           page.getByRole("button", { name: "Create token", exact: true }).click(),

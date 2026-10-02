@@ -5,6 +5,9 @@ export { createDataStepJournal, runDataSteps } from "./implementation/data-steps
 export type { DataStepRunOptions } from "./implementation/data-steps.ts";
 export { frameworkPinStep, pinnedOnly } from "./implementation/framework-pin.ts";
 export type { FrameworkPinHost } from "./implementation/framework-pin.ts";
+export { buildFrameworkOnceStep } from "./implementation/build-framework-once.ts";
+export type { BuildFrameworkHost } from "./implementation/build-framework-once.ts";
+export type { DataStepHost } from "./implementation/host-data-steps.ts";
 export {
   hostDataSteps,
   runStartupDataSteps,

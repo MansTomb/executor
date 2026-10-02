@@ -1,4 +1,4 @@
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { ssoClient } from "@better-auth/sso/client";
 import { createAuthClient } from "better-auth/client";
 import {
@@ -47,7 +47,7 @@ export const ssoConnectionsAtom = Atom.family((organizationId: string) =>
         success: Schema.Array(SsoConnection),
         error: AuthFailed,
       }),
-      refreshOnFocus,
+      revalidated,
     ),
   ),
 );

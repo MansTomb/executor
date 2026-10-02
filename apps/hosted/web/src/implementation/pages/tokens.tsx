@@ -1,6 +1,5 @@
 import { LocalTime } from "@executor-js/ui/components/local-time";
-import { usePageUrl } from "@executor-js/dashboard-start/page";
-import { Code } from "@executor-js/ui/dashboard/code";
+import { Link } from "@tanstack/react-router";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -8,7 +7,12 @@ import { Cause, Exit, Redacted } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useState } from "react";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
-import { ApiKeysIntro, TokenListPending } from "../components/api-keys-pending.tsx";
+import {
+  TokenListPending,
+  TokensIntro,
+  tokensDescription,
+  tokensTitle,
+} from "../components/tokens-pending.tsx";
 import type { ApiKeySummary, CreatedApiKey } from "@executor-js/hosted-server/api-keys";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
 import { Button } from "@executor-js/ui/components/button";
@@ -36,12 +40,9 @@ import {
   revokeApiKeyAtom,
   ApiKeyFailed,
 } from "../../contracts/api-keys.ts";
-import { organizationsAtom, type OrganizationSummary } from "../../contracts/organization.ts";
-import {
-  OrganizationAvatar,
-  useOrganizationDetails,
-  useOrganizationRoute,
-} from "../components/organization.tsx";
+import { organizationsAtom } from "../../contracts/organization.ts";
+import { OrganizationAvatar } from "../components/organization.tsx";
+import { useAccountOrganization } from "../components/account.tsx";
 import { documentationUrl } from "../../contracts/documentation.ts";
 
 const tokenDocsUrl = documentationUrl("api-keys/#personal-access-tokens");
@@ -53,16 +54,18 @@ const errorMessage = (cause: Cause.Cause<ApiKeyFailed>) => {
   return error instanceof ApiKeyFailed ? error.message : "Could not update API keys. Try again.";
 };
 
-/** Personal tokens; the selected organization supplies only the example request URL. */
-export function ApiKeysPage() {
+/**
+ * Every token the signed-in user owns, across organizations. The organization a visitor came
+ * from only preselects the scope of a new token.
+ */
+export function TokensPage({
+  organization: reference,
+}: {
+  readonly organization?: string | undefined;
+}) {
   const date = (value: string | null) => (value === null ? "Never" : <LocalTime value={value} />);
-  const page = usePageUrl();
-  const route = useOrganizationRoute();
-  const organization = useOrganizationDetails();
-  const organizations = useAtomValue(organizationsAtom);
-  const memberships: ReadonlyArray<OrganizationSummary> = AsyncResult.isSuccess(organizations)
-    ? organizations.value
-    : [];
+  const { organizations, memberships, selected } = useAccountOrganization(reference);
+  const retryOrganizations = useAtomRefresh(organizationsAtom);
   /** A pinned key names its organization; one the user has left keeps a plain label. */
   const pinnedOrganization = (key: ApiKeySummary) =>
     key.metadata?.organization === undefined
@@ -71,7 +74,7 @@ export function ApiKeysPage() {
           name: "Organization you left",
           logo: null,
         });
-  useDocumentTitle(productTitle("API keys"));
+  useDocumentTitle(productTitle(tokensTitle));
   const [offset, setOffset] = useState(0);
   const query = apiKeysAtom(offset);
   const keys = useAtomValue(query);
@@ -87,7 +90,10 @@ export function ApiKeysPage() {
   const [name, setName] = useState("");
   const [expiry, setExpiry] = useState("");
   const [selectedScope, setScope] = useState<string>();
-  const scope = selectedScope ?? organization?.organization;
+  const scope =
+    selectedScope ??
+    selected?.id ??
+    (AsyncResult.isSuccess(organizations) ? fullAccount : undefined);
   const [created, setCreated] = useState<typeof CreatedApiKey.Type>();
   const [target, setTarget] = useState<ApiKeySummary>();
   const [error, setError] = useState<string>();
@@ -95,40 +101,26 @@ export function ApiKeysPage() {
   const [showKey, setShowKey] = useState(false);
   const pending = creating || revoking;
   const empty = AsyncResult.isSuccess(keys) && keys.value.apiKeys.length === 0;
-  const example = `curl '${page.origin}/api/organizations/${encodeURIComponent(route.id ?? route.organization)}/inventory' \\\n  --header 'Authorization: Bearer <YOUR_API_KEY>'`;
-  const mcpExample = JSON.stringify(
-    {
-      mcpServers: {
-        executor: {
-          type: "http",
-          url: `${page.origin}/org/${encodeURIComponent(route.slug)}/mcp`,
-          headers: { Authorization: "Bearer <YOUR_PAT>" },
-        },
-      },
-    },
-    null,
-    2,
-  );
   return (
     <PageFrame>
-      <PageHeader title="API keys" description="Personal access tokens for scripts and agents.">
+      <PageHeader title={tokensTitle} description={tokensDescription}>
         {!empty && (
           <Button
             onClick={() => {
               setError(undefined);
               setForm(true);
             }}
-            disabled={pending || organization === null}
+            disabled={pending}
           >
             Create token
           </Button>
         )}
       </PageHeader>
-      <ApiKeysIntro />
-      {route.metadataFailed && (
+      <TokensIntro />
+      {AsyncResult.isFailure(organizations) && (
         <div role="alert" className="mb-4 flex items-center gap-3 text-sm">
-          <p>Could not load organization details.</p>
-          <Button variant="outline" onClick={route.retry}>
+          <p>Could not load your organizations.</p>
+          <Button variant="outline" onClick={retryOrganizations}>
             Try again
           </Button>
         </div>
@@ -166,7 +158,7 @@ export function ApiKeysPage() {
                 title="No tokens yet"
                 action={
                   <Button
-                    disabled={pending || organization === null}
+                    disabled={pending}
                     onClick={() => {
                       setError(undefined);
                       setForm(true);
@@ -184,7 +176,7 @@ export function ApiKeysPage() {
               <table className="w-full text-left text-sm">
                 <thead className="border-b text-xs text-muted-foreground">
                   <tr>
-                    {["Name", "Organization", "Last used", "Expires", "Status", ""].map((label) => (
+                    {["Name", "Scope", "Last used", "Expires", "Status", ""].map((label) => (
                       <th key={label} className="px-4 py-3 font-medium">
                         {label}
                       </th>
@@ -235,7 +227,7 @@ export function ApiKeysPage() {
                                 setTarget(key);
                                 setError(undefined);
                               }}
-                              disabled={pending || organization === null}
+                              disabled={pending}
                             >
                               Revoke<span className="sr-only"> {key.name}</span>
                             </Button>
@@ -268,30 +260,22 @@ export function ApiKeysPage() {
           )}
         </CardContent>
       </Card>
-      <div className="mt-8 space-y-6">
-        <div>
-          <h2 className="text-sm font-medium">Connect an MCP client</h2>
-          <div className="my-2 text-sm text-muted-foreground">
-            Replace the placeholder with your token. The URL names{" "}
-            {route.name ?? (
-              <Skeleton
-                className="inline-block h-3 w-24 align-middle"
-                aria-label="Loading organization name"
-              />
-            )}
-            , so no organization header is needed.
-          </div>
-          <div className="overflow-hidden rounded-lg border">
-            <Code code={mcpExample} path="mcp.json" lineNumbers={false} copyable />
-          </div>
-        </div>
-        <div>
-          <h2 className="text-sm font-medium">Use the HTTP API</h2>
-          <div className="mt-2 overflow-hidden rounded-lg border">
-            <Code code={example} path="request.sh" lineNumbers={false} copyable />
-          </div>
-        </div>
-      </div>
+      <p className="mt-6 max-w-2xl text-sm text-muted-foreground">
+        A token is used against one organization's URLs. Each organization's Connections page shows
+        the MCP and HTTP API addresses to pair it with.
+        {selected && (
+          <>
+            {" "}
+            <Link
+              to="/org/$organizationSlug/connect"
+              params={{ organizationSlug: selected.slug }}
+              className="text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
+            >
+              Open Connections for {selected.name}
+            </Link>
+          </>
+        )}
+      </p>
       <Dialog
         open={form}
         onOpenChange={(open) => {
@@ -309,7 +293,7 @@ export function ApiKeysPage() {
             className="space-y-6"
             onSubmit={async (event) => {
               event.preventDefault();
-              if (creating || organization === null || scope === undefined) return;
+              if (creating || scope === undefined) return;
               setError(undefined);
               const result = await create({
                 name: name.trim(),
@@ -330,7 +314,7 @@ export function ApiKeysPage() {
                 setForm(false);
                 setName("");
                 setExpiry("");
-                setScope(organization.organization);
+                setScope(undefined);
                 setOffset(0);
                 refresh();
               }
@@ -351,18 +335,14 @@ export function ApiKeysPage() {
               />
             </label>
             <div className="block text-sm font-medium">
-              <label htmlFor="token-organization">Organization</label>
+              <label htmlFor="token-scope">Scope</label>
               <Select
                 {...(scope === undefined ? {} : { value: scope })}
                 onValueChange={setScope}
                 disabled={creating}
               >
-                <SelectTrigger
-                  id="token-organization"
-                  className="mt-2 w-full"
-                  aria-label="Organization"
-                >
-                  <SelectValue placeholder="Select organization" />
+                <SelectTrigger id="token-scope" className="mt-2 w-full" aria-label="Scope">
+                  <SelectValue placeholder="Select a scope" />
                 </SelectTrigger>
                 <SelectContent>
                   {memberships.map((item) => (
@@ -421,7 +401,7 @@ export function ApiKeysPage() {
               </Button>
               <Button
                 loading={creating}
-                disabled={creating || !name.trim() || organization === null}
+                disabled={creating || !name.trim() || scope === undefined}
                 type="submit"
               >
                 Create token

@@ -7,13 +7,19 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import {
   localConfiguration,
   LocalConfigurationError,
+  rotateApiKey,
 } from "../../server/src/implementation/bootstrap.ts";
 import {
   readDesktopBootstrap,
   startLocalServer,
   type LocalOAuthCallback,
 } from "../../server/src/node.ts";
-import { DesktopCallback, DesktopConfigurationFailed, DesktopFailed } from "./contracts/desktop.ts";
+import {
+  DesktopCallback,
+  DesktopConfigurationFailed,
+  DesktopFailed,
+  RotationResult,
+} from "./contracts/desktop.ts";
 
 const server = Effect.gen(function* () {
   const callbackPipe = yield* Effect.acquireRelease(
@@ -99,21 +105,42 @@ const server = Effect.gen(function* () {
   return yield* Effect.never;
 });
 
-NodeRuntime.runMain(
-  Effect.scoped(server).pipe(
-    Effect.provide(NodeServices.layer),
-    Effect.catch((error) =>
-      Console.error(
-        Schema.is(LocalConfigurationError)(error)
+/** Replace the saved API key after the parent has stopped the server; report on stdout. */
+const rotation = rotateApiKey(process.platform).pipe(
+  Effect.as(RotationResult.make({ version: 1, rotated: true, message: "" })),
+  Effect.catch((error) =>
+    Effect.succeed(
+      RotationResult.make({
+        version: 1,
+        rotated: false,
+        message: Schema.is(LocalConfigurationError)(error)
           ? error.message
-          : "Executor desktop server could not start. Check its configuration.",
-      ).pipe(
-        Effect.andThen(
-          Effect.sync(() => {
-            process.exitCode = 1;
-          }),
+          : "Executor could not rotate the API key. The API key was not changed.",
+      }),
+    ),
+  ),
+  Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(RotationResult))),
+  Effect.flatMap(Console.log),
+  Effect.provide(NodeServices.layer),
+);
+
+if (process.argv.includes("--rotate-api-key")) NodeRuntime.runMain(rotation);
+else
+  NodeRuntime.runMain(
+    Effect.scoped(server).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.catch((error) =>
+        Console.error(
+          Schema.is(LocalConfigurationError)(error)
+            ? error.message
+            : "Executor desktop server could not start. Check its configuration.",
+        ).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              process.exitCode = 1;
+            }),
+          ),
         ),
       ),
     ),
-  ),
-);
+  );

@@ -1,12 +1,12 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { inventoryAtom } from "./organization.ts";
 /** Personal setup metadata is acknowledged before navigation; catalogs key on saved revisions. */
 import { Data, Effect } from "effect";
 import { Atom } from "effect/unstable/reactivity";
 import type { AppId, ProfileId, ProfileInputs, Profile } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
-import { acknowledge, upsert, invalidate } from "@executor-js/ui/contracts/mutations";
+import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";
 import {
   pollingQuery,
   unsettledProfiles,
@@ -26,7 +26,7 @@ class Target extends Data.Class<{
 }> {}
 const source = Atom.family((key: AppKey) =>
   HostedClient.query("profiles", "list", hydrated({ params: key })).pipe(
-    refreshOnFocus,
+    revalidated,
     protectedQuery,
   ),
 );
@@ -36,11 +36,11 @@ const query = Atom.family((key: AppKey) =>
 /** Shared per-app metadata for the picker and setup form. */
 export const profilesAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   query(new AppKey({ organization: key.organization, app: key.app }));
-/** Invalidate after account completion when only the saved account is returned. */
+/** Read again after account completion, which returns only the saved account. */
 export const refreshProfiles = (
   get: Atom.FnContext,
   key: { organization: OrganizationReference; app: AppId },
-) => invalidate(get, source(new AppKey({ organization: key.organization, app: key.app })));
+) => get.refresh(source(new AppKey({ organization: key.organization, app: key.app })));
 const acknowledgeProfile = (get: Atom.FnContext, key: AppKey, saved: Profile) => {
   acknowledge(get, source(new AppKey({ organization: key.organization, app: key.app })), (rows) =>
     saved.status === "removed" ? rows.filter((row) => row.id !== saved.id) : upsert(rows, saved),
@@ -124,7 +124,7 @@ const hooksSource = Atom.family((key: Target) =>
       params: key,
       query: { profile: key.profile },
     }),
-  ).pipe(refreshOnFocus),
+  ).pipe(revalidated),
 );
 const hooks = Atom.family((key: Target) =>
   pollingQuery(hooksSource(key), { active: unsettledWebhooks }),

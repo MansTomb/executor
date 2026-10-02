@@ -32,7 +32,7 @@ import { Exit, Option, type Schema } from "effect";
 import { QueryResult } from "@executor-js/ui/dashboard/context";
 import type { FailureProps } from "@executor-js/ui/contracts/dashboard";
 import { AsyncResult } from "effect/unstable/reactivity";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { sessionAtom } from "../../contracts/auth.ts";
 import {
   inviteAtom,
@@ -71,8 +71,22 @@ function MembersFailure({ cause, retry }: FailureProps<OrganizationFailed | Sche
   );
 }
 
+/** A host's member limit for invitations and its call to action for raising it. */
+export interface MemberLimit {
+  /** The most accepted members the plan allows; null when it has no limit. */
+  readonly limit: number | null;
+  readonly upgrade: ReactNode;
+}
+
 /** Shared hosted membership view; the product's access and invitation delivery remain authoritative. */
-export function OrganizationMembers({ emailInvitations }: { readonly emailInvitations: boolean }) {
+export function OrganizationMembers({
+  emailInvitations,
+  memberLimit,
+}: {
+  readonly emailInvitations: boolean;
+  /** Hosts without a limit omit it; the server refuses invitations at the same limit. */
+  readonly memberLimit?: MemberLimit | undefined;
+}) {
   const organization = useOrganization();
   const members = useAtomValue(membersAtom(organization.organization));
   const retry = useAtomRefresh(membersAtom(organization.organization));
@@ -100,6 +114,15 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
   const admin = organization.role !== "member";
   const loaded = Option.getOrUndefined(AsyncResult.value(members));
   const pending = loaded?.invitations.filter((invitation) => invitation.status === "pending");
+  const limit = memberLimit?.limit ?? null;
+  // Accepted members are seats; pending invitations are not.
+  const limitReached =
+    loaded !== undefined &&
+    memberLimit !== undefined &&
+    limit !== null &&
+    loaded.members.length >= limit
+      ? { members: loaded.members.length, limit, upgrade: memberLimit.upgrade }
+      : undefined;
   const matches = (value: string) => value.toLowerCase().includes(search.trim().toLowerCase());
   const rows = loaded
     ? [
@@ -155,7 +178,7 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
           Members
           {loaded && (
             <span className="membership-count text-muted-foreground text-[12px] font-normal tabular-nums">
-              {loaded.members.length}
+              {limit === null ? loaded.members.length : `${loaded.members.length} of ${limit}`}
             </span>
           )}
           {admin && pending !== undefined && pending.length > 0 && (
@@ -191,6 +214,12 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
                       setSent(null);
                     }}
                     onDone={closeInvitation}
+                  />
+                ) : limitReached ? (
+                  <MemberLimitReached
+                    organization={organization.name}
+                    {...limitReached}
+                    onCancel={closeInvitation}
                   />
                 ) : (
                   <>
@@ -398,7 +427,15 @@ export function OrganizationMembers({ emailInvitations }: { readonly emailInvita
                                 size="sm"
                                 disabled={inviting.waiting || revoking.waiting}
                                 onClick={async () => {
-                                  if (invitation.role === "admin" || invitation.role === "member")
+                                  // The server refuses a resend at the limit too; offer the upgrade instead.
+                                  if (limitReached) {
+                                    setError(null);
+                                    setSent(null);
+                                    setInvitationOpen(true);
+                                  } else if (
+                                    invitation.role === "admin" ||
+                                    invitation.role === "member"
+                                  )
                                     await sendInvite(invitation.email, invitation.role, true);
                                 }}
                               >
@@ -648,6 +685,37 @@ function MembersSkeleton() {
       </table>
       <span className="sr-only">Loading members…</span>
     </div>
+  );
+}
+
+/** Shown instead of the invitation form while accepted members fill the plan. */
+function MemberLimitReached({
+  organization,
+  members,
+  limit,
+  upgrade,
+  onCancel,
+}: {
+  readonly organization: string;
+  readonly members: number;
+  readonly limit: number;
+  readonly upgrade: ReactNode;
+  readonly onCancel: () => void;
+}) {
+  return (
+    <>
+      <DialogTitle>Member limit reached</DialogTitle>
+      <DialogDescription>
+        {organization} has {members} of {limit} members on its current plan. Upgrade the plan to
+        invite more people.
+      </DialogDescription>
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        {upgrade}
+      </DialogFooter>
+    </>
   );
 }
 

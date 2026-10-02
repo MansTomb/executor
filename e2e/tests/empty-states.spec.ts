@@ -94,15 +94,17 @@ layer(HostedLive, { excludeTestServices: true })("Empty states", (it) => {
           { width: 390, height: 844 },
         ]) {
           yield* browser.use("Set first-use viewport", (page) => page.setViewportSize(viewport));
-          for (const section of ["apps", "accounts", "api-keys"] as const) {
+          for (const section of ["apps", "accounts", "tokens"] as const) {
             yield* openThroughBrowser(
               `Open first-use ${section}`,
-              `/org/${actors.organization.slug}/${section}`,
+              section === "tokens"
+                ? `/account/tokens?organization=${actors.organization.slug}`
+                : `/org/${actors.organization.slug}/${section}`,
             );
             yield* browser.use("The next action is visible", (page) =>
               page
                 .locator(".empty-state")
-                .getByRole(section === "api-keys" ? "button" : "link", {
+                .getByRole(section === "tokens" ? "button" : "link", {
                   name:
                     section === "apps"
                       ? "Add app"

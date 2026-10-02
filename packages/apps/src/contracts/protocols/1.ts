@@ -20,7 +20,7 @@ import {
   FormElicitation,
 } from "../elicitation.ts";
 import { McpError } from "../mcp.ts";
-import { OAuth2Config } from "../provider.ts";
+import { OAuth2Config } from "./oauth.ts";
 import { ProviderError } from "../provider-error.ts";
 import { OperationSchedule } from "../schedules.ts";
 import { AccountId, JsonObject, JsonValue } from "../schema.ts";

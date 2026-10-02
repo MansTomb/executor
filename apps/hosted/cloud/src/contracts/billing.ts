@@ -27,6 +27,13 @@ export const BillingOverview = Schema.Struct({
   plans: Schema.Array(BillingPlan),
   subscriptions: Schema.Array(Schema.Struct({ planId: Schema.String, status: Schema.String })),
 });
+/**
+ * The member limit invitations are checked against. Null means the plan has no
+ * limit. Accepted members count toward it; pending invitations do not.
+ */
+export const MemberLimit = Schema.Struct({
+  limit: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+});
 /** Autumn could not complete the request. No provider secrets or raw errors are exposed. */
 export class BillingUnavailable extends Schema.TaggedError<BillingUnavailable>()(
   "BillingUnavailable",
@@ -80,6 +87,13 @@ export const billingGroup = HttpApiGroup.make("billing")
     HttpApiEndpoint.get("overview", "/api/organizations/:organization/billing", {
       params: { organization: OrganizationReference },
       success: BillingOverview,
+      error: [BillingUnavailable, OrganizationForbidden],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("memberLimit", "/api/organizations/:organization/billing/member-limit", {
+      params: { organization: OrganizationReference },
+      success: MemberLimit,
       error: [BillingUnavailable, OrganizationForbidden],
     }),
   )

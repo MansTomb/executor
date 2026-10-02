@@ -2,12 +2,21 @@
 import { Data, type Effect, Schema } from "effect";
 import { type AccountId, HttpUrl } from "./schema.ts";
 
+/**
+ * How app code sees a field of a provider that declares hosts. Unmarked string fields are secret:
+ * app code receives sealed handles that only the host's outbound network turns into values.
+ * `plain` fields are not secret. `raw` fields are secret, but app code reads the real value.
+ */
+export type FieldExposure = "plain" | "raw";
+
 /** A named secrets method; its schema retains the provider's own field names. */
 export class SecretsMethod<Fields extends Schema.Decoder<unknown>> extends Data.TaggedClass(
   "secrets",
 )<{
   readonly label: string;
   readonly fields: Fields;
+  /** Fields marked with `plain()` or `raw()`. */
+  readonly exposure?: Readonly<Record<string, FieldExposure>>;
 }> {}
 
 /** How an OAuth client authenticates at the token endpoint; raw Basic is an explicit provider compatibility option. */
@@ -129,6 +138,8 @@ export const OAuth2Config = Schema.Union([
   Schema.Struct({
     ...oauthOptions,
     discover: HttpUrl,
+    /** Fetch this exact metadata document and verify its issuer against discovery. */
+    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
     authorizationUrl: Schema.optionalKey(Schema.Never),
     tokenUrl: Schema.optionalKey(Schema.Never),
     revocationUrl: Schema.optionalKey(Schema.Never),
@@ -144,10 +155,13 @@ export const OAuth2Config = Schema.Union([
     /** RFC 8414 issuer identifier. Declared issuers are checked against the callback's `iss`. */
     issuer: Schema.optionalKey(HttpUrl),
     discover: Schema.optionalKey(Schema.Never),
+    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
   }).check(declaredAuthorizationQuery),
   Schema.Struct({
     grant: Schema.Literal("client_credentials"),
     discover: HttpUrl,
+    /** Fetch this exact metadata document and verify its issuer against discovery. */
+    authorizationServerMetadataUrl: Schema.optionalKey(HttpUrl),
     authorizationUrl: Schema.optionalKey(Schema.Never),
     tokenUrl: Schema.optionalKey(Schema.Never),
     revocationUrl: Schema.optionalKey(Schema.Never),
@@ -166,6 +180,7 @@ export const OAuth2Config = Schema.Union([
     resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
     authorizationUrl: Schema.optionalKey(Schema.Never),
     discover: Schema.optionalKey(Schema.Never),
+    authorizationServerMetadataUrl: Schema.optionalKey(Schema.Never),
   }),
 ]);
 export type OAuth2Config = typeof OAuth2Config.Type;
@@ -179,6 +194,8 @@ export class OAuth2Method<Response extends Schema.Decoder<unknown>> extends Data
 )<{
   readonly config: OAuth2Config;
   readonly response: Response;
+  /** Response fields marked with `plain()` or `raw()`. */
+  readonly exposure?: Readonly<Record<string, FieldExposure>>;
 }> {}
 
 /** Supported declarations; these acquire credentials rather than normalize them. */
@@ -232,6 +249,11 @@ export interface AccountCheck<Auth extends AuthMethods> {
 export class Provider<Auth extends AuthMethods> extends Data.Class<{
   readonly name: string;
   readonly auth: Auth;
+  /**
+   * The hosts this provider's credentials may be sent to. When present, secret fields reach app
+   * code as handles that the outbound network replaces only on requests to these hosts.
+   */
+  readonly hosts?: readonly string[];
   /**
    * Stored without its method types so a specific provider still fills a general slot. The host
    * binds the account against this provider's methods before running it.

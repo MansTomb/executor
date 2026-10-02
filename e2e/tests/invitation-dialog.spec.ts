@@ -6,6 +6,7 @@ import type { Page } from "playwright";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { freeSeat } from "../support/seats.ts";
 import { scenarios } from "../test-plan.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Invitation dialog", (it) => {
@@ -16,6 +17,7 @@ layer(HostedLive, { excludeTestServices: true })("Invitation dialog", (it) => {
         const actors = yield* Actors;
         const browser = yield* Browser;
         const email = `invite-${randomUUID().slice(0, 8)}@example.test`;
+        yield* freeSeat;
         yield* browser.login(actors.owner);
         yield* browser.use("Open organization settings", (page) =>
           page.goto(`/org/${actors.organization.slug}/organization`),

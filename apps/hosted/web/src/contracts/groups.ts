@@ -1,6 +1,6 @@
 /** Organization-scoped group reads and confirmed mutations share one reconciled view. */
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Atom } from "effect/unstable/reactivity";
 import { Effect } from "effect";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
@@ -11,7 +11,7 @@ import { HostedClient } from "./api.ts";
 /** Keep confirmed groups visible while background reconciliation runs. */
 export const groupsAtom = Atom.family((organization: OrganizationReference) =>
   HostedClient.query("groups", "list", hydrated({ params: { organization } })).pipe(
-    refreshOnFocus,
+    revalidated,
     acknowledgedQuery,
   ),
 );

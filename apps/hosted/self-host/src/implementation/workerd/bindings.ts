@@ -31,6 +31,17 @@ export const bindingBlobStore = (disk: HttpBinding): BlobStorage => ({
       },
       catch: () => new BlobStoreError({ operation: "get" }),
     }),
+  exists: (key) =>
+    Effect.tryPromise({
+      try: async () => {
+        Schema.decodeUnknownSync(BlobKey)(key);
+        const response = await disk.fetch(diskRequest(key, { method: "HEAD" }));
+        if (response.status === 404) return false;
+        if (response.status !== 200) throw new Error("Blob lookup failed");
+        return true;
+      },
+      catch: () => new BlobStoreError({ operation: "exists" }),
+    }),
   put: (key, body) =>
     Effect.tryPromise({
       try: async () => {

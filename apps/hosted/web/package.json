@@ -12,6 +12,7 @@
     "./auth": "./src/implementation/components/auth.tsx",
     "./entry": "./src/implementation/components/entry.tsx",
     "./organization": "./src/implementation/components/organization.tsx",
+    "./account": "./src/implementation/components/account.tsx",
     "./contracts/*": "./src/contracts/*.ts",
     "./icon-picker": "./src/implementation/components/icon-picker.tsx",
     "./page-pending": "./src/implementation/components/page-pending.tsx",

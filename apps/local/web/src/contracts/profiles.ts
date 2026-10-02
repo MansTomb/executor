@@ -1,6 +1,6 @@
 /** Personal setup metadata is acknowledged before navigation; catalogs key on saved revisions. */
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Data, Effect } from "effect";
 import { Atom } from "effect/unstable/reactivity";
 import type { AppId, ProfileId, ProfileInputs, Profile } from "@executor-js/sdk";
@@ -12,7 +12,7 @@ class AppKey extends Data.Class<{ readonly app: AppId }> {}
 class Target extends Data.Class<{ readonly app: AppId; readonly profile: ProfileId }> {}
 const source = Atom.family((key: AppKey) =>
   DashboardClient.query("profiles", "list", hydrated({ params: key })).pipe(
-    refreshOnFocus,
+    revalidated,
     acknowledgedQuery,
   ),
 );
@@ -84,7 +84,7 @@ export const accountSelectionAtom = (key: ConstructorParameters<typeof Selection
   selection(new SelectionKey(key));
 
 const hooksSource = Atom.family((key: Target) =>
-  DashboardClient.query("profiles", "webhooks", hydrated({ params: key })).pipe(refreshOnFocus),
+  DashboardClient.query("profiles", "webhooks", hydrated({ params: key })).pipe(revalidated),
 );
 const hooks = Atom.family((key: Target) => pollingQuery(hooksSource(key), steadyPolling));
 /** Lifecycle metadata never includes signing secrets. */

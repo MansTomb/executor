@@ -16,6 +16,32 @@ so users can validate credentials before saving and see which account they conne
 | GraphQL endpoint            | `graphqlRouter` from `apps/graphql`                       |
 | Anything else               | Queries and mutations with `fetch` ([tools.md](tools.md)) |
 
+## Approvals for imported tools
+
+Helpers attach no approval. Wrap the router with `withApprovals` from `apps`
+and choose each tool's policy in app code. Ask before every OpenAPI and
+GraphQL mutation (non-`GET`/`HEAD` methods and GraphQL mutation fields), and
+before MCP tools whose server sets `destructiveHint: true`:
+
+```ts
+import { toolAnnotations, withApprovals } from "apps";
+import { always } from "apps/operations/approval";
+
+// OpenAPI and GraphQL
+withApprovals(await liveOpenapiRouter(options), (tool) =>
+  tool.kind === "mutation" ? always() : undefined,
+);
+// MCP, HTTP or stdio
+withApprovals(await mcpRouter(options), (tool) =>
+  toolAnnotations(tool)?.destructiveHint === true ? always() : undefined,
+);
+```
+
+The callback also receives the tool's name relative to the router. Returning
+`undefined` keeps the tool's own approval. With accounts, wrap each account's
+router inside the `accountRouter` callback, so each account keeps its own
+tools' hints. Quick-add MCP apps are generated with the MCP rule above.
+
 ## Remote MCP tools
 
 Import `mcpRouter` from `apps/mcp`. Add `@modelcontextprotocol/sdk` (currently

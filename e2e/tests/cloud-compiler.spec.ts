@@ -1,6 +1,6 @@
 /** Exercise dependency installation and failure recovery through the real Cloud compiler. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Duration, Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -11,6 +11,7 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Browser } from "../support/browser.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
 import { appsManifest, appsVersion, withApps } from "../support/apps-release.ts";
+import { stalledPackage } from "../support/npm-registry.ts";
 
 layer(HostedLive, { excludeTestServices: true })("Cloud compiler", (it) => {
   it.effect(scenarios.cloudCompilerMemory.title, (context) =>
@@ -127,7 +128,7 @@ export default defineApp({accounts:{}}, {tools: router({
           page.goto(`/org/${actors.organization.slug}/apps/${original.id}?view=source`),
         );
         yield* browser.use("Deploy the large build from the dashboard", (page) =>
-          page.getByRole("button", { name: "Deploy", exact: true }).click(),
+          page.getByRole("button", { name: "Deploy latest", exact: true }).click(),
         );
         yield* browser.use("Show the compiler memory failure and recovery", (page) =>
           page
@@ -157,6 +158,94 @@ export default defineApp({accounts:{}}, {tools: router({
         expect(working.body).toBe("recovered");
       }),
     ),
+  );
+  it.effect(
+    scenarios.cloudCompilerDeadline.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const api = yield* Api,
+            actors = yield* Actors,
+            evidence = yield* Evidence,
+            telemetry = yield* Telemetry;
+          const prefix = `/api/organizations/${actors.organization.id}/apps`;
+          // The registry starts this package's metadata and never finishes it, so the compiler
+          // Worker stays busy and never answers, as a lost compiler isolate does.
+          const [duration, stalled] = yield* api
+            .request(actors.owner, "POST", `${prefix}/deploy`, {
+              name: `Compiler deadline ${randomUUID().slice(0, 8)}`,
+              files: [
+                {
+                  path: "index.ts",
+                  content: `import { defineApp, query, object, router } from "apps";
+import stalled from "${stalledPackage}";
+export default defineApp({accounts:{}}, {tools: router({
+  inspect:query({description:"Never compiles",input:object({})},async()=>String(stalled)),
+})});`,
+                },
+                {
+                  path: "package.json",
+                  content: JSON.stringify({
+                    type: "module",
+                    dependencies: withApps({ [stalledPackage]: "1.0.0" }),
+                  }),
+                },
+              ],
+            })
+            .pipe(Effect.timed);
+          const elapsed = Duration.toMillis(duration);
+          yield* evidence.json("compiler-deadline-response.json", {
+            elapsed,
+            status: stalled.status,
+            body: stalled.body,
+          });
+          expect(stalled.status, JSON.stringify(stalled.body)).toBe(422);
+          expect(stalled.body).toMatchObject({
+            _tag: "DeploymentBuildFailed",
+            stage: "compile",
+            message:
+              "App build failed at the compile stage: The compiler did not answer within 50 seconds. No new deployment was activated; deploy again.",
+          });
+          expect(elapsed).toBeGreaterThanOrEqual(50_000);
+          expect(elapsed).toBeLessThan(58_000);
+          const listed = yield* api.request(actors.owner, "GET", prefix);
+          expect(JSON.stringify(listed.body)).not.toContain("Compiler deadline");
+
+          const request = (yield* evidence.requests).find(({ path }) => path.endsWith("/deploy"));
+          if (request === undefined) return yield* Effect.die("Deploy request evidence missing");
+          const trace = yield* telemetry.query(request.traceId).pipe(
+            Effect.flatMap((trace) =>
+              trace.data.some((row) => row.span.operationName === "runtime.cloud.build")
+                ? Effect.succeed(trace)
+                : Effect.fail(new Error("The deadline trace has not reached the collector")),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
+          );
+          yield* evidence.json("compiler-deadline-trace.json", trace);
+          expect(trace.data).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                span: expect.objectContaining({
+                  operationName: "runtime.cloud.compiler.request",
+                  tags: expect.objectContaining({ "build.compiler_deadline_exceeded": "true" }),
+                }),
+              }),
+              expect.objectContaining({
+                span: expect.objectContaining({
+                  operationName: "runtime.cloud.build",
+                  tags: expect.objectContaining({
+                    "build.stage": "compile",
+                    "build.cause": expect.stringContaining("The compiler did not answer"),
+                  }),
+                }),
+              }),
+            ]),
+          );
+        }),
+      ),
+    // The deadline itself takes 50 seconds before the response and its trace are checked.
+    { timeout: 120_000 },
   );
   it.effect(scenarios.cloudCatalogInstall.title, (context) =>
     withHostedCase(

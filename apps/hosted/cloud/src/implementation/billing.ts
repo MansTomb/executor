@@ -284,6 +284,7 @@ export const billingLive = Effect.gen(function* () {
 export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing", (handlers) =>
   Effect.gen(function* () {
     const billing = yield* Billing;
+    const meter = yield* BillingMeter;
     const auth = yield* Authentication;
     const destination = (organization: OrganizationId) =>
       Effect.gen(function* () {
@@ -295,6 +296,12 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
       .handle("overview", () =>
         Effect.gen(function* () {
           return yield* billing.overview((yield* requireOrganizationAdmin).organization);
+        }),
+      )
+      .handle("memberLimit", () =>
+        Effect.gen(function* () {
+          const limit = yield* meter.memberLimit((yield* requireOrganizationAdmin).organization);
+          return { limit: Number.isFinite(limit) ? limit : null };
         }),
       )
       .handle("checkout", ({ payload }) =>

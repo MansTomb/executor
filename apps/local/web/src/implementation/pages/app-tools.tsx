@@ -80,7 +80,9 @@ function SingleAppTools(props: AppToolsProps) {
         />
       );
     case "reconnect":
-      return <AccountReconnect accounts={readiness.accounts} />;
+      return <AccountReconnect accounts={readiness.accounts} status="Needs sign-in" />;
+    case "rejected":
+      return <AccountReconnect accounts={readiness.accounts} status="Sign-in rejected" />;
     case "unavailable":
       return (
         <p role="alert" className="text-sm text-muted-foreground">
@@ -93,7 +95,13 @@ function SingleAppTools(props: AppToolsProps) {
 }
 
 /** An expired sign-in is an account action, not an empty tool browser or retryable request. */
-function AccountReconnect({ accounts }: { readonly accounts: ReadonlyArray<DashboardAccount> }) {
+function AccountReconnect({
+  accounts,
+  status,
+}: {
+  readonly accounts: ReadonlyArray<DashboardAccount>;
+  readonly status: string;
+}) {
   return (
     <div className="accounts-section">
       {accounts.map((account) => (
@@ -106,7 +114,7 @@ function AccountReconnect({ accounts }: { readonly accounts: ReadonlyArray<Dashb
             <h2>
               {account.label || account.providerName}{" "}
               <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
-                Needs sign-in
+                {status}
               </span>
             </h2>
             <p>Sign in again to load tools.</p>
@@ -160,7 +168,8 @@ function LiveAppTools({
     : Option.none();
   if (Option.isSome(reconnect)) {
     const account = accounts.find((account) => account.id === reconnect.value.account);
-    if (account !== undefined) return <AccountReconnect accounts={[account]} />;
+    if (account !== undefined)
+      return <AccountReconnect accounts={[account]} status="Needs sign-in" />;
   }
   return (
     <ToolBrowser

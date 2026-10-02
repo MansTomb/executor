@@ -11,7 +11,12 @@ import {
   type FacetBundle,
 } from "@executor-js/app-data/cloudflare";
 import { AppData } from "./infrastructure/app-data-worker.ts";
-import { AppDataSupervisor } from "./infrastructure/app-data.ts";
+import { AppDataSupervisor, appDataSupervisors } from "./infrastructure/app-data.ts";
+import { RuntimeContext } from "alchemy";
+import { CacheCommand } from "@executor-js/app-cache/contracts";
+import { makeAppRunner, serveAppRunner, type RemoteCapabilities } from "@executor-js/sdk/workerd";
+import { appCredentialOutbound } from "./infrastructure/app-outbound.ts";
+import { HttpServerResponse } from "effect/unstable/http";
 import {
   cloudObservability,
   cloudTelemetry,
@@ -32,11 +37,13 @@ const AppDataSupervisorLive = AppDataSupervisor.make(
     yield* Cloudflare.WorkerLoader("AppDataLoader");
     const state = yield* Cloudflare.DurableObjectState;
     const environment = yield* Cloudflare.WorkerEnvironment;
+    const credentials = yield* appCredentialOutbound;
     return Effect.gen(function* () {
       const loader = yield* Schema.decodeUnknownEffect(NativeLoader)(
         environment.AppDataLoader,
       ).pipe(Effect.orDie);
-      const supervisor = yield* makeFacetSupervisor(state.raw, loader);
+      // Facets send through this Worker's fetch, specialized for their app.
+      const supervisor = yield* makeFacetSupervisor(state.raw, loader, yield* credentials.outbound);
       return {
         cache: supervisor.cache,
         evaluated: supervisor.evaluated,
@@ -73,5 +80,52 @@ export default AppData.make(
       env: yield* telemetryBindings,
     };
   }),
-  Effect.succeed({}).pipe(Effect.provide(Layer.mergeAll(AppDataSupervisorLive, cloudTelemetry))),
+  Effect.gen(function* () {
+    const credentials = yield* appCredentialOutbound;
+    const databases = yield* appDataSupervisors;
+    const environment = yield* Cloudflare.WorkerEnvironment;
+    // Built for each call, never shared across requests: a fiber woken by another request's
+    // shared Effect continues in that request's I/O context, so concurrent calls waiting on one
+    // shared build would count their Dynamic Workers against the first caller's limit.
+    const runner = Effect.gen(function* () {
+      const { waitUntil } = yield* Effect.promise(() => import("cloudflare:workers"));
+      return serveAppRunner(
+        makeAppRunner({
+          loader: yield* Schema.decodeUnknownEffect(NativeLoader)(environment.AppDataLoader).pipe(
+            Effect.orDie,
+          ),
+          outbound: yield* credentials.outbound,
+          credentialKey: credentials.key,
+          data: (app) => {
+            const target = databases.getByName(app);
+            return {
+              invoke: (input, load, elicit, controls) =>
+                target
+                  .invoke(input, load, elicit, controls)
+                  .pipe(Effect.provide(RuntimeContext.phantom)),
+              cancel: (id) => target.cancel(id).pipe(Effect.provide(RuntimeContext.phantom)),
+              cache: (namespace, command) =>
+                Schema.decodeUnknownEffect(CacheCommand)(command).pipe(
+                  Effect.tap((parsed) =>
+                    Effect.annotateCurrentSpan("cache.operation", parsed.operation),
+                  ),
+                  Effect.flatMap((parsed) => target.cache(namespace, parsed)),
+                  Effect.provide(RuntimeContext.phantom),
+                  Effect.withSpan("runtime.cloud.cache"),
+                ),
+            };
+          },
+          waitUntil,
+        }),
+      );
+    });
+    return {
+      // Only app isolates' outbound requests reach this Worker's fetch; nothing routes to it.
+      fetch: credentials.serve(Effect.succeed(HttpServerResponse.empty({ status: 404 }))),
+      invoke: (invocation: string, capabilities: RemoteCapabilities) =>
+        runner.pipe(Effect.flatMap((served) => served.invoke(invocation, capabilities))),
+      declare: (bundle: string, headers: Readonly<Record<string, string>>) =>
+        runner.pipe(Effect.flatMap((served) => served.declare(bundle, headers))),
+    };
+  }).pipe(Effect.provide(Layer.mergeAll(AppDataSupervisorLive, cloudTelemetry))),
 );

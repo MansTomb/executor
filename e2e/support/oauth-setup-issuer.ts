@@ -153,6 +153,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let pathDiscovery: "atlassian" | "issuer-mismatch" | "invalid-metadata" = "atlassian";
   const discoveryRequests: string[] = [];
   let scopes = ["read"];
+  /** A narrower scope requirement advertised by the resource's Bearer challenge. */
+  let challengeScopes: readonly string[] | undefined;
+  /** An exact metadata override models OIDC published away from its declared issuer. */
+  let metadataOverrideIssuer: string | undefined;
+  let metadataOverrideStatus = 200;
+  const scopeChallenge = () =>
+    challengeScopes === undefined ? "" : `, scope="${challengeScopes.join(" ")}"`;
   let registrations = 0;
   let discoveries = 0;
   let authMethods = ["client_secret_basic"];
@@ -428,7 +435,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         return HttpServerResponse.empty({
           status: 401,
           headers: {
-            "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
+            "www-authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"${scopeChallenge()}`,
           },
         });
       }),
@@ -444,7 +451,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           status: 401,
           headers: challenge
             ? {
-                "www-authenticate": `Bearer resource_metadata="${origin}/challenge-resource"`,
+                "www-authenticate": `Bearer resource_metadata="${origin}/challenge-resource"${scopeChallenge()}`,
               }
             : {},
         });
@@ -455,7 +462,17 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     HttpRouter.add(
       "*",
       "/v1/mcp",
-      HttpServerResponse.empty({ status: 401, headers: { "www-authenticate": "Bearer" } }),
+      Effect.sync(() =>
+        HttpServerResponse.empty({
+          status: 401,
+          headers: {
+            "www-authenticate":
+              challengeScopes === undefined
+                ? "Bearer"
+                : `Bearer scope="${challengeScopes.join(" ")}"`,
+          },
+        }),
+      ),
     ),
     HttpRouter.add(
       "GET",
@@ -521,6 +538,27 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             ? { registration_endpoint: `${origin}/register?fixture=PRIVATE_QUERY` }
             : {}),
           ...(revocation === "none" ? {} : { revocation_endpoint: `${origin}/revoke` }),
+        });
+      }),
+    ),
+    HttpRouter.add(
+      "GET",
+      "/oauth/.well-known/openid-configuration",
+      Effect.gen(function* () {
+        discoveryRequests.push("/oauth/.well-known/openid-configuration");
+        if (metadataOverrideStatus !== 200)
+          return HttpServerResponse.empty({ status: metadataOverrideStatus });
+        const origin = yield* Deferred.await(address);
+        return yield* HttpServerResponse.json({
+          issuer: metadataOverrideIssuer ?? origin,
+          authorization_endpoint: `${origin}/authorize`,
+          token_endpoint: `${origin}/token`,
+          registration_endpoint: `${origin}/register`,
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: authMethods,
+          id_token_signing_alg_values_supported: ["ES256"],
+          jwks_uri: `${origin}/jwks`,
+          scopes_supported: scopes,
         });
       }),
     ),
@@ -667,6 +705,9 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly discovery?: typeof discovery;
       readonly pathDiscovery?: typeof pathDiscovery;
       readonly scopes?: readonly string[];
+      readonly challengeScopes?: readonly string[] | null;
+      readonly metadataOverrideIssuer?: string | null;
+      readonly metadataOverrideStatus?: number;
       readonly authMethods?: readonly string[];
       readonly callbackIssuer?: string | null;
       readonly browserReturn?: string | null;
@@ -723,6 +764,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.discovery !== undefined) discovery = input.discovery;
         if (input.pathDiscovery !== undefined) pathDiscovery = input.pathDiscovery;
         if (input.scopes !== undefined) scopes = [...input.scopes];
+        if (input.challengeScopes !== undefined)
+          challengeScopes = input.challengeScopes === null ? undefined : input.challengeScopes;
+        if (input.metadataOverrideIssuer !== undefined)
+          metadataOverrideIssuer =
+            input.metadataOverrideIssuer === null ? undefined : input.metadataOverrideIssuer;
+        if (input.metadataOverrideStatus !== undefined)
+          metadataOverrideStatus = input.metadataOverrideStatus;
         if (input.authMethods !== undefined) authMethods = [...input.authMethods];
         if (input.callbackIssuer !== undefined)
           callbackIssuer = input.callbackIssuer === null ? undefined : input.callbackIssuer;

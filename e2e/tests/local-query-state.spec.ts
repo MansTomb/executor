@@ -95,7 +95,7 @@ export default defineApp({ accounts: { service } }, async () => ({  }));
             page
               .getByRole("button", { name: `Manage ${label}`, exact: true })
               .click()
-              .then(() => page.getByRole("menuitem", { name: "Rename", exact: true }).click())
+              .then(() => page.getByRole("menuitem", { name: "Edit details", exact: true }).click())
               .then(() => page.getByRole("dialog").waitFor({ state: "visible" })),
           );
         yield* browser.use("Open the account list", (page) => page.goto("/accounts"));

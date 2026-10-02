@@ -14,6 +14,11 @@ import {
   DropdownMenuContent,
   DropdownMenuTrigger,
 } from "../components/dropdown-menu.tsx";
+import {
+  AccountDescriptionField,
+  accountDescriptionValue,
+  type AccountMetadataUpdate,
+} from "./account-description.tsx";
 import { ProviderIcon } from "./common.tsx";
 import { useDashboard } from "./context.tsx";
 
@@ -90,18 +95,18 @@ export function AccountDialogIdentity({ data }: { readonly data: AccountDetail }
   );
 }
 
-/** Rename a saved account; the product owns the mutation and who may use it. */
-export function RenameAccountForm<E>({
+/** Edit a saved account's name and agent-visible description; the product owns the mutation. */
+export function EditAccountForm<E>({
   account,
-  rename,
+  update,
   Failure,
   disabledReason,
   onPendingChange,
   onDone,
   cancel,
 }: {
-  readonly account: Pick<Account, "label">;
-  readonly rename: (label: string) => Promise<Exit.Exit<unknown, E>>;
+  readonly account: Pick<Account, "label" | "description">;
+  readonly update: (changes: AccountMetadataUpdate) => Promise<Exit.Exit<unknown, E>>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly disabledReason?: string | undefined;
   readonly onPendingChange?: (pending: boolean) => void;
@@ -109,6 +114,7 @@ export function RenameAccountForm<E>({
   readonly cancel: ReactNode;
 }) {
   const [label, setLabel] = useState(account.label);
+  const [description, setDescription] = useState(account.description ?? "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<E>>();
   const updatePending = (value: boolean) => {
@@ -120,12 +126,17 @@ export function RenameAccountForm<E>({
       className="flex flex-col gap-5"
       onSubmit={async (event) => {
         event.preventDefault();
-        const next = label.trim();
-        if (disabledReason !== undefined || pending || !next) return;
-        if (next === account.label) return onDone();
+        const nextLabel = label.trim();
+        if (disabledReason !== undefined || pending || !nextLabel) return;
+        const nextDescription = accountDescriptionValue(description);
+        const changes = {
+          ...(nextLabel === account.label ? {} : { label: nextLabel }),
+          ...(nextDescription === account.description ? {} : { description: nextDescription }),
+        };
+        if (Object.keys(changes).length === 0) return onDone();
         updatePending(true);
         setError(undefined);
-        const exit = await rename(next);
+        const exit = await update(changes);
         updatePending(false);
         if (Exit.isFailure(exit)) return setError(exit.cause);
         onDone();
@@ -144,10 +155,16 @@ export function RenameAccountForm<E>({
           disabledReason={disabledReason}
         />
       </label>
+      <AccountDescriptionField
+        value={description}
+        onChange={setDescription}
+        disabled={pending}
+        disabledReason={disabledReason}
+      />
       {error && <Failure cause={error} />}
       <div className="flex items-center gap-5 text-[13px] [&_a]:text-muted-foreground">
         <Button type="submit" loading={pending} disabledReason={disabledReason}>
-          Save name
+          Save
         </Button>
         {cancel}
       </div>

@@ -732,8 +732,21 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
    * Missing metadata is an answer, not a failed request: a caller may fall back to another
    * issuer location, so the request span records only the status that said so.
    */
-  const discoverIssuer = (issuer: URL): Effect.Effect<IssuerDiscovery, OAuthProtocolFailed> =>
+  const discoverIssuer = (
+    issuer: URL,
+    metadataUrl?: URL,
+  ): Effect.Effect<IssuerDiscovery, OAuthProtocolFailed> =>
     request(async (settings): Promise<{ server: oauth.AuthorizationServer } | IssuerMissing> => {
+      if (metadataUrl !== undefined) {
+        const response = await settings[oauth.customFetch](metadataUrl.href, {
+          method: "GET",
+          body: undefined,
+          headers: { accept: "application/json" },
+          redirect: "manual",
+          signal: settings.signal,
+        });
+        return { server: await issuerMetadata(issuer, discoveryResponse(response)) };
+      }
       let unusable: unknown;
       let unavailable: number | undefined;
       let last: { status: number; contentType: OAuthMediaType | undefined } | undefined;
@@ -825,7 +838,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         const document: unknown = await discoveryResponse(response).json();
         return document;
       });
-      if (document === undefined) return undefined;
+      if (document === undefined) return { metadata: undefined, scopes: challenge.scopes };
       const found = yield* decode(OAuthResource, document);
       const resource = yield* secureUrl(found.resource);
       // A resource can cover /mcp from the origin root, but cannot name a sibling
@@ -837,7 +850,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       ) {
         return yield* new OAuthProtocolFailed({ reason: "resource_mismatch" });
       }
-      return found;
+      return { metadata: found, scopes: challenge.scopes };
     });
 
   return {
@@ -864,14 +877,20 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               ...(method.resource == null ? {} : { resource: method.resource }),
             };
           const resource = yield* secureUrl(method.discover);
-          const found = yield* discoverResource(resource);
+          const discoveredResource = yield* discoverResource(resource);
+          const found = discoveredResource?.metadata;
+          const metadataUrl =
+            method.authorizationServerMetadataUrl === undefined
+              ? undefined
+              : yield* secureUrl(method.authorizationServerMetadataUrl);
           const issuer = found === undefined ? resource.href : found.authorization_servers[0];
           if (issuer === undefined)
             return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
           const issuerUrl = yield* secureUrl(issuer);
           // Without protected-resource metadata, MCP's earlier authorization rules use the
           // server's origin as the authorization base. Atlassian publishes metadata only there.
-          const { server, audienceFromScopes } = yield* found === undefined &&
+          const { server, audienceFromScopes } = yield* metadataUrl === undefined &&
+          found === undefined &&
           issuerUrl.pathname !== "/"
             ? discoverIssuer(issuerUrl).pipe(
                 // Only missing metadata falls back. Served metadata that is invalid or names another
@@ -885,8 +904,12 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
                 ),
                 Effect.flatMap(requireIssuer),
               )
-            : discoverIssuer(issuerUrl).pipe(Effect.flatMap(requireIssuer));
-          const scopes = new Set(method.scopes ?? found?.scopes_supported ?? []);
+            : discoverIssuer(issuerUrl, metadataUrl).pipe(Effect.flatMap(requireIssuer));
+          // Authored scopes win. MCP challenges name the operations' required scopes; the
+          // resource metadata's scope list is the default only when the challenge omits it.
+          const scopes = new Set(
+            method.scopes ?? discoveredResource?.scopes ?? found?.scopes_supported ?? [],
+          );
           if (
             method.grant !== "client_credentials" &&
             method.scopes === undefined &&

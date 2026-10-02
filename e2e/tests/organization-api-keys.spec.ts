@@ -146,8 +146,17 @@ layer(HostedLive, { excludeTestServices: true })("Organization API keys", (it) =
             expect((yield* access(full, actors.organization.id)).status).toBe(200);
           }),
         );
-        yield* browser.use("Review keys from the remaining organization", (page) =>
+        yield* browser.use("Open the old organization API keys address", (page) =>
           page.goto(`/org/${actors.organization.slug}/api-keys`),
+        );
+        yield* browser.use(
+          "The old address lands on account tokens for that organization",
+          (page) =>
+            page.waitForURL(
+              (url) =>
+                url.pathname === "/account/tokens" &&
+                url.searchParams.get("organization") === actors.organization.slug,
+            ),
         );
         yield* browser.use("The remaining organization's key is visible", (page) =>
           page.getByRole("row").filter({ hasText: "Remaining organization token" }).waitFor(),

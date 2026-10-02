@@ -20,6 +20,7 @@ import { SessionClients } from "../support/api.ts";
 import { Target } from "../support/platform.ts";
 import { PreparedScenarios } from "./contracts.ts";
 import { startScenario } from "./scenario.ts";
+import { awaitCompiler } from "./compiler-readiness.ts";
 
 class DomainNotReady extends Schema.TaggedError<DomainNotReady>()("DomainNotReady", {
   reason: Schema.Literals(["http", "transport", "timeout"]),
@@ -129,6 +130,9 @@ const waitForDomain = (
     );
   });
 
+/** Certificate issuance and a cold compiler Worker share this deadline, outside every scenario's. */
+const infrastructureDeadline = "5 minutes";
+
 /** The suite owns provisioned actors until individual cleanup or environment teardown, including failed preparation. */
 export const prepareCloudScenarios = (input: {
   readonly target: typeof Target.Service;
@@ -141,36 +145,44 @@ export const prepareCloudScenarios = (input: {
     const cleanupScope = yield* Scope.fork(yield* Scope.Scope, "parallel");
     const cleanup = yield* Semaphore.make(input.workers);
     yield* Console.log(`Preparing ${input.scenarios.length} isolated Cloud organizations.`);
-    const provisioned = yield* Effect.forEach(
-      input.scenarios,
-      ({ title, appOrigin }) => {
-        const id = randomBytes(16).toString("hex");
-        return Effect.gen(function* () {
-          // Organizations are independent. Bound their release fan-out while
-          // retaining reverse-order finalization inside each actor layer.
-          const scope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
-            Scope.close(owned, exit).pipe(cleanup.withPermits(1)),
-          ).pipe(Scope.provide(cleanupScope));
-          const target = yield* startScenario(input.target, title, id);
-          const context = yield* Layer.buildWithScope(
-            Actors.layer.pipe(
-              Layer.provide(SessionClients.layer),
-              Layer.provide(Layer.succeed(Target, target)),
-            ),
-            scope,
-          );
-          const actors = yield* Actors.pipe(Effect.provideContext(context));
-          return { title, id, slug: actors.organization.slug, appOrigin };
-        }).pipe(
-          Effect.timeout("60 seconds"),
-          // One organization that is not ready within its deadline is a native setup failure
-          // for its own scenario; the others still run. The suite scope still releases whatever
-          // it created.
-          Effect.mapError((error) => ({ title, id, failure: error._tag })),
-          Effect.result,
-        );
-      },
-      { concurrency: input.workers },
+    // Every scenario that deploys an app needs the compiler. It is proven once, beside
+    // organization provisioning, and its failure fails the whole preparation.
+    const [compiler, provisioned] = yield* Effect.all(
+      [
+        awaitCompiler(input.target, infrastructureDeadline),
+        Effect.forEach(
+          input.scenarios,
+          ({ title, appOrigin }) => {
+            const id = randomBytes(16).toString("hex");
+            return Effect.gen(function* () {
+              // Organizations are independent. Bound their release fan-out while
+              // retaining reverse-order finalization inside each actor layer.
+              const scope = yield* Effect.acquireRelease(Scope.make(), (owned, exit) =>
+                Scope.close(owned, exit).pipe(cleanup.withPermits(1)),
+              ).pipe(Scope.provide(cleanupScope));
+              const target = yield* startScenario(input.target, title, id);
+              const context = yield* Layer.buildWithScope(
+                Actors.layer.pipe(
+                  Layer.provide(SessionClients.layer),
+                  Layer.provide(Layer.succeed(Target, target)),
+                ),
+                scope,
+              );
+              const actors = yield* Actors.pipe(Effect.provideContext(context));
+              return { title, id, slug: actors.organization.slug, appOrigin };
+            }).pipe(
+              Effect.timeout("60 seconds"),
+              // One organization that is not ready within its deadline is a native setup failure
+              // for its own scenario; the others still run. The suite scope still releases whatever
+              // it created.
+              Effect.mapError((error) => ({ title, id, failure: error._tag })),
+              Effect.result,
+            );
+          },
+          { concurrency: input.workers },
+        ),
+      ],
+      { concurrency: 2 },
     );
     const prepared = provisioned.filter(Result.isSuccess).map((result) => result.success);
     const unavailable = provisioned.filter(Result.isFailure).map((result) => result.failure);
@@ -194,7 +206,7 @@ export const prepareCloudScenarios = (input: {
       // a slow certificate must not consume the next origin's preparation budget.
       { concurrency: "unbounded", discard: true },
     ).pipe(
-      Effect.timeout("5 minutes"),
+      Effect.timeout(infrastructureDeadline),
       Effect.ensuring(
         Effect.gen(function* () {
           const finished = yield* Clock.currentTimeMillis;
@@ -214,6 +226,8 @@ export const prepareCloudScenarios = (input: {
                   slug,
                   ...domainObservations.get(id),
                 })),
+                compilerAttempts: compiler.attempts,
+                compilerMs: compiler.elapsedMs,
                 actorsMs: actorsReadyAt - started,
                 httpsMs: finished - actorsReadyAt,
                 totalMs: finished - started,

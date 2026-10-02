@@ -168,6 +168,8 @@ const errorMessage = Match.type<HostedError>().pipe(
     StorageError: () => "Your data could not load. Try again.",
     AccountNotFound: () => "This account is no longer available in this organization.",
     CatalogUnavailable: () => "integrations.sh could not be reached. Try again.",
+    FeedbackUnavailable: () => "Feedback could not be sent. Try again.",
+    FeedbackDisabled: ({ message }) => message,
     HttpClientError: () => "Could not reach the server. Check your connection and try again.",
     SchemaError: () => "The server returned an unexpected response. Reload and try again.",
   }),

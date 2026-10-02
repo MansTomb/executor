@@ -53,8 +53,9 @@ MCP clients can then use that browser for local consent.
   hosts at the same data directory.
 - `.local/desktop-shell/` holds Chromium's application profile. Browser session
   cookies use an in-memory partition and are replaced by a new pairing on launch.
-- The backend uses port 4312 unless `EXECUTOR_PORT` selects another port. Its URL, also the MCP base URL, is
-  printed after readiness. It uses the existing explicitly configured API and
+- The backend uses port 4312 unless **File → Server port…** saved another port in
+  `desktop.json` in the data directory, or `EXECUTOR_PORT` is set. `EXECUTOR_PORT` wins and locks
+  the form. Its URL, also the MCP base URL, is printed after readiness. It uses the existing explicitly configured API and
   encryption keys; startup does not generate persistent keys.
 - Private fd3 carries a one-use bootstrap token. Stdout carries only readiness.
   Electron waits for the parsed ready message before loading its window.
@@ -124,6 +125,30 @@ bun run apps:build && bun run e2e:apps && bun run telemetry:build && bun run web
 node apps/local/desktop/scripts/build.mjs
 bunx vitest run --config e2e/desktop-recovery.config.ts
 ```
+
+## Settings and diagnostics
+
+**File → Server port…** opens a script-free form in its own sandboxed window. Submitting it is a
+navigation to `executor-settings:` that the parent intercepts; there is still no preload or IPC
+bridge. The parent accepts ports 1024 to 65535, refuses one another program is listening on,
+writes `desktop.json` (mode `0600`) and relaunches. A bind can still race another process after
+the check. An unreadable `desktop.json` stops startup rather than silently using the default.
+
+**File → Rotate local API key…** confirms, stops the server, then runs the backend entry with
+`--rotate-api-key` and relaunches. That process replaces the API key where the data directory keeps
+it (OS credential store or `keys.json`) and retains the encryption key, so saved accounts and MCP
+sign-ins still work. Browser sessions are unaffected; scripts and clients that send the old key
+must be updated. Outstanding account-connection links are signed with the old key and stop working.
+Supplied `EXECUTOR_API_KEY`/`EXECUTOR_ENCRYPTION_KEY` are never stored, so the menu explains that
+they must be changed where they are set. The CLI equivalent is `executor rotate-key`.
+
+**Help → Export diagnostics…** writes `executor-diagnostics-<UTC stamp>.zip` to Downloads and
+reveals it. It contains a manifest (versions, platform, origin, port source, data directory) and
+the allowlisted files from `diagnostics/`: the rotating `executor-*.jsonl` logs and
+`collector.json`, at most 50 MiB each and 14 days old. Keys, `installation.json`, databases,
+retained builds, the browser profile and Motel's trace store are never read. Logs are already
+redacted at the source; the export additionally masks bearer values, `pair`/`token`/`code`/`state`
+URL parameters, 64-digit hex runs and credential-named JSON fields.
 
 ## T3 Code reference
 

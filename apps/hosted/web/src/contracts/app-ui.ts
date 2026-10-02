@@ -1,4 +1,4 @@
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { browserOnly } from "@executor-js/ui/contracts/http";
 import { organizationHttpClient } from "./organization-reference.ts";
 /** Host-specific pages opt into the shared private-app browser contract. */
@@ -39,7 +39,7 @@ const location = Atom.family((key: AppUiKey) =>
         Schedule.spaced("3 seconds"),
       ).pipe(Stream.takeUntil((location) => location.status !== "pending")),
     ),
-  ).pipe(refreshOnFocus),
+  ).pipe(revalidated),
 );
 /** A stable, non-secret app link; opening it initiates authentication when needed. */
 export const appUiLocationAtom = (key: ConstructorParameters<typeof AppUiKey>[0]) =>

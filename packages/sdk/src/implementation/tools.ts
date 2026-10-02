@@ -7,6 +7,7 @@ import {
   type HostedToolSummary,
 } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
+import { grantedDefinition } from "./provider.ts";
 /** Snapshot the configured app, then execute with its selected credentials. */
 import { type Crypto, Effect, Match, Option, Redacted, Result, Schema } from "effect";
 import type { AppDatabases } from "@executor-js/app-data";
@@ -189,7 +190,7 @@ export function resolve(
         }).pipe(
           Effect.map((fields) => ({
             id: account.id,
-            provider: required.definition,
+            provider: grantedDefinition(required.definition, account.allowedHosts),
             method: account.method,
             generation: account.credentialGeneration,
             fields: Redacted.value(fields),

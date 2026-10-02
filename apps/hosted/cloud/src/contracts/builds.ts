@@ -5,7 +5,11 @@ import {
   RuntimeAppsDependencyMissing,
   type SourceFiles,
 } from "@executor-js/sdk/core";
-import { RetainedWorkerBuild, WorkerBundle as CloudBundle } from "@executor-js/sdk/workerd";
+import {
+  RetainedWorkerBuild,
+  WorkerBundle as CloudBundle,
+  WorkerFramework,
+} from "@executor-js/sdk/workerd";
 import { Schema, type Effect } from "effect";
 import type { RpcCallError } from "alchemy/Rpc";
 export { CloudBundle };
@@ -14,6 +18,7 @@ export { RetainedWorkerBuild as RetainedCloudBuild } from "@executor-js/sdk/work
 /** Private compiler RPC result; no storage handles or caller credentials cross this boundary. */
 export const CompiledCloudApp = Schema.Struct({
   bundle: Schema.toType(CloudBundle),
+  framework: WorkerFramework,
   protocol: RetainedWorkerBuild.fields.protocol,
   ui: Schema.UndefinedOr(
     Schema.Array(
@@ -27,8 +32,8 @@ export const CompiledCloudApp = Schema.Struct({
 });
 
 /**
- * Decoded builds one isolate keeps in memory, in UTF-16 code units of distinct module source
- * plus WASM bytes. Builds that share a framework count its modules once.
+ * Decoded build records and frameworks one isolate keeps in memory, in UTF-16 code units of module
+ * source plus WASM bytes. Each framework is held once, however many builds link it.
  */
 export const isolateBuildCacheSize = 24 * 1024 * 1024;
 

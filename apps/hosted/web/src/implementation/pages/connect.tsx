@@ -1,4 +1,7 @@
 import { usePageUrl } from "@executor-js/dashboard-start/page";
+import { Link } from "@tanstack/react-router";
+import { Button } from "@executor-js/ui/components/button";
+import { Code } from "@executor-js/ui/dashboard/code";
 import { McpInstallInstructions } from "@executor-js/ui/dashboard/connect";
 import { ScopedConnectionsPage } from "@executor-js/ui/dashboard/scoped-connections";
 import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
@@ -12,6 +15,46 @@ import {
   saveMcpConnectionAtom,
 } from "../../contracts/mcp-connections.ts";
 import { documentationUrl } from "../../contracts/documentation.ts";
+
+/** Headless setup: a personal access token against this organization's own addresses. */
+function PersonalTokenSetup({ origin }: { readonly origin: string }) {
+  const { organization, slug, id } = useOrganizationRoute();
+  const mcp = JSON.stringify(
+    {
+      mcpServers: {
+        executor: {
+          type: "http",
+          url: `${origin}/org/${encodeURIComponent(slug)}/mcp`,
+          headers: { Authorization: "Bearer <YOUR_PAT>" },
+        },
+      },
+    },
+    null,
+    2,
+  );
+  const http = `curl '${origin}/api/organizations/${encodeURIComponent(id ?? organization)}/inventory' \\\n  --header 'Authorization: Bearer <YOUR_PAT>'`;
+  return (
+    <>
+      <p className="text-[13px] leading-5 text-muted-foreground">
+        For scripts and agents that cannot sign in. The token is yours and has your permissions
+        here; this URL names the organization, so no organization header is needed.
+      </p>
+      <div className="mt-3 overflow-hidden rounded-lg border">
+        <Code code={mcp} path="mcp.json" lineNumbers={false} copyable />
+      </div>
+      <div className="mt-3 overflow-hidden rounded-lg border">
+        <Code code={http} path="request.sh" lineNumbers={false} copyable />
+      </div>
+      <div className="mt-3">
+        <Button asChild variant="outline" size="sm">
+          <Link to="/account/tokens" search={{ organization: slug }}>
+            Manage tokens
+          </Link>
+        </Button>
+      </div>
+    </>
+  );
+}
 
 /** The member's full-access URL and scoped connections for this organization. */
 export function ConnectPage() {
@@ -27,7 +70,13 @@ export function ConnectPage() {
       revoke={revokeMcpConnectionAtom(organization)}
       Failure={HostedFailure}
       docs={docs}
-      installation={<McpInstallInstructions endpoint={`${page.origin}/mcp`} docs={docs} />}
+      installation={
+        <McpInstallInstructions
+          endpoint={`${page.origin}/mcp`}
+          docs={docs}
+          token={<PersonalTokenSetup origin={page.origin} />}
+        />
+      }
       renderTools={({ app, profile, names, onChange }) => (
         <ConnectionToolPicker
           query={connectionToolListAtom({

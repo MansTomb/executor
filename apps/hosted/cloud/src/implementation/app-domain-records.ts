@@ -5,8 +5,8 @@
  */
 import { OrganizationId, OrganizationSlug } from "@executor-js/hosted-server/organization";
 import { UiFailed } from "apps/ui/contracts";
-import { Context, DateTime, Effect, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { Context, DateTime, Effect, Predicate, Schema } from "effect";
+import { SqlClient, SqlError } from "effect/unstable/sql";
 
 export const AppDomainStatus = Schema.Literals(["pending", "ready", "failed"]);
 
@@ -45,7 +45,13 @@ export const readAppDomainRecord = (organization: typeof OrganizationId.Type) =>
     return rows[0];
   });
 
-/** Upsert one pass's observations. A deleted team's record goes with it by cascade. */
+/**
+ * Upsert one pass's observations. A deleted team's record goes with it by cascade.
+ *
+ * The pass reads its teams seconds before it writes, so a team can be deleted meanwhile. The
+ * statement writes only teams that still exist, locking each until it commits: a team deleted
+ * before or during the write is skipped instead of failing the foreign key for every team.
+ */
 export const writeAppDomainRecords = (
   records: ReadonlyArray<{
     readonly organization: typeof OrganizationId.Type;
@@ -57,13 +63,37 @@ export const writeAppDomainRecords = (
   Effect.gen(function* () {
     if (records.length === 0) return;
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`insert into cloud_app_domain ${sql.insert(
-      records.map((record) => ({
-        organization_id: record.organization,
-        slug: record.slug,
-        status: record.status,
-        checked_at: DateTime.toDateUtc(checkedAt),
-      })),
-    )} on conflict (organization_id) do update set
-      slug = excluded.slug, status = excluded.status, checked_at = excluded.checked_at`;
-  });
+    const observed = sql.csv(
+      records.map((record) => sql`(${record.organization}, ${record.slug}, ${record.status})`),
+    );
+    yield* sql`insert into cloud_app_domain (organization_id, slug, status, checked_at)
+      select observed.organization_id, observed.slug, observed.status,
+        ${DateTime.toDateUtc(checkedAt)}::timestamptz
+      from (values ${observed}) as observed(organization_id, slug, status)
+      join organization on organization.id = observed.organization_id
+      for key share of organization
+      on conflict (organization_id) do update set
+        slug = excluded.slug, status = excluded.status, checked_at = excluded.checked_at`;
+  }).pipe(
+    Effect.tapError((error) => Effect.annotateCurrentSpan(writeFailure(error.reason))),
+    Effect.withSpan("app_domains.write", { attributes: { "app_domains.teams": records.length } }),
+  );
+
+/** An identifier PostgreSQL reported with the error, such as its SQLSTATE or constraint name. */
+const reported = (cause: unknown, field: "code" | "constraint") =>
+  Predicate.hasProperty(cause, field) &&
+  typeof cause[field] === "string" &&
+  /^[A-Za-z0-9_]{1,63}$/.test(cause[field])
+    ? cause[field]
+    : undefined;
+
+/** The failure's reason, SQLSTATE and constraint; never the message or the written values. */
+const writeFailure = (reason: SqlError.SqlError["reason"]) => {
+  const code = reported(reason.cause, "code");
+  const constraint = reported(reason.cause, "constraint");
+  return {
+    "app_domains.write.failure": reason._tag,
+    ...(code === undefined ? {} : { "db.response.status_code": code }),
+    ...(constraint === undefined ? {} : { "app_domains.write.constraint": constraint }),
+  };
+};

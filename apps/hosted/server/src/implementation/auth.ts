@@ -82,7 +82,9 @@ export const authOptions = (
       ...mcpOAuthPlugins(settings.url),
     ],
     hooks: { before: apiKeyManagement },
-    session: { cookieCache: { enabled: false } },
+    // Session age gates nothing: the account Security page lists sessions however long ago this
+    // browser signed in. Account deletion is disabled; enabling it needs its own confirmation.
+    session: { cookieCache: { enabled: false }, freshAge: 0 },
     rateLimit: {
       enabled: true,
       storage: "database",

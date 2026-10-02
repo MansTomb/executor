@@ -1,6 +1,7 @@
 /** Display contracts shared by dashboards. Hosts retain ownership, auth, and transport semantics. */
 import type {
   Account,
+  AccountCheckStatus,
   AccountHealth,
   AccountId,
   App,
@@ -200,7 +201,20 @@ export const unfilledAccountSlots = (app: App, selection: SelectedAccounts): rea
     const selected = selection[slot];
     return typeof selected !== "string" && selected?.length === 0;
   });
-/** Account metadata can block tool discovery; missing credential-health metadata makes no claim. */
+/** An app's latest check of an account. Outdated or missing checks make no claim. */
+export const currentAccountCheck = (account: AccountSummary, app: AppId) => {
+  const check = account.health?.apps.find((entry) => entry.app === app)?.check;
+  return check?.current === true ? check : undefined;
+};
+/** A current failed check that does not prove the credentials are bad; the app can still open. */
+export interface AccountCheckWarning<A extends AccountSummary> {
+  readonly account: A;
+  readonly status: Exclude<AccountCheckStatus, "healthy" | "credentials_rejected">;
+}
+/**
+ * Account metadata can block tool discovery; missing credential-health metadata makes no claim.
+ * Only a current check that rejected the credentials blocks; other failed checks are warnings.
+ */
 export function appToolReadiness<A extends AccountSummary>(
   app: App,
   selection: SelectedAccounts,
@@ -210,7 +224,8 @@ export function appToolReadiness<A extends AccountSummary>(
   | { readonly state: "selection"; readonly issues: readonly AccountSelectionIssue[] }
   | { readonly state: "reconnect"; readonly accounts: readonly A[] }
   | { readonly state: "unavailable"; readonly accounts: readonly A[] }
-  | { readonly state: "ready" } {
+  | { readonly state: "rejected"; readonly accounts: readonly A[] }
+  | { readonly state: "ready"; readonly warnings: readonly AccountCheckWarning<A>[] } {
   if (app.activeDeployment === null) return { state: "not-deployed" };
   const issues = accountSelectionIssues(app, selection, accounts);
   if (issues.length > 0) return { state: "selection", issues };
@@ -220,7 +235,17 @@ export function appToolReadiness<A extends AccountSummary>(
   if (unavailable.length > 0) return { state: "unavailable", accounts: unavailable };
   const reconnect = selected.filter((account) => accountNeedsSignIn(account));
   if (reconnect.length > 0) return { state: "reconnect", accounts: reconnect };
-  return { state: "ready" };
+  const rejected = selected.filter(
+    (account) => currentAccountCheck(account, app.id)?.status === "credentials_rejected",
+  );
+  if (rejected.length > 0) return { state: "rejected", accounts: rejected };
+  const warnings = selected.flatMap((account): AccountCheckWarning<A>[] => {
+    const status = currentAccountCheck(account, app.id)?.status;
+    return status === undefined || status === "healthy" || status === "credentials_rejected"
+      ? []
+      : [{ account, status }];
+  });
+  return { state: "ready", warnings };
 }
 /** Public OAuth endpoints can supply a favicon domain; credentials are never inspected. */
 export function providerDisplayUrl(definition: ProviderDefinition | undefined): string | null {

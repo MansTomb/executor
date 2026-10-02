@@ -188,6 +188,11 @@ export const toEffectRuntime = (
         ),
         Effect.withSpan("storage.blob.get"),
       ),
+    exists: (key) =>
+      blobs.exists(key).pipe(
+        Effect.tap((found) => Effect.annotateCurrentSpan("storage.blob.found", found)),
+        Effect.withSpan("storage.blob.exists"),
+      ),
     put: (key, body) =>
       blobs.put(key, body).pipe(
         Effect.withSpan("storage.blob.put", {

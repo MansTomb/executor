@@ -11,64 +11,32 @@ import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { Button } from "@executor-js/ui/components/button";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@executor-js/ui/dashboard/context";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@executor-js/ui/components/select";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
-/** Personal and shared credentials use one list; management remains a separate explicit mode. */
+/** Personal and shared credentials use one list. */
 export function AccountsPage({ highlight }: { readonly highlight?: AccountId | undefined }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
-  const [view, setView] = useState<"available" | "managed">("available");
-  const directory = useQuery(resourceDirectoryAtom(organization, view));
+  const directory = useQuery(resourceDirectoryAtom(organization));
   const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
   return (
     <>
       <SharedPage
-        query={resourceInventoryAtom(organization, view)}
+        query={resourceInventoryAtom(organization)}
         Failure={HostedFailure}
         empty={
           <EmptyState
-            title={view === "managed" ? "No accounts to manage" : "No accounts available"}
+            title="No accounts available"
             action={
-              view === "managed" ? (
-                <Button variant="outline" onClick={() => setView("available")}>
-                  View available accounts
-                </Button>
-              ) : (
-                <Button asChild>
-                  <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
-                    Choose an app
-                  </Link>
-                </Button>
-              )
+              <Button asChild>
+                <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
+                  Choose an app
+                </Link>
+              </Button>
             }
           >
-            {view === "managed"
-              ? "Accounts you can manage will appear here."
-              : "Open an app to connect an account, or ask a teammate to share one."}
+            Open an app to connect an account, or ask a teammate to share one.
           </EmptyState>
-        }
-        filters={
-          <Select
-            value={view}
-            onValueChange={(value) => {
-              if (value === "available" || value === "managed") setView(value);
-            }}
-          >
-            <SelectTrigger aria-label="Account list">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="available">Available to me</SelectItem>
-              <SelectItem value="managed">Manage accounts</SelectItem>
-            </SelectContent>
-          </Select>
         }
         highlight={highlight}
         accountActions={(account) => {

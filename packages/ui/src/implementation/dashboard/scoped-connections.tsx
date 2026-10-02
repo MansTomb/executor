@@ -629,11 +629,17 @@ function ConnectionEditor<E, ES extends E>({
       }}
     >
       <div className="mt-6 max-w-md space-y-2">
-        <Label htmlFor={nameId}>Name</Label>
+        <div className="flex items-center gap-2">
+          <Label htmlFor={nameId}>Name</Label>
+          <span className="rounded-md bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+            Required
+          </span>
+        </div>
         <Input
           id={nameId}
           autoFocus={initial.name.length === 0}
           placeholder="e.g. Support assistant"
+          required
           maxLength={80}
           value={draft.name}
           onChange={(event) => setDraft((previous) => ({ ...previous, name: event.target.value }))}

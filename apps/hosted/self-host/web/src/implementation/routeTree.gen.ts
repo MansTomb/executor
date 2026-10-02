@@ -10,9 +10,14 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AccountRouteImport } from './routes/account'
 import { Route as AppAuthRouteImport } from './routes/app-auth'
 import { Route as InviteRouteImport } from './routes/invite'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as AccountIndexRouteImport } from './routes/account.index'
+import { Route as AccountProfileRouteImport } from './routes/account.profile'
+import { Route as AccountSecurityRouteImport } from './routes/account.security'
+import { Route as AccountTokensRouteImport } from './routes/account.tokens'
 import { Route as McpAuthorizeRouteImport } from './routes/mcp.authorize'
 import { Route as OauthCallbackRouteImport } from './routes/oauth.callback'
 import { Route as OrgOrganizationSlugRouteImport } from './routes/org.$organizationSlug'
@@ -41,6 +46,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AccountRoute = AccountRouteImport.update({
+  id: '/account',
+  path: '/account',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppAuthRoute = AppAuthRouteImport.update({
   id: '/app-auth',
   path: '/app-auth',
@@ -55,6 +65,26 @@ const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
   getParentRoute: () => rootRouteImport,
+} as any)
+const AccountIndexRoute = AccountIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AccountRoute,
+} as any)
+const AccountProfileRoute = AccountProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => AccountRoute,
+} as any)
+const AccountSecurityRoute = AccountSecurityRouteImport.update({
+  id: '/security',
+  path: '/security',
+  getParentRoute: () => AccountRoute,
+} as any)
+const AccountTokensRoute = AccountTokensRouteImport.update({
+  id: '/tokens',
+  path: '/tokens',
+  getParentRoute: () => AccountRoute,
 } as any)
 const McpAuthorizeRoute = McpAuthorizeRouteImport.update({
   id: '/mcp/authorize',
@@ -186,13 +216,18 @@ const OrgOrganizationSlugWebhooksAppIdSubscriptionIdRoute =
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/account': typeof AccountRouteWithChildren
   '/app-auth': typeof AppAuthRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
+  '/account/profile': typeof AccountProfileRoute
+  '/account/security': typeof AccountSecurityRoute
+  '/account/tokens': typeof AccountTokensRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/org/$organizationSlug': typeof OrgOrganizationSlugRouteWithChildren
   '/setup/agent': typeof SetupAgentRoute
+  '/account/': typeof AccountIndexRoute
   '/mcp/approve/$requestId': typeof McpApproveRequestIdRoute
   '/org/$organizationSlug/api-keys': typeof OrgOrganizationSlugApiKeysRoute
   '/org/$organizationSlug/connect': typeof OrgOrganizationSlugConnectRoute
@@ -217,9 +252,13 @@ export interface FileRoutesByTo {
   '/app-auth': typeof AppAuthRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
+  '/account/profile': typeof AccountProfileRoute
+  '/account/security': typeof AccountSecurityRoute
+  '/account/tokens': typeof AccountTokensRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/setup/agent': typeof SetupAgentRoute
+  '/account': typeof AccountIndexRoute
   '/mcp/approve/$requestId': typeof McpApproveRequestIdRoute
   '/org/$organizationSlug/api-keys': typeof OrgOrganizationSlugApiKeysRoute
   '/org/$organizationSlug/connect': typeof OrgOrganizationSlugConnectRoute
@@ -242,13 +281,18 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/account': typeof AccountRouteWithChildren
   '/app-auth': typeof AppAuthRoute
   '/invite': typeof InviteRoute
   '/login': typeof LoginRoute
+  '/account/profile': typeof AccountProfileRoute
+  '/account/security': typeof AccountSecurityRoute
+  '/account/tokens': typeof AccountTokensRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
   '/oauth/callback': typeof OauthCallbackRoute
   '/org/$organizationSlug': typeof OrgOrganizationSlugRouteWithChildren
   '/setup/agent': typeof SetupAgentRoute
+  '/account/': typeof AccountIndexRoute
   '/mcp/approve/$requestId': typeof McpApproveRequestIdRoute
   '/org/$organizationSlug/api-keys': typeof OrgOrganizationSlugApiKeysRoute
   '/org/$organizationSlug/connect': typeof OrgOrganizationSlugConnectRoute
@@ -272,13 +316,18 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/account'
     | '/app-auth'
     | '/invite'
     | '/login'
+    | '/account/profile'
+    | '/account/security'
+    | '/account/tokens'
     | '/mcp/authorize'
     | '/oauth/callback'
     | '/org/$organizationSlug'
     | '/setup/agent'
+    | '/account/'
     | '/mcp/approve/$requestId'
     | '/org/$organizationSlug/api-keys'
     | '/org/$organizationSlug/connect'
@@ -303,9 +352,13 @@ export interface FileRouteTypes {
     | '/app-auth'
     | '/invite'
     | '/login'
+    | '/account/profile'
+    | '/account/security'
+    | '/account/tokens'
     | '/mcp/authorize'
     | '/oauth/callback'
     | '/setup/agent'
+    | '/account'
     | '/mcp/approve/$requestId'
     | '/org/$organizationSlug/api-keys'
     | '/org/$organizationSlug/connect'
@@ -327,13 +380,18 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/account'
     | '/app-auth'
     | '/invite'
     | '/login'
+    | '/account/profile'
+    | '/account/security'
+    | '/account/tokens'
     | '/mcp/authorize'
     | '/oauth/callback'
     | '/org/$organizationSlug'
     | '/setup/agent'
+    | '/account/'
     | '/mcp/approve/$requestId'
     | '/org/$organizationSlug/api-keys'
     | '/org/$organizationSlug/connect'
@@ -356,6 +414,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AccountRoute: typeof AccountRouteWithChildren
   AppAuthRoute: typeof AppAuthRoute
   InviteRoute: typeof InviteRoute
   LoginRoute: typeof LoginRoute
@@ -373,6 +432,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/account': {
+      id: '/account'
+      path: '/account'
+      fullPath: '/account'
+      preLoaderRoute: typeof AccountRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/app-auth': {
@@ -395,6 +461,34 @@ declare module '@tanstack/react-router' {
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/account/': {
+      id: '/account/'
+      path: '/'
+      fullPath: '/account/'
+      preLoaderRoute: typeof AccountIndexRouteImport
+      parentRoute: typeof AccountRoute
+    }
+    '/account/profile': {
+      id: '/account/profile'
+      path: '/profile'
+      fullPath: '/account/profile'
+      preLoaderRoute: typeof AccountProfileRouteImport
+      parentRoute: typeof AccountRoute
+    }
+    '/account/security': {
+      id: '/account/security'
+      path: '/security'
+      fullPath: '/account/security'
+      preLoaderRoute: typeof AccountSecurityRouteImport
+      parentRoute: typeof AccountRoute
+    }
+    '/account/tokens': {
+      id: '/account/tokens'
+      path: '/tokens'
+      fullPath: '/account/tokens'
+      preLoaderRoute: typeof AccountTokensRouteImport
+      parentRoute: typeof AccountRoute
     }
     '/mcp/authorize': {
       id: '/mcp/authorize'
@@ -553,6 +647,23 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface AccountRouteChildren {
+  AccountProfileRoute: typeof AccountProfileRoute
+  AccountSecurityRoute: typeof AccountSecurityRoute
+  AccountTokensRoute: typeof AccountTokensRoute
+  AccountIndexRoute: typeof AccountIndexRoute
+}
+
+const AccountRouteChildren: AccountRouteChildren = {
+  AccountProfileRoute: AccountProfileRoute,
+  AccountSecurityRoute: AccountSecurityRoute,
+  AccountTokensRoute: AccountTokensRoute,
+  AccountIndexRoute: AccountIndexRoute,
+}
+
+const AccountRouteWithChildren =
+  AccountRoute._addFileChildren(AccountRouteChildren)
+
 interface OrgOrganizationSlugRouteChildren {
   OrgOrganizationSlugApiKeysRoute: typeof OrgOrganizationSlugApiKeysRoute
   OrgOrganizationSlugConnectRoute: typeof OrgOrganizationSlugConnectRoute
@@ -603,6 +714,7 @@ const OrgOrganizationSlugRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AccountRoute: AccountRouteWithChildren,
   AppAuthRoute: AppAuthRoute,
   InviteRoute: InviteRoute,
   LoginRoute: LoginRoute,

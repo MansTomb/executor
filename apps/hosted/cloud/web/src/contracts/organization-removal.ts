@@ -1,5 +1,5 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
 /** Removal is a cloud capability; self-host keeps its single instance organization. */
 import { acknowledge } from "@executor-js/ui/contracts/mutations";
@@ -41,7 +41,7 @@ export const organizationRemovalError = (cause: Cause.Cause<OrganizationRemovalE
 /** Removal counts include private resources that the normal inventory must omit. */
 export const organizationRemovalPreviewAtom = Atom.family((organization: OrganizationId) =>
   CloudClient.query("organizationRemoval", "preview", hydrated({ params: { organization } })).pipe(
-    refreshOnFocus,
+    revalidated,
   ),
 );
 

@@ -1,4 +1,4 @@
-import { openThroughBrowser } from "../support/in-app-navigation.ts";
+import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
@@ -9,6 +9,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+import { freeSeat } from "../support/seats.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -19,6 +20,7 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard refresh", (it) => {
       Effect.gen(function* () {
         const actors = yield* Actors;
         const browser = yield* Browser;
+        yield* freeSeat;
         yield* browser.login(actors.owner);
         yield* browser.use("Open organization settings", (page) =>
           page.goto(`/org/${actors.organization.slug}/organization`),
@@ -201,6 +203,99 @@ export default defineApp({ accounts: {} }, async () => ({
         yield* checkDraft("Recovered refresh");
         yield* browser.checkpoint("Rename draft survives recovery");
         yield* evidence.json("query-refresh.json", { paths, refreshPath, draftPreserved: true });
+      }),
+    ),
+  );
+  it.effect(scenarios.retainedReturn.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors;
+        const api = yield* Api;
+        const browser = yield* Browser;
+        const evidence = yield* Evidence;
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const name = `Retained ${randomUUID().slice(0, 8)}`;
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name,
+          files: [
+            {
+              path: "index.ts",
+              content: `
+import { defineApp, query, router } from "apps";
+export default defineApp({ accounts: {} }, async () => ({
+  tools: router({ ping: query({ description: "Ping" }, async () => "pong") })
+}));
+`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(deployed.status).toBe(200);
+        const app = yield* body(App, deployed);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(
+            Effect.tap((response) => Effect.sync(() => expect(response.status).toBe(200))),
+            Effect.orDie,
+          ),
+        );
+        // Reads may use the URL slug or the verified organization ID.
+        const directory = /^\/api\/organizations\/[^/]+\/resources$/;
+        let directoryReads = 0;
+        yield* browser.login(actors.owner);
+        yield* browser.use("Control the browser clock and count directory reads", (page) =>
+          page.clock.install().then(() =>
+            page.on("request", (request) => {
+              if (request.method() === "GET" && directory.test(new URL(request.url()).pathname))
+                directoryReads += 1;
+            }),
+          ),
+        );
+        const list = `/org/${actors.organization.slug}/apps`;
+        const detail = `/org/${actors.organization.slug}/apps/${app.id}?view=settings`;
+        const appCard = (label: string) =>
+          browser.use(label, (page) =>
+            page.getByText(name, { exact: true }).first().waitFor({ state: "visible" }),
+          );
+        // An app still installing has its own card skeleton; the list's loading state is this one.
+        const listLoading = (label: string) =>
+          browser.use(label, (page) =>
+            page.getByRole("status", { name: "Loading apps", exact: true }).count(),
+          );
+        const openDetail = Effect.gen(function* () {
+          yield* openInApp("Open the app", detail);
+          yield* browser.use("The app page has loaded", (page) =>
+            page.getByRole("button", { name: "Rename", exact: true }).waitFor({ state: "visible" }),
+          );
+        });
+
+        yield* openThroughBrowser("Open the apps list", list);
+        yield* appCard("The list shows the app");
+
+        yield* openDetail;
+        // Long enough for the list's views to close, within the retained value's freshness.
+        yield* browser.use("Leave the list for a few seconds", (page) => page.clock.runFor(5_000));
+        const before = directoryReads;
+
+        yield* openInApp("Return to the apps list", list);
+        yield* appCard("The retained list is shown at once");
+        expect(directoryReads, "A fresh retained list is not read again").toBe(before);
+        expect(yield* listLoading("A fresh retained list")).toBe(0);
+        yield* browser.checkpoint("Apps list on a quick return");
+
+        yield* openDetail;
+        yield* browser.use("Leave the list until its value is stale", (page) =>
+          page.clock.runFor(31_000),
+        );
+        const refresh = yield* holdQuery(directory, "continue");
+        yield* openInApp("Return to the apps list with its refresh held", list);
+        yield* refresh.requested;
+        yield* appCard("The stale list stays visible while it refreshes");
+        expect(yield* listLoading("A list refreshing in the background")).toBe(0);
+        yield* browser.checkpoint("Apps list while a background refresh is held");
+        yield* refresh.release;
+        yield* appCard("The refreshed list shows the app");
+        yield* evidence.json("retained-return.json", { directoryReads });
       }),
     ),
   );

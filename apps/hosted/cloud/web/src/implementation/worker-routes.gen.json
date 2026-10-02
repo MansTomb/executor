@@ -1,4 +1,12 @@
 [
+  "/account",
+  "/account/",
+  "/account/profile",
+  "/account/profile/",
+  "/account/security",
+  "/account/security/",
+  "/account/tokens",
+  "/account/tokens/",
   "/app-auth",
   "/app-auth/",
   "/create",

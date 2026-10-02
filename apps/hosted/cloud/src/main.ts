@@ -1,5 +1,9 @@
 import { cloudArtifactsTokensLive } from "./infrastructure/artifacts-tokens.ts";
-import { Provisioning, dispatchProvisioning } from "./infrastructure/provisioning.ts";
+import {
+  Provisioning,
+  dispatchProvisioning,
+  provisionTeamNow,
+} from "./infrastructure/provisioning.ts";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 import { ExecutorCloudApi, executorCloudApiDocument } from "./contracts/api.ts";
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
@@ -39,7 +43,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { cloudSite } from "./infrastructure/site.ts";
 import * as Output from "alchemy/Output";
 import { AlchemyContext } from "alchemy/AlchemyContext";
-import { Config, Effect, Layer, Option, Path } from "effect";
+import { Config, Effect, Layer, Option, Path, Ref } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudOnboarding } from "./infrastructure/onboarding.ts";
@@ -188,14 +192,27 @@ export default Api.make(
     );
     const removals = Layer.succeed(OrganizationRemovalStart, startOrganizationRemoval(removal));
     const schedules = yield* cloudSchedules;
-    const dispatch = dispatchProvisioning.pipe(
-      Effect.provide(executor),
-      // A request finalizer runs after its SQL pool closes. Dispatch owns a
-      // fresh scope so execution memos cannot reuse that closed pool.
-      Effect.scoped,
-      Effect.withSpan("job.provisioning.dispatch"),
-      Effect.catch(() => Effect.logWarning("Provisioning outbox unavailable")),
-    );
+    // A new team's default app is installed right after its workflow starts, in this isolate,
+    // rather than after the workflow is scheduled. The workflow finishes an install cut short
+    // here, so a failure is only logged.
+    const installTeam = (job: string) =>
+      provisionTeamNow(job).pipe(
+        Effect.timeoutOption("15 seconds"),
+        Effect.withSpan("job.provisioning.install"),
+        Effect.catch(() => Effect.logWarning("Team installation left to its workflow", { job })),
+        Effect.asVoid,
+      );
+    const dispatchWith = <R>(install: (job: string) => Effect.Effect<void, never, R>) =>
+      dispatchProvisioning(install).pipe(
+        Effect.provide(executor),
+        // A request finalizer runs after its SQL pool closes. Dispatch owns a
+        // fresh scope so execution memos cannot reuse that closed pool.
+        Effect.scoped,
+        Effect.withSpan("job.provisioning.dispatch"),
+        Effect.catch(() => Effect.logWarning("Provisioning outbox unavailable")),
+      );
+    // Cron only recovers lost dispatches; their workflows install any team.
+    const dispatch = dispatchWith(() => Effect.void);
     const organizationRemovals = dispatchOrganizationRemovals.pipe(
       Effect.provide(Layer.merge(executor, removals)),
       Effect.scoped,
@@ -204,22 +221,31 @@ export default Api.make(
     // Jobs are queued by triggers on users, teams and members. Only auth and dashboard API
     // writes change those rows, so only their requests start the jobs at once. MCP, telemetry
     // and the other routes skip the extra connection and query. Cron recovers any lost dispatch.
-    // Streamed responses close their HTTP scope before delivering EOF. Dispatch has its own
-    // scope and must not hold that EOF until background work finishes.
+    // The bound stays inside the 30 seconds Cloudflare allows after the response.
+    const startJobs = dispatchWith(installTeam).pipe(
+      lifetime.background,
+      Effect.timeoutOption("25 seconds"),
+      Effect.asVoid,
+    );
+    // The event scope closes through waitUntil after a complete response is sent, so it waits
+    // for the jobs and exports their telemetry. A streamed body closes that scope at EOF instead;
+    // the jobs then detach so they cannot hold EOF.
     const dispatchAfterWrites = <E, R>(
       handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
     ) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        if (!["GET", "HEAD", "OPTIONS"].includes(request.method)) {
-          const execution = yield* Cloudflare.WorkerExecutionContext;
-          yield* Effect.addFinalizer(() =>
-            execution.waitUntil(
-              dispatch.pipe(lifetime.background, Effect.timeoutOption("10 seconds"), Effect.asVoid),
-            ),
-          );
-        }
-        return yield* handler;
+        if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return yield* handler;
+        const execution = yield* Cloudflare.WorkerExecutionContext;
+        const streamed = yield* Ref.make(false);
+        yield* Effect.addFinalizer(() =>
+          Ref.get(streamed).pipe(
+            Effect.flatMap((detach) => (detach ? execution.waitUntil(startJobs) : startJobs)),
+          ),
+        );
+        return yield* handler.pipe(
+          Effect.tap((response) => Ref.set(streamed, response.body._tag === "Stream")),
+        );
       });
     const dataSteps = (yield* cloudDataSteps).pipe(
       Effect.provide(executor),

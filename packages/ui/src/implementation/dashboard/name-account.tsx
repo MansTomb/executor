@@ -6,6 +6,11 @@ import { Button } from "../components/button.tsx";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../components/dialog.tsx";
 import { Input } from "../components/input.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
+import {
+  AccountDescriptionField,
+  accountDescriptionValue,
+  type AccountMetadataUpdate,
+} from "./account-description.tsx";
 import { ProviderIcon } from "./common.tsx";
 
 /**
@@ -76,11 +81,14 @@ export function NameAccountHeader({ provider }: { readonly provider?: Provider |
   );
 }
 
-/** Name an account once it is connected; the host owns renaming and what follows. */
+/**
+ * Name an account once it is connected and optionally describe it for agents; the host owns the
+ * update and what follows.
+ */
 export function NameAccountForm<E>({
   account,
   providerName,
-  rename,
+  update,
   Failure,
   identity,
   onPendingChange,
@@ -95,7 +103,7 @@ export function NameAccountForm<E>({
   readonly identity?:
     | { readonly resolving: true }
     | { readonly resolving: false; readonly name: string | undefined };
-  readonly rename: (label: string) => Promise<Exit.Exit<unknown, E>>;
+  readonly update: (changes: AccountMetadataUpdate) => Promise<Exit.Exit<unknown, E>>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly onPendingChange?: (pending: boolean) => void;
   readonly onDone: () => void;
@@ -107,6 +115,7 @@ export function NameAccountForm<E>({
     (identity?.resolving === false && identity.name !== undefined
       ? identity.name.slice(0, 120)
       : account.label);
+  const [description, setDescription] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<E>>();
   const updatePending = (value: boolean) => {
@@ -120,10 +129,15 @@ export function NameAccountForm<E>({
         event.preventDefault();
         const next = label.trim();
         if (pending || !next) return;
-        if (next === account.label) return onDone();
+        const described = accountDescriptionValue(description);
+        const changes = {
+          ...(next === account.label ? {} : { label: next }),
+          ...(described === null ? {} : { description: described }),
+        };
+        if (Object.keys(changes).length === 0) return onDone();
         updatePending(true);
         setError(undefined);
-        const exit = await rename(next);
+        const exit = await update(changes);
         updatePending(false);
         if (Exit.isFailure(exit)) return setError(exit.cause);
         onDone();
@@ -149,6 +163,11 @@ export function NameAccountForm<E>({
           />
         )}
       </label>
+      <AccountDescriptionField
+        value={description}
+        onChange={setDescription}
+        disabled={pending || resolving}
+      />
       {error && <Failure cause={error} />}
       <Button
         type="submit"

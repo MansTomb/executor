@@ -18,7 +18,7 @@ import {
   finishConnection,
   lockConnection,
 } from "./connection-state.ts";
-import { captureConnectionTarget } from "./connection-target.ts";
+import { captureConnectionTarget, targetProvider } from "./connection-target.ts";
 import { query, transaction, type Query } from "./database.ts";
 
 /** Requests survive host restarts. Pending requests expire after thirty minutes. */
@@ -63,7 +63,9 @@ export const makeAccountConnections = (
       const row = yield* readConnection(db, input);
       return describe(
         row,
-        yield* provider(row.provider),
+        // A connection for an app shows that app's declaration, whose hosts it will grant.
+        (row.target === null ? undefined : yield* targetProvider(db, row.target, row.provider)) ??
+          (yield* provider(row.provider)),
         row.reconnectAccount === null
           ? null
           : yield* makeAccounts(db, credentials, crypto, lifecycle).get({
@@ -115,7 +117,11 @@ export const makeAccountConnections = (
             revision: id,
           }),
         );
-        return describe(created, resolved, reconnectAccount);
+        const shown =
+          destination.snapshot === null
+            ? undefined
+            : yield* targetProvider(db, destination.snapshot, resolved.id);
+        return describe(created, shown ?? resolved, reconnectAccount);
       }).pipe(Effect.withSpan("sdk.connections.create")),
     cancel: (input: typeof GetAccountConnection.Type) =>
       transaction(db, (tx) =>

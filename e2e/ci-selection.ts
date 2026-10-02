@@ -12,6 +12,9 @@
  * The block may instead say `all` or `none`. A pull request without the block runs the full suite.
  * Each job receives a `--test-name` pattern, or an empty output when none of its scenarios is
  * selected; the job is then skipped.
+ *
+ * The block may also say `skip` on the lower layer of a stack: another open pull request must
+ * build on its branch. Every check then skips, and the layer above tests the combined change.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -42,12 +45,12 @@ const jobs = {
   cloud: {
     target: "cloud",
     pattern:
-      "Cloud onboarding|Cloud OAuth callbacks|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser decode and startup|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin",
+      "Cloud onboarding|Cloud OAuth callbacks|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser decode and startup|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer",
   },
   "cloud-workers": {
     target: "cloud",
     pattern:
-      "app Workers stay loaded across credential rotation|workflow runs reuse the app Worker|warm app calls load no build",
+      "app Workers stay loaded across credential rotation|workflow runs reuse the app Worker|warm app calls load no build|Cold app Workers reuse a build",
   },
 } as const satisfies Record<string, { target: typeof Target.Type; pattern: string }>;
 
@@ -55,7 +58,7 @@ const plan = scenariosForSuite("all", "managed");
 const specFiles: ReadonlySet<string> = new Set(plan.map((scenario) => scenario.file));
 const escape = (title: string) => title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** `all`, or the spec files named in the description's single `e2e` block. */
+/** `all`, `skip`, or the spec files named in the description's single `e2e` block. */
 const requested = (body: string) =>
   Effect.gen(function* () {
     const blocks = [...body.matchAll(/^```e2e[ \t]*\r?\n([\s\S]*?)^```/gm)];
@@ -67,6 +70,7 @@ const requested = (body: string) =>
     const tokens = blocks[0]![1]!.split(/[\s,]+/).filter((token) => token.length > 0);
     if (tokens.length === 1 && tokens[0] === "all") return "all" as const;
     if (tokens.length === 1 && tokens[0] === "none") return [];
+    if (tokens.length === 1 && tokens[0] === "skip") return "skip" as const;
     const files = tokens.map((token) => token.replace(/^e2e\/tests\//, ""));
     const unknown = files.filter((file) => !specFiles.has(file));
     if (unknown.length > 0)
@@ -82,10 +86,31 @@ NodeRuntime.runMain(
     const pullRequest = yield* Config.String("E2E_PULL_REQUEST").pipe(Config.withDefault(""));
     const body = yield* Config.String("E2E_SELECTION_BODY").pipe(Config.withDefault(""));
     const changed = yield* Config.String("E2E_CHANGED_FILES").pipe(Config.withDefault(""));
+    const stackedAbove = yield* Config.String("E2E_STACKED_ABOVE").pipe(Config.withDefault(""));
     const output = yield* Config.String("GITHUB_OUTPUT").pipe(Config.option);
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
 
     const named = pullRequest === "" ? ("all" as const) : yield* requested(body);
+    if (named === "skip") {
+      const above = stackedAbove.split(/\s+/).filter((number) => number.length > 0);
+      if (above.length === 0)
+        return yield* new SelectionFailed({
+          message:
+            "The e2e block says skip, but no open pull request builds on this branch. Only the lower layers of a stack may skip; select scenarios instead.",
+        });
+      const report = [
+        "## E2E selection",
+        "",
+        `Skipped: a lower stack layer under ${above.map((number) => `#${number}`).join(", ")}. The layer above checks the combined change.`,
+        "",
+      ].join("\n");
+      yield* Console.log(report);
+      if (Option.isSome(output))
+        yield* fs.writeFileString(output.value, "skip=true\n", { flag: "a" });
+      if (Option.isSome(summary))
+        yield* fs.writeFileString(summary.value, `${report}\n`, { flag: "a" });
+      return;
+    }
     const files =
       named === "all"
         ? undefined

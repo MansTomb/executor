@@ -16,11 +16,20 @@ import { SqlClient } from "effect/unstable/sql";
 const tickBudgetMs = 20_000;
 
 /**
+ * The last step that `apply` applies when no deploy names one. Steps after it report however
+ * `CLOUD_DATA_STEPS` is set, so a new step ships in report mode even where earlier steps apply.
+ * Never move this forward to approve a step; set the deploy variable instead.
+ */
+const reviewedThrough = "2_app_framework_pin_catch_up";
+
+/**
  * Read during Worker initialization, so Alchemy binds the deploy's values into the Worker.
- * `CLOUD_DATA_STEPS` is `report` unless a deploy sets `apply`. Every deploy resumes the same
- * report, `report:<CLOUD_DATA_STEPS_REPORT>` (`report:cloud` by default): step names are immutable,
- * so a later build's outcomes for a step are comparable with an earlier one's. A report restarts
- * from the first item only when a deploy sets a new label.
+ * `CLOUD_DATA_STEPS` is `report` unless a deploy sets `apply`. `apply` applies steps up to and
+ * including `CLOUD_DATA_STEPS_APPLY_THROUGH` (`reviewedThrough` when unset or empty); later steps
+ * report until a deploy names them, and start only once every applied step is complete. Every
+ * deploy resumes the same report, `report:<CLOUD_DATA_STEPS_REPORT>` (`report:cloud` by default):
+ * step names are immutable, so a later build's outcomes for a step are comparable with an earlier
+ * one's. A report restarts from the first item only when a deploy sets a new label.
  */
 export const cloudDataSteps = Effect.gen(function* () {
   const mode = yield* Config.Literals(["report", "apply"], "CLOUD_DATA_STEPS").pipe(
@@ -29,16 +38,34 @@ export const cloudDataSteps = Effect.gen(function* () {
   const report = yield* Config.NonEmptyString("CLOUD_DATA_STEPS_REPORT").pipe(
     Config.withDefault("cloud"),
   );
+  // The deploy workflow passes an unset repository variable as an empty string.
+  const named = yield* Config.String("CLOUD_DATA_STEPS_APPLY_THROUGH").pipe(Config.withDefault(""));
+  const applyThrough = named === "" ? reviewedThrough : named;
   return Effect.gen(function* () {
     const host = yield* Effect.flatten(AppManagementHost);
     const sql = yield* Effect.flatten(GroupDatabase);
     const deadline = (yield* Clock.currentTimeMillis) + tickBudgetMs;
-    yield* runDataSteps(hostDataSteps(host), {
-      journal: "private_hosted",
-      mode,
-      report,
-      exclusive: false,
-      deadline,
-    }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-  }).pipe(Effect.withSpan("job.data-steps", { attributes: { "data_step.mode": mode } }));
+    const steps = hostDataSteps(host);
+    const run = (selected: typeof steps, selectedMode: typeof mode) =>
+      runDataSteps(selected, {
+        journal: "private_hosted",
+        mode: selectedMode,
+        report,
+        exclusive: false,
+        deadline,
+      }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    if (mode === "report") return yield* run(steps, "report");
+    const through = steps.findIndex((step) => step.name === applyThrough);
+    if (through < 0) {
+      // Hold everything rather than guess which steps were approved.
+      yield* Effect.logError("CLOUD_DATA_STEPS_APPLY_THROUGH names no data step", applyThrough);
+      return yield* run(steps, "report");
+    }
+    if ((yield* run(steps.slice(0, through + 1), "apply")) === "complete")
+      yield* run(steps.slice(through + 1), "report");
+  }).pipe(
+    Effect.withSpan("job.data-steps", {
+      attributes: { "data_step.mode": mode, "data_step.apply_through": applyThrough },
+    }),
+  );
 }).pipe(Effect.orDie);

@@ -48,10 +48,15 @@ export const installScenarioLifecycle = () =>
     let readyAt: number | undefined;
     let completedAt: number | undefined;
     let save = (_finishedAt: number): Effect.Effect<void> => Effect.void;
-    context.onTestFinished(() =>
+    let discard: Effect.Effect<void> = Effect.void;
+    // A passing scenario's server data is never read again; failures keep theirs for diagnosis.
+    context.onTestFinished(({ task }) =>
       Effect.runPromise(
         Scope.close(scope, outcome).pipe(
           Effect.ensuring(Clock.currentTimeMillis.pipe(Effect.flatMap(save))),
+          Effect.andThen(
+            Effect.suspend(() => (task.result?.state === "pass" ? discard : Effect.void)),
+          ),
         ),
       ),
     );
@@ -127,6 +132,15 @@ export const installScenarioLifecycle = () =>
           const [{ target, actors }, sdkScenarios] = yield* Effect.all([primary, extra], {
             concurrency: 2,
           });
+          // Cloud scenarios share the run directory; only isolated scenario directories are discarded.
+          const directories = [target, ...sdkScenarios.map(({ scenario }) => scenario.target)]
+            .map(({ directory }) => directory)
+            .filter((directory) => directory !== base.directory);
+          discard = Effect.forEach(
+            directories,
+            (directory) => fs.remove(directory, { recursive: true }),
+            { discard: true },
+          ).pipe(Effect.orDie);
           readyAt = yield* Clock.currentTimeMillis;
           context.executorScenario = {
             target,

@@ -354,9 +354,10 @@ export const makeApps = (
           const createdAt = new Date(yield* Clock.currentTimeMillis);
           const promote = existing === undefined || sequence > existing.activatedSequence;
           for (const { provider } of entries) {
-            const definition = yield* Schema.decodeUnknownEffect(JsonObject)(
-              provider.definition,
-            ).pipe(Effect.mapError(() => new StorageError()));
+            // Apps sharing a provider ID can declare different hosts; the row keeps what they share.
+            const definition = yield* Schema.decodeUnknownEffect(JsonObject)(provider.shared).pipe(
+              Effect.mapError(() => new StorageError()),
+            );
             yield* query(() =>
               tx.upsert("providers", {
                 where: (b) => b("id", "=", provider.id),

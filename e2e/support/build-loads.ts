@@ -81,9 +81,10 @@ export const unreadableBuild = (marker: string) =>
       target = yield* Target;
     const directory = path.join(target.directory, "data", "builds");
     const builds: string[] = [];
+    // Each build's record is `<build>/worker.json`; the framework it links is stored apart.
     for (const name of yield* fs.readDirectory(directory)) {
-      if (!name.endsWith(".json")) continue;
-      const file = path.join(directory, name);
+      const file = path.join(directory, name, "worker.json");
+      if (!name.startsWith("bld_") || !(yield* fs.exists(file))) continue;
       if ((yield* fs.readFileString(file)).includes(marker)) builds.push(file);
     }
     if (builds.length !== 1)

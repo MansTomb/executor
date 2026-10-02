@@ -14,7 +14,7 @@ import {
   accountAtom,
   accountToNameAtom,
   checkAccountAtom,
-  renameAccountAtom,
+  updateAccountAtom,
 } from "../../contracts/accounts.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
@@ -105,7 +105,7 @@ function HostedNameAccount({
   readonly onDone: () => void;
 }) {
   const { organization } = useOrganizationRoute();
-  const rename = useAtomSet(renameAccountAtom({ organization, account: account.id }), {
+  const update = useAtomSet(updateAccountAtom({ organization, account: account.id }), {
     mode: "promiseExit",
   });
   const check = useAtomSet(checkAccountAtom({ organization, account: account.id }), {
@@ -132,7 +132,7 @@ function HostedNameAccount({
     <NameAccountForm
       account={account}
       providerName={providerName}
-      rename={rename}
+      update={update}
       Failure={HostedFailure}
       identity={identity}
       {...(onPendingChange ? { onPendingChange } : {})}

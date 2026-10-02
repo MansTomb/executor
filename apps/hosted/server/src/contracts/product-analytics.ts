@@ -1,5 +1,10 @@
-/** Product analytics are optional host capabilities; self-host has no exporter. */
+/** Product analytics are optional host capabilities. Cloud and self-host install their own sinks. */
 import { Cause, Clock, Context, Effect, Exit, Option, Schema } from "effect";
+import {
+  feedbackDisabled,
+  type FeedbackDisabled,
+  type FeedbackUnavailable,
+} from "@executor-js/telemetry/product-analytics";
 import { CurrentUserId } from "./auth.ts";
 import { CurrentOrganization } from "./organization.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
@@ -62,7 +67,10 @@ export const CurrentUsage = Context.Reference<UsageContext>("hosted/CurrentUsage
   defaultValue: () => ({ source: "unknown" }),
 });
 
-/** A request-owned sink installed by Cloud; the default performs no collection or network I/O. */
+/**
+ * The host's sink. Cloud installs one per request; self-host installs its process sink unless the
+ * operator opted out. The default performs no collection or network I/O and refuses feedback.
+ */
 export const ProductAnalytics = Context.Reference<{
   readonly enabled: boolean;
   readonly capture: (event: {
@@ -72,8 +80,18 @@ export const ProductAnalytics = Context.Reference<{
     readonly context: UsageContext;
     readonly properties: UsageProperties;
   }) => void;
+  /** Send explicitly submitted feedback and wait for ingestion to accept it. */
+  readonly submitFeedback: (feedback: {
+    readonly message: string;
+    readonly userId: string;
+    readonly organizationId: string;
+  }) => Effect.Effect<void, FeedbackUnavailable | FeedbackDisabled>;
 }>("hosted/ProductAnalytics", {
-  defaultValue: () => ({ enabled: false, capture: () => {} }),
+  defaultValue: () => ({
+    enabled: false,
+    capture: () => {},
+    submitFeedback: () => Effect.fail(feedbackDisabled()),
+  }),
 });
 
 /** Record only authenticated activity with the current resolved organization. */

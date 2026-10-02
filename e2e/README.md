@@ -96,7 +96,10 @@ credentials nor fixture endpoints are installed in the Worker.
 The test plan declares `appOrigin: true` for scenarios that use private app URLs.
 Deployed preparation verifies those HTTPS origins before the scenario deadline;
 an origin that misses the infrastructure deadline produces a native setup failure
-for its scenario. An organization whose actors are not provisioned within their
+for its scenario. Beside organization provisioning, a dedicated organization
+deploys one small app through `POST /apps/deploy` until the freshly deployed
+compiler Worker builds it, within the same infrastructure deadline; otherwise
+preparation fails with `CompilerNotReady`. An organization whose actors are not provisioned within their
 60-second deadline does the same. Independent scenarios still run. The preparation
 report retains each unavailable organization and its failure, the number of ready
 origins, both phase timings, and each origin's probe count and last safe DNS, TLS,

@@ -1,6 +1,6 @@
 /** Independent resource queries and mutations retain the account and deployment that opened them. */
 import { hydrated } from "@executor-js/ui/contracts/http";
-import { refreshOnFocus } from "@executor-js/ui/contracts/refresh";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Data, Effect } from "effect";
 import { Atom, AsyncResult } from "effect/unstable/reactivity";
 import {
@@ -50,7 +50,7 @@ const definitions = Atom.family((key: DefinitionKey) =>
         expectedProfileRevision: key.expectedProfileRevision,
       },
     }),
-  ).pipe(refreshOnFocus, protectedQuery),
+  ).pipe(revalidated, protectedQuery),
 );
 const runsSource = Atom.family((key: PageKey) =>
   HostedClient.query(
@@ -65,7 +65,7 @@ const runsSource = Atom.family((key: PageKey) =>
         workflow: key.workflow,
       },
     }),
-  ).pipe(refreshOnFocus, protectedQuery),
+  ).pipe(revalidated, protectedQuery),
 );
 const runs = Atom.family((key: PageKey) =>
   pollingQuery(
@@ -164,7 +164,7 @@ const hooksSource = Atom.family((key: Target) =>
       params: key,
       query: { profile: key.profile },
     }),
-  ).pipe(refreshOnFocus, protectedQuery),
+  ).pipe(revalidated, protectedQuery),
 );
 const hooks = Atom.family((key: Target) =>
   pollingQuery(

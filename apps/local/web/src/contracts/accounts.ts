@@ -12,6 +12,7 @@ import { Effect, Option } from "effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
 import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
+import type { AccountMetadataUpdate } from "@executor-js/ui/dashboard/account-description";
 import { DashboardClient, liveQueryAtom, overviewAtom, toolsAtom } from "./api.ts";
 
 export const accountAtom = Atom.family((account: AccountId) =>
@@ -31,11 +32,11 @@ export const accountAtom = Atom.family((account: AccountId) =>
 export const accountToNameAtom = Atom.make<AccountToName | undefined>(undefined).pipe(
   Atom.keepAlive,
 );
-/** Each account owns its pending rename; metadata is confirmed before the editor resets. */
-export const renameAccountAtom = Atom.family((account: AccountId) =>
-  DashboardClient.runtime.fn((label: string, get) =>
+/** Each account owns its pending update; metadata is confirmed before the editor resets. */
+export const updateAccountAtom = Atom.family((account: AccountId) =>
+  DashboardClient.runtime.fn((payload: AccountMetadataUpdate, get) =>
     Effect.flatMap(DashboardClient, (client) =>
-      client.dashboard.renameAccount({ params: { account }, payload: { label } }),
+      client.dashboard.updateAccount({ params: { account }, payload }),
     ).pipe(
       Effect.tap((saved) =>
         Effect.sync(() => {

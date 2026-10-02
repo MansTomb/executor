@@ -10,7 +10,8 @@
     "./http": "./src/http.ts",
     "./local": "./src/local.ts",
     "./files": "./src/files.ts",
-    "./process": "./src/process.ts"
+    "./process": "./src/process.ts",
+    "./product-analytics": "./src/product-analytics.ts"
   },
   "scripts": {
     "build:motel": "bun scripts/build-motel.ts"

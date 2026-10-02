@@ -94,6 +94,7 @@ export const makeAccounts = (
           const account = {
             ...identity,
             label: input.label ?? (yield* defaultLabel(tx, input.owner, provider.id)),
+            description: input.description ?? null,
           };
           yield* query(() => tx.create("accounts", { ...account, encryptedCredentials }));
           if (lifecycle) yield* lifecycle.accountCreated(account);
@@ -123,13 +124,14 @@ export const makeAccounts = (
     transaction(db, (tx) =>
       Effect.gen(function* () {
         const account = yield* ownedAccount(tx, input);
+        const set = {
+          ...(input.label === undefined ? {} : { label: input.label }),
+          ...(input.description === undefined ? {} : { description: input.description }),
+        };
         yield* query(() =>
-          tx.updateMany("accounts", {
-            where: (b) => b("id", "=", account.id),
-            set: { label: input.label },
-          }),
+          tx.updateMany("accounts", { where: (b) => b("id", "=", account.id), set }),
         );
-        return yield* Schema.decodeUnknownEffect(Account)({ ...account, label: input.label }).pipe(
+        return yield* Schema.decodeUnknownEffect(Account)({ ...account, ...set }).pipe(
           Effect.mapError(() => new StorageError()),
         );
       }),
@@ -225,7 +227,7 @@ export const makeAccounts = (
     Effect.gen(function* () {
       const rows = yield* query(() =>
         db.findMany("accounts", {
-          select: ["id", "provider", "method", "label", "owner", "createdAt"],
+          select: ["id", "provider", "method", "label", "description", "owner", "createdAt"],
           where: (b) =>
             b.and(
               input.owner === undefined ? true : b("owner", "=", input.owner),

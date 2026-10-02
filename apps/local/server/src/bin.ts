@@ -6,8 +6,13 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { fileURLToPath } from "node:url";
 import { Console, Effect, Option, Schema } from "effect";
 import { CliError, Command } from "effect/unstable/cli";
-import { executorCommand, pairCommand, serveCommand } from "./contracts/startup.ts";
-import { LocalConfigurationError } from "./implementation/bootstrap.ts";
+import {
+  executorCommand,
+  pairCommand,
+  rotateKeyCommand,
+  serveCommand,
+} from "./contracts/startup.ts";
+import { LocalConfigurationError, rotateApiKey } from "./implementation/bootstrap.ts";
 import { launch } from "./implementation/launcher.ts";
 
 // The installed runtime's own path shows which package manager installed it.
@@ -23,6 +28,17 @@ const cli = executorCommand.pipe(
       Command.withHandler(() => launch("headless", process.platform, installation)),
     ),
     pairCommand.pipe(Command.withHandler(() => launch("pair", process.platform))),
+    rotateKeyCommand.pipe(
+      Command.withHandler(() =>
+        rotateApiKey(process.platform).pipe(
+          Effect.andThen(
+            Console.log(
+              "Rotated the local API key. Restart Executor to use it, then update clients that used the previous key.",
+            ),
+          ),
+        ),
+      ),
+    ),
   ]),
 );
 
