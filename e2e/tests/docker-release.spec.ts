@@ -18,6 +18,7 @@ import { randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { driver } from "../support/platform.ts";
+import { dockerShutdown } from "../support/docker-shutdown.ts";
 import { authorizeBrowserMcp } from "../support/mcp-oauth.ts";
 import { chromium } from "playwright";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -1137,4 +1138,8 @@ export default defineApp({ accounts: {} }, async () => ({
       });
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.live("released image drains an active mutation before stopping", () =>
+  dockerShutdown.pipe(Effect.provide(NodeServices.layer)),
 );

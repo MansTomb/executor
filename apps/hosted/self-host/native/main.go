@@ -546,7 +546,7 @@ func serve(mode string) error {
 		}},
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, _ *http.Request, _ error) {
-			http.Error(w, "Executor is starting", http.StatusServiceUnavailable)
+			http.Error(w, "Executor is unavailable", http.StatusServiceUnavailable)
 		},
 	}
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(setting("HOST", "0.0.0.0"), port))
@@ -570,11 +570,17 @@ func serve(mode string) error {
 			fmt.Fprintln(os.Stderr, "Native host stopped")
 		}
 	}
+	deadline := time.Now().Add(35 * time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	if err := public.Shutdown(ctx); err != nil {
+		public.Close()
+	}
 	command.Process.Signal(syscall.SIGTERM)
 	select {
 	case err := <-stopped:
 		return err
-	case <-time.After(15 * time.Second):
+	case <-time.After(time.Until(deadline)):
 		command.Process.Kill()
 		return <-stopped
 	}

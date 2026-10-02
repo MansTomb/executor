@@ -41,7 +41,7 @@ services:
       - "127.0.0.1:4400:4400"
     volumes:
       - pglite-data:/app/data
-    stop_grace_period: 30s
+    stop_grace_period: 40s
     restart: unless-stopped
 
 volumes:
