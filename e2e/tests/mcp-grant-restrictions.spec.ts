@@ -48,6 +48,12 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
         expect(
           (yield* Schema.decodeUnknownEffect(Execution)(hiddenCall.structuredContent)).execution.ok,
         ).toBe(false);
+        const discovered = yield* execute(
+          `return (await tools.search({ namespace: ${JSON.stringify(app.slug)} })).items.map(item => item.path)`,
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(Execution)(discovered.structuredContent)).execution,
+        ).toEqual({ ok: true, value: [`tools[${JSON.stringify(app.slug)}].mutations.echo`] });
         yield* evidence.step(
           "Deployment changes retain selections and later narrowing affects active clients",
           Effect.gen(function* () {
@@ -64,6 +70,13 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
               (yield* Schema.decodeUnknownEffect(Execution)(revokedTool.structuredContent))
                 .execution.ok,
             ).toBe(false);
+            const revokedSearch = yield* execute(
+              `return (await tools.search({ namespace: ${JSON.stringify(app.slug)} })).items.map(item => item.path)`,
+            );
+            expect(
+              (yield* Schema.decodeUnknownEffect(Execution)(revokedSearch.structuredContent))
+                .execution,
+            ).toEqual({ ok: true, value: [] });
           }),
         );
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),

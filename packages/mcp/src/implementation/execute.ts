@@ -4,6 +4,7 @@ import {
   Json,
   AppSlug,
   JsonObject,
+  AppEvaluationFailed,
   ToolApprovalRequired,
   type AppId,
   type Cursor,
@@ -26,6 +27,15 @@ import {
 } from "../contracts/execute.ts";
 
 type Catalog = Record<string, Record<string, Tool.Tool>>;
+type ToolSource = {
+  readonly catalog: {
+    readonly input: Parameters<McpBackend<Error>["indexTools"]>[0] & {
+      readonly deployment: DeploymentId;
+    };
+    readonly size: number;
+  };
+  readonly name: AppTool["name"];
+};
 
 // Equivalent JSON Schema normalization: the upstream signature renderer only
 // renders index signatures when additionalProperties is a schema, rather than true.
@@ -77,26 +87,32 @@ function toolPath(name: string): string {
     .join(".");
 }
 
-function listTools<E extends Error>(backend: McpBackend<E>, app: AppId, target: McpTarget) {
+function indexTools<E extends Error>(backend: McpBackend<E>, app: AppId, target: McpTarget) {
+  return Effect.gen(function* () {
+    const selection =
+      target.kind === "app" ? {} : { profile: target.id, expectedProfileRevision: target.revision };
+    const index = yield* backend.indexTools({ app, ...selection });
+    return { tools: index.items, deployment: index.deployment, selection };
+  });
+}
+
+function listTools<E extends Error>(
+  backend: McpBackend<E>,
+  input: Parameters<McpBackend<E>["listTools"]>[0],
+) {
   return Effect.gen(function* () {
     const tools: AppTool[] = [];
     let cursor: Cursor | undefined;
-    let deployment: DeploymentId | undefined;
-    const selection =
-      target.kind === "app" ? {} : { profile: target.id, expectedProfileRevision: target.revision };
     do {
       const page = yield* backend.listTools({
-        app,
-        ...selection,
-        deployment,
+        ...input,
         cursor,
         limit: 2_000,
       });
-      deployment = page.deployment;
       tools.push(...page.items);
       cursor = page.next;
     } while (cursor !== undefined);
-    return { tools, deployment, selection };
+    return tools;
   });
 }
 
@@ -150,7 +166,7 @@ function catalog(backend: McpBackend<Error>, selected: ReadonlySet<string> | und
               Effect.forEach(
                 targets,
                 (target) =>
-                  discover("mcp.discovery.tools", listTools(backend, app.id, target)).pipe(
+                  discover("mcp.discovery.tools", indexTools(backend, app.id, target)).pipe(
                     Effect.map((catalog) => ({ target, catalog, error: undefined })),
                     Effect.catch((error) =>
                       Effect.succeed({ target, catalog: undefined, error: diagnostic(error) }),
@@ -166,6 +182,7 @@ function catalog(backend: McpBackend<Error>, selected: ReadonlySet<string> | und
       { concurrency: "unbounded" },
     );
     const tools: Catalog = Object.create(null);
+    const sources = new Map<string, ToolSource>();
     const unavailableApps: Array<typeof UnavailableApp.Type> = [];
     // Tool path prefixes that expose no tools in this execution, and those that do. A call is
     // attributed to the longest matching prefix, so a typo inside a loaded namespace stays unknown.
@@ -207,55 +224,57 @@ function catalog(backend: McpBackend<Error>, selected: ReadonlySet<string> | und
           continue;
         }
         namespaces.set(namespace, "available");
-        const projected = yield* Effect.forEach(catalog.tools, (tool) =>
-          Schema.decodeUnknownEffect(JsonObject)(tool.inputSchema).pipe(
-            Effect.map(
-              (input) =>
-                [
-                  target.kind === "app"
-                    ? toolPath(tool.name)
-                    : `profiles.${toolPath(target.id)}.${toolPath(tool.name)}`,
-                  Tool.make({
-                    description: `${app.name}${target.kind === "profile" ? ` (${target.label})` : ""}: ${tool.description}`,
-                    input: renderableSchema(input),
-                    output:
-                      tool.outputSchema === undefined
-                        ? Schema.Json
-                        : renderableSchema(tool.outputSchema),
-                    execute: (input) =>
-                      Schema.decodeUnknownEffect(Json)(input).pipe(
-                        Effect.mapError(() => toolError("Tool arguments must be JSON")),
-                        Effect.flatMap((input) =>
-                          backend
-                            .callTool({
-                              app: app.id,
-                              deployment: catalog.deployment,
-                              ...catalog.selection,
-                              tool: tool.name,
-                              input,
-                            })
-                            .pipe(
-                              Effect.flatMap((result) =>
-                                result.status === "completed"
-                                  ? Effect.succeed(result.value)
-                                  : Effect.fail(
-                                      new ToolApprovalRequired({
-                                        app: result.invocation.app,
-                                        deployment: result.invocation.deployment,
-                                        tool: result.invocation.tool,
-                                      }),
-                                    ),
+        const source = {
+          input: {
+            app: app.id,
+            deployment: catalog.deployment,
+            ...catalog.selection,
+          },
+          size: catalog.tools.length,
+        };
+        for (const tool of catalog.tools) {
+          const path =
+            target.kind === "app"
+              ? toolPath(tool.name)
+              : `profiles.${toolPath(target.id)}.${toolPath(tool.name)}`;
+          sources.set(`${app.slug}.${path}`, { catalog: source, name: tool.name });
+          entries.push([
+            path,
+            Tool.make({
+              description: `${app.name}${target.kind === "profile" ? ` (${target.label})` : ""}: ${tool.description}`,
+              input: {},
+              output: {},
+              execute: (input) =>
+                Schema.decodeUnknownEffect(Json)(input).pipe(
+                  Effect.mapError(() => toolError("Tool arguments must be JSON")),
+                  Effect.flatMap((input) =>
+                    backend
+                      .callTool({
+                        app: app.id,
+                        deployment: catalog.deployment,
+                        ...catalog.selection,
+                        tool: tool.name,
+                        input,
+                      })
+                      .pipe(
+                        Effect.flatMap((result) =>
+                          result.status === "completed"
+                            ? Effect.succeed(result.value)
+                            : Effect.fail(
+                                new ToolApprovalRequired({
+                                  app: result.invocation.app,
+                                  deployment: result.invocation.deployment,
+                                  tool: result.invocation.tool,
+                                }),
                               ),
-                              Effect.mapError((error) => toolError(diagnostic(error))),
-                            ),
                         ),
+                        Effect.mapError((error) => toolError(diagnostic(error))),
                       ),
-                  }),
-                ] as const,
-            ),
-          ),
-        );
-        entries.push(...projected);
+                  ),
+                ),
+            }),
+          ]);
+        }
       }
       // An app none of whose targets loaded is unavailable as a whole.
       const failed = unavailableApps.find((entry) => entry.app === app.id);
@@ -271,8 +290,87 @@ function catalog(backend: McpBackend<Error>, selected: ReadonlySet<string> | und
       ),
       "executor.discovery.unavailable": unavailableApps.length,
     });
-    return { tools, unavailableApps, namespaces };
+    return { tools, sources, unavailableApps, namespaces };
   });
+}
+
+function describeTools(
+  backend: McpBackend<Error>,
+  entries: readonly CodeMode.ToolDescription[],
+  sources: ReadonlyMap<string, ToolSource>,
+) {
+  return Effect.gen(function* () {
+    const groups = new Map<
+      ToolSource["catalog"],
+      Array<{ name: AppTool["name"]; entry: CodeMode.ToolDescription }>
+    >();
+    for (const entry of entries) {
+      const source = sources.get(entry.path);
+      if (source === undefined)
+        return yield* Effect.fail(toolError("Tool metadata is unavailable"));
+      const group = groups.get(source.catalog) ?? [];
+      group.push({ name: source.name, entry });
+      groups.set(source.catalog, group);
+    }
+    const batches = yield* Effect.forEach(
+      groups,
+      ([source, selected]) =>
+        Effect.gen(function* () {
+          const filtered = {
+            ...source.input,
+            tools: selected.map(({ name }) => name),
+          };
+          const tools = yield* (
+            selected.length > 64 && selected.length === source.size
+              ? listTools(backend, source.input).pipe(
+                  Effect.catch((error) =>
+                    Schema.is(AppEvaluationFailed)(error)
+                      ? listTools(backend, filtered)
+                      : Effect.fail(error),
+                  ),
+                )
+              : listTools(backend, filtered)
+          ).pipe(Effect.mapError((error) => toolError(diagnostic(error))));
+          const byName = new Map(tools.map((tool) => [tool.name, tool]));
+          return yield* Effect.forEach(selected, ({ name, entry }) =>
+            Effect.gen(function* () {
+              const tool = byName.get(name);
+              if (tool === undefined)
+                return yield* Effect.fail(
+                  toolError(`Tool metadata is no longer available for '${entry.path}'`),
+                );
+              const schema = yield* Schema.decodeUnknownEffect(JsonObject)(tool.inputSchema).pipe(
+                Effect.mapError(() => toolError("Tool metadata is invalid")),
+              );
+              return [
+                entry.path,
+                Tool.make({
+                  description: entry.description,
+                  input: renderableSchema(schema),
+                  output:
+                    tool.outputSchema === undefined
+                      ? Schema.Json
+                      : renderableSchema(tool.outputSchema),
+                  execute: () => Effect.void,
+                }),
+              ] as const;
+            }),
+          );
+        }),
+      { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency },
+    );
+    const descriptions = new Map(
+      CodeMode.make({ tools: Object.fromEntries(batches.flat()) })
+        .catalog()
+        .map((entry) => [entry.path, entry]),
+    );
+    return yield* Effect.forEach(entries, (entry) => {
+      const description = descriptions.get(entry.path);
+      return description === undefined
+        ? Effect.fail(toolError("Tool metadata is unavailable"))
+        : Effect.succeed({ ...description, path: CodeMode.toolExpression(entry.path) });
+    });
+  }).pipe(Effect.withSpan("mcp.discovery.schemas"));
 }
 
 /** Unavailable namespaces map to their reason; loaded ones are marked available. */
@@ -410,7 +508,7 @@ export function executeProgram(
         input: SearchInput,
         output: SearchResult,
         execute: ({ query = "", namespace, limit = 10, offset = 0 }) =>
-          Effect.sync(() => {
+          Effect.gen(function* () {
             const terms = query
               .replace(/([a-z])([A-Z])/g, "$1 $2")
               .toLowerCase()
@@ -443,10 +541,11 @@ export function executeProgram(
                     .sort((a, b) => b.score - a.score)
                     .map(({ entry }) => entry)
                 : [exact];
-            const items = matches.slice(offset, offset + limit).map((entry) => ({
-              ...entry,
-              path: CodeMode.toolExpression(entry.path),
-            }));
+            const items = yield* describeTools(
+              tools,
+              matches.slice(offset, offset + limit),
+              prepared.sources,
+            );
             const remaining = Math.max(0, matches.length - offset - items.length);
             return {
               items,

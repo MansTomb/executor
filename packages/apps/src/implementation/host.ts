@@ -494,7 +494,7 @@ function dispatch(
               return Effect.forEach(
                 [...wanted].filter((name) => !declared.has(name)),
                 (name) => describe(name),
-                { concurrency: "unbounded" },
+                { concurrency: 8 },
               ).pipe(Effect.map((tools) => tools.filter((tool) => tool !== undefined)));
             }
             return dynamic.list();

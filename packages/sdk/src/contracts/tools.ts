@@ -480,6 +480,7 @@ export const ToolInputs = {
     deployment: Schema.optional(DeploymentId),
     cursor: Schema.optional(Cursor),
     limit: Schema.optional(PageLimit),
+    tools: Schema.optional(Schema.Array(ToolName)),
   }),
   index: Schema.Struct({
     app: AppId,

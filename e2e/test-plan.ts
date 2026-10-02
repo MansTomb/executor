@@ -53,6 +53,16 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  mcpDiscoverySchemas: {
+    fixtures: "actors",
+    file: "mcp-discovery-schemas.spec.ts",
+    title: "MCP discovery loads selected search schemas and refreshes live catalogs",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback schema catalog fixture"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   workflowReplayAccess: {
     fixtures: "actors",
     file: "workflow-replay-access.spec.ts",
