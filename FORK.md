@@ -19,48 +19,25 @@ The maintained branch is `selfhost`. Local patches:
   after worker eviction was fixed. More frequent major collections passed the
   same workload without reducing the per-isolate heap ceiling. This trades CPU
   and occasional collection pauses for lower memory use.
-- Discovery performance patch: MCP loads authorized tool summaries first and
-  reads schemas only for the selected search results, grouped by deployment and
-  profile. SDK filtered listing uses existing runtime inspection capabilities;
-  older app builds retain their full-list fallback. Dynamic tool authors can
-  provide Promise-based `summaries` and `describe` callbacks. Filtered runtime
-  inspection limits concurrent descriptions to eight.
-  Complete catalogs above 64 tools use bulk listing. An app evaluation failure
-  on that bulk path falls back to filtered inspection; authorization, deployment
-  and profile failures propagate. Every stage retains live authorization.
-  No evaluated app catalog or authorization result is cached across requests,
-  and existing spec-cache freshness and invalidation stay unchanged.
-
-The discovery comparison uses the pinned `b8f5b3cb` image and a candidate built
-from that image on the same host, with a 4 GiB limit. Four synthetic live OpenAPI
-apps expose 1,000 tools each, alongside the management app. Broad search returning
-ten signatures improved from 3.067/3.737 seconds p50/p95 to 0.955/1.030 seconds
-over 20 warm requests per image. All returned paths, signatures, pagination and
-availability results matched. These are local measurements, not production
-latencies. Source compilation on an empty cache is measured separately from a
-process restart with retained spec data.
-
-Direct calls into one 1,000-tool app improved from 1.095/1.317 seconds p50/p95 to
-0.258/0.393 seconds over 20 warm requests. Three first calls after a fresh process,
-deployment and source cache took 3.457 to 5.077 seconds before and 2.319 to 2.405 seconds
-after. Broad search after process restart with retained spec data took
-3.939 to 6.019 seconds before and 1.992 to 2.025 seconds after. Three broad searches with
-all four source caches empty in a running process took 10.230 to 17.007 seconds
-before and 8.666 to 9.317 seconds after. These three-sample ranges do not establish
-a cold p95. Every direct call returned the expected value and made one upstream
-API request.
-
-Exporting all 4,090 signatures still costs more than the baseline because it
-reads summaries before full metadata. One candidate request took 4.616 seconds,
-compared with the baseline's 3.400-second median over 20 warm requests. The
-candidate stayed below its 4 GiB limit throughout the measurements, with no OOM
-events or automatic restarts.
-
-The E2E scenario `MCP discovery loads selected search schemas and refreshes live
-catalogs` fails with eager discovery and passes with the patch. It checks precise
-signatures, pagination, live metadata changes, input rejection, and fallback when
-bulk metadata is unavailable. The grant restriction scenario also checks search
-before and after live narrowing.
+- `f70d35bcc`: load authorized tool summaries first, then batch schemas for
+  selected search results. Discovery previously transported and rendered every
+  schema twice. Live authorization, deployment and profile checks remain on each
+  read; no cross-request catalog cache is added. Older builds retain full-list
+  fallback. Warm ten-result search improved from 3.067/3.737 to 0.955/1.030 seconds
+  p50/p95 with 4,090 synthetic tools. Full export is slower because it also reads
+  summaries. The discovery and grant-restriction E2Es cover freshness and access.
+- `5e21403ca`: describe native MCP result envelopes instead of advertising their
+  inner structured payload as the whole return value. Preserve upstream output
+  validation and returned values. Ordinary references and statically bound
+  recursion retain their schemas; unsupported relocation exposes generic
+  structured content in discovery. Declared successful outputs still require
+  structured content. Existing MCP apps must be rebuilt to pick up this helper.
+  Result-contract and account-template E2Es cover projection and validation.
+- `d616eaf1b`: retain SDK semantic tool failures in MCP per-call outcomes,
+  including approved resumptions. A program that handles an error can still
+  succeed and receives the original result. Ordinary data containing `isError`
+  remains successful. Observability E2E covers handled, discarded, parallel and
+  resumed results on self-host and Cloud.
 
 Keep these patches separate when merging upstream changes. Remove a patch when
 upstream provides the same behavior and its regression checks pass.
