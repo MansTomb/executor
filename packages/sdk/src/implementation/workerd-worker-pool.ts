@@ -44,8 +44,19 @@ class WorkerLease extends RpcTarget {
     super();
   }
 
-  result() {
-    return this.call.result();
+  async result() {
+    const result = await this.call.result();
+    if (typeof result === "object" && result !== null && Symbol.dispose in result) {
+      const dispose = result[Symbol.dispose];
+      if (typeof dispose === "function") {
+        try {
+          dispose.call(result);
+        } finally {
+          Reflect.deleteProperty(result, Symbol.dispose);
+        }
+      }
+    }
+    return result;
   }
 
   async drain() {
