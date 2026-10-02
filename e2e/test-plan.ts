@@ -43,6 +43,16 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  mcpDiscoverySelection: {
+    fixtures: "actors",
+    file: "mcp-discovery-selection.spec.ts",
+    title: "MCP execute discovers only referenced apps and preserves dynamic lookup",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback app evaluation fixture"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   workflowReplayAccess: {
     fixtures: "actors",
     file: "workflow-replay-access.spec.ts",

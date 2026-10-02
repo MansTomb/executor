@@ -12,6 +12,7 @@ import {
 } from "@executor-js/sdk/core";
 import { Clock, Duration, Effect, Option, Schema, Semaphore } from "effect";
 import { diagnostic, executionDiagnostic } from "./diagnostics.ts";
+import { referencedApps } from "./discovery.ts";
 import type { McpTarget } from "../contracts/targets.ts";
 import type { McpBackend } from "../contracts/backend.ts";
 import {
@@ -99,7 +100,7 @@ function listTools<E extends Error>(backend: McpBackend<E>, app: AppId, target: 
   });
 }
 
-function catalog(backend: McpBackend<Error>) {
+function catalog(backend: McpBackend<Error>, selected: ReadonlySet<string> | undefined) {
   return Effect.gen(function* () {
     const concurrency = defaultMcpRuntimeLimits.discoveryConcurrency;
     const slots = yield* Semaphore.make(concurrency);
@@ -116,7 +117,15 @@ function catalog(backend: McpBackend<Error>) {
           }),
         );
       }).pipe(Effect.withSpan(name));
-    const apps = yield* backend.listApps().pipe(Effect.withSpan("mcp.discovery.apps"));
+    const apps =
+      selected?.size === 0
+        ? []
+        : yield* backend.listApps().pipe(
+            Effect.map((apps) =>
+              apps.filter((app) => selected === undefined || selected.has(app.slug)),
+            ),
+            Effect.withSpan("mcp.discovery.apps"),
+          );
     yield* Effect.annotateCurrentSpan({
       "executor.discovery.apps": apps.length,
       "executor.discovery.concurrency": concurrency,
@@ -384,7 +393,7 @@ export function executeProgram(
         callTool: (input, options) =>
           backend.callTool(input, options).pipe(Effect.provideService(Clock.Clock, clock)),
       };
-      const loaded = yield* catalog(tools).pipe(
+      const loaded = yield* catalog(tools, referencedApps(code)).pipe(
         Effect.withSpan("mcp.catalog"),
         Effect.map(Option.some),
         Effect.raceFirst(deadline.pipe(Effect.as(Option.none()))),
@@ -396,7 +405,6 @@ export function executeProgram(
       const prepared = loaded.value;
       progress.unavailableApps = prepared.unavailableApps;
       progress.phase = "program";
-      const entries = CodeMode.make({ tools: prepared.tools }).catalog();
       const search = Tool.make({
         description: "Find available app tools and their callable signatures.",
         input: SearchInput,
@@ -447,8 +455,7 @@ export function executeProgram(
             };
           }),
       });
-      const result = yield* CodeMode.execute({
-        code,
+      const runtime = CodeMode.make({
         tools: { ...prepared.tools, search },
         limits,
         // Both hooks run on the fiber that makes the call.
@@ -467,10 +474,16 @@ export function executeProgram(
               call.outcome = outcome;
             call.durationMs = durationMs;
           }),
-      }).pipe(
-        Effect.provideService(Clock.Clock, deadlineClock(clock, limits.timeoutMs, deadline)),
-        Effect.flatMap(Schema.decodeUnknownEffect(CodeMode.Result)),
-      );
+      });
+      const entries: ReadonlyArray<CodeMode.ToolDescription> = runtime
+        .catalog()
+        .filter((entry) => entry.path !== "search");
+      const result = yield* runtime
+        .execute(code)
+        .pipe(
+          Effect.provideService(Clock.Clock, deadlineClock(clock, limits.timeoutMs, deadline)),
+          Effect.flatMap(Schema.decodeUnknownEffect(CodeMode.Result)),
+        );
       // CodeMode records a call before its start hook runs; report every admitted call in order.
       result.toolCalls.forEach(({ name }, index) => {
         progress.calls[index] ??= { name, outcome: "interrupted" };
