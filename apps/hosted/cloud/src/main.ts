@@ -69,6 +69,7 @@ import { cloudEntryApi, cloudEntryDocument, resolveCloudEntry } from "./implemen
 import { browserReturnTo } from "@executor-js/hosted-server/browser/contracts";
 import { HttpServerRequest } from "effect/unstable/http";
 import { homepage } from "./implementation/homepage.ts";
+import { withNotFoundDocument } from "./implementation/not-found.ts";
 import { openAiAppsChallenge } from "./implementation/openai-apps-challenge.ts";
 import {
   cloudDashboard,
@@ -77,7 +78,7 @@ import {
 } from "./implementation/dashboard.ts";
 import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
 import { dashboardBatchPath } from "@executor-js/dashboard-start/batch";
-import dashboardRoutes from "@executor-js/hosted-cloud-web/routes" with { type: "json" };
+import { workerFirstRoutes } from "./contracts/worker-first-routes.ts";
 import { postHogBindings } from "./infrastructure/posthog.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
 import { workerBuild } from "./infrastructure/worker-build.ts";
@@ -148,25 +149,11 @@ export default Api.make(
           ? site.outdir.pipe(Output.map((directory) => path.resolve(directory)))
           : site.outdir,
         hash: site.hash.output,
+        // A miss reaches the Worker, which serves 404.html; see `not-found.ts`.
         notFoundHandling: "none",
         // Preserve TanStack paths after an internal index.html rewrite.
         htmlHandling: "none",
-        // An allowlist, so everything else is served from the assets. The
-        // documentation under /docs and /docs/* is static and must stay off
-        // this list.
-        runWorkerFirst: [
-          "/",
-          // The Worker renders every dashboard document; see `cloudflare-routes.ts`. Its
-          // `/org/*` rule also covers each organization's `/org/*/mcp` endpoint.
-          ...dashboardRoutes,
-          "/api",
-          "/api/*",
-          "/health",
-          "/openapi.json",
-          "/mcp",
-          "/git/*",
-          "/.well-known/*",
-        ],
+        runWorkerFirst: workerFirstRoutes,
       },
     };
   }),
@@ -464,6 +451,7 @@ export default Api.make(
     );
     return {
       fetch: handle.pipe(
+        withNotFoundDocument,
         Effect.tapCause(reportCloudFailure),
         Effect.catchTag("AuthenticationUnavailable", () =>
           Effect.succeed(HttpServerResponse.empty({ status: 503 })),

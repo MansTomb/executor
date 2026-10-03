@@ -1032,7 +1032,7 @@ export const scenarios = {
   },
   cloudDashboardRoutes: {
     file: "cloud-dashboard-routes.spec.ts",
-    title: "Cloud dashboard deep links preserve API, docs and asset routing",
+    title: "Cloud dashboard deep links preserve API, docs, asset and not-found routing",
     targets: {
       cloud: scheduled,
       "self-host": na("Cloudflare's static asset rewrites are Cloud-only."),

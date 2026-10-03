@@ -144,6 +144,10 @@ depends on the loader's queue, so check it if Blume changes its adapter.
 - `bun run docs:validate` — `blume validate`. Checks every internal, anchor and
   asset link. Errors on a broken page link. Runs offline and takes a second, so
   run it after any edit that adds or moves a link.
+- `bun run site:links` — after `bun run hosted:cloud:site:build`, resolves every
+  same-origin link in the composed site (marketing, docs, sidebar) the way the
+  Worker serves it. CI runs it in the `check` job. It catches what `validate`
+  misses: sidebar entries and component `href`s that point at a missing page.
 - `bun run docs:audit` — `blume audit` over the built site. SEO and site-health
   checks: titles, descriptions, canonicals, headings, orphan pages, the sitemap.
   Build first. It fails on errors only; warnings are advisory.

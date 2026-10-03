@@ -177,6 +177,8 @@ scenarios on Linux instead of moving them to a Mac.
 
 - `check` runs `bun run check`: the format check, `oxlint`, the typecheck, the
   no-tests-outside-`e2e/` check and the e2e boundary check.
+  It also builds the public site and runs `bun run site:links`, which fails when
+  any marketing or docs page links to a path that would 404.
 - `select` runs [`e2e/ci-selection.ts`](e2e/ci-selection.ts) and gives each e2e job
   its `--test-name` pattern, or skips the job when none of its scenarios is selected.
   Its job patterns hold the exclusions and splits below.
