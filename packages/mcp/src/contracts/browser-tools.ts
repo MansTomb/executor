@@ -19,7 +19,7 @@ export const BrowserResumeInput = Schema.Struct({ requestId: InteractionId });
 /** Execute with browser-based delivery of every pending interaction. */
 export const BrowserExecuteTool = McpTool.make("execute", {
   description:
-    "Run a JavaScript program over Executor apps. Read skills for app authoring and use tools.search to discover callable paths. If approval-required or input-required is returned, show the user approvalUrl and call resume with requestId only. The user answers in their authenticated browser. Never submit the decision yourself or rerun the program to continue it. Earlier effects are not rolled back.",
+    "Run a JavaScript program over Executor apps. Read skills for app authoring and use tools.search to discover callable paths. When you know the app, pass its slug as a string literal, as in tools.search({namespace: 'app-slug', query: 'issues'}); that loads only that app and any other app the program names directly, while an unscoped or computed search loads every app first. If approval-required or input-required is returned, show the user approvalUrl and call resume with requestId only. The user answers in their authenticated browser. Never submit the decision yourself or rerun the program to continue it. Earlier effects are not rolled back.",
   dependencies: [HttpServerRequest.HttpServerRequest],
   parameters: ExecuteInput,
   success: BrowserExecutionResult,
