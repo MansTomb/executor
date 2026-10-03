@@ -11,7 +11,7 @@ The maintained branch is `selfhost`. Local patches:
   forwarded RPC results. Named dynamic workers in workerd 1.20260901.1 otherwise
   survive indefinitely. Declaration checks use uncached workers.
 - `37facaf6c`: discover only statically referenced app namespaces. Dynamic
-  programs and tool searches retain full discovery and live authorization.
+  programs and unscoped tool searches retain full discovery and live authorization.
 - `6565a3749`: drain admitted HTTP requests before stopping workerd. Close the
   listener during shutdown and allow 40 seconds for a 35-second drain deadline.
 - `e23b30dfd`: use `--gc-global` in the packaged self-host runtime. Default GC
@@ -38,6 +38,15 @@ The maintained branch is `selfhost`. Local patches:
   succeed and receives the original result. Ordinary data containing `isError`
   remains successful. Observability E2E covers handled, discarded, parallel and
   resumed results on self-host and Cloud.
+- `69a64ab74`, `613ce0b00`: discover only the app named by a literal
+  `tools.search` or `search` namespace, unioned with every app the program
+  references statically. Unscoped searches, computed, spread or duplicated
+  namespaces, tool-expression namespaces such as `tools.app`, and any other use
+  of `search` keep full discovery. Live account, deployment, profile and grant
+  checks are unchanged. The execute descriptions tell agents to use the scoped
+  form. A cold scoped production search previously discovered all 17 apps and
+  took 27.5 seconds end to end. Selection, schema and grant-restriction E2Es
+  cover scoped, unscoped, dynamic, repeated, mixed-app and narrowed searches.
 
 Keep these patches separate when merging upstream changes. Remove a patch when
 upstream provides the same behavior and its regression checks pass.
