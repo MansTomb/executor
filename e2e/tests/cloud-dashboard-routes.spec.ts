@@ -71,8 +71,12 @@ layer(TestLive, { excludeTestServices: true })("Cloud dashboard routing", (it) =
         const docs = yield* read("/docs");
         expect(docs.status).toBe(200);
         expect(docs.body).not.toContain(dashboardDocument);
-        const docsPage = yield* read("/docs/build/author-an-app");
+        const docsPage = yield* read("/docs/author-an-app");
         expect(docsPage.status).toBe(200);
+        // The page's earlier address keeps working for links already published.
+        const movedDocsPage = yield* read("/docs/build/author-an-app");
+        expect(movedDocsPage.status).toBe(308);
+        expect(movedDocsPage.location).toBe("/docs/author-an-app");
         // A browser that opens a missing page gets the site's 404 document, with a 404
         // status; the documentation keeps its own. Other clients keep an empty 404.
         const missingPage = yield* read("/no-such-page");

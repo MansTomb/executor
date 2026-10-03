@@ -21,6 +21,10 @@ deliberate exception is the absolute `https://v2.executor.sh` link on the index
 page: it points at the hosted dashboard, which is not a docs page, so it must
 not pick up the base. `blume audit` reports it as a warning for that reason.
 
+Do not name a content directory `build`, `dist`, `coverage` or another
+build-output name. Rift workspaces omit those directories even when Git tracks
+them, so a commit from a workspace deletes the pages inside.
+
 `blume.config.ts` owns the sidebar: the group labels, the order, and which pages
 appear. A page that is not listed there is not in the navigation. Put images and
 other static files in `public/`.
