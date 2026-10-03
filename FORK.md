@@ -44,8 +44,8 @@ The maintained branch is `selfhost`. Local patches:
   namespaces, tool-expression namespaces such as `tools.app`, and any other use
   of `search` keep full discovery. Live account, deployment, profile and grant
   checks are unchanged. The execute descriptions tell agents to use the scoped
-  form. A cold scoped production search previously discovered all 17 apps and
-  took 27.5 seconds end to end. Selection, schema and grant-restriction E2Es
+  form. A scoped production search after five idle minutes fell from 27.5 to
+  1.1 seconds end to end, and its warm repeat from 10.0 to 0.6 seconds. Selection, schema and grant-restriction E2Es
   cover scoped, unscoped, dynamic, repeated, mixed-app and narrowed searches.
 
 Keep these patches separate when merging upstream changes. Remove a patch when
