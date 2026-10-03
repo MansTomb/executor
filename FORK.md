@@ -61,9 +61,13 @@ Expired accounts retain their trusted label and ID and name `accounts_reconnect`
 The initial execute search example uses the `executor` namespace.
 
 The thrown-error handler is bundled into each app build. Existing builds need
-recompilation from their unchanged source to receive that handler; upgrading the
-server alone updates timeout, authentication and operation attribution. No schema
-migration or source change is required. The error-boundary E2Es exercise thrown
+recompilation against a compatible framework to receive that handler; upgrading
+the server alone updates timeout, authentication and operation attribution. No
+database migration is required. The production rollout rebuilt all 17 apps from
+unchanged source. Fifteen retained their new deployments. Executor and Figma API
+restored their previous deployments after the rebuilt bundles failed tool discovery;
+their thrown-error handling remains on the previous framework pending a separate
+compatibility fix. The error-boundary E2Es exercise thrown
 causes, a timeout after an external mutation and refused account renewal. Existing
 OpenAPI, provider, discovery, worker-lifetime and timeout scenarios cover the
 shared contracts.
