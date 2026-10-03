@@ -54,6 +54,12 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
         expect(
           (yield* Schema.decodeUnknownEffect(Execution)(discovered.structuredContent)).execution,
         ).toEqual({ ok: true, value: [`tools[${JSON.stringify(app.slug)}].mutations.echo`] });
+        const hiddenSearch = yield* execute(
+          `return (await tools.search({ namespace: ${JSON.stringify(hidden.app.slug)} })).items.map(item => item.path)`,
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(Execution)(hiddenSearch.structuredContent)).execution,
+        ).toEqual({ ok: true, value: [] });
         yield* evidence.step(
           "Deployment changes retain selections and later narrowing affects active clients",
           Effect.gen(function* () {

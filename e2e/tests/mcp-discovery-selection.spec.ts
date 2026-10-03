@@ -144,16 +144,27 @@ layer(HostedLive, { excludeTestServices: true })("MCP app discovery", (it) => {
           `return await tools?.[${JSON.stringify(fast.slug)}].queries.version({})`,
           `return await tools[${JSON.stringify(`${fast.slug}.queries.version`)}]({})`,
           `const selected = tools[${JSON.stringify(`${fast.slug}.queries`)}]; return await selected.version({})`,
+          `const found = await tools.search({ namespace: ${JSON.stringify(fast.slug)}, query: "version" }); return found.items.filter((item) => item.path.endsWith(".queries.version")).length`,
+          `const found = await search({ "namespace": ${JSON.stringify(fast.slug)} }); return found.items.length`,
+          `const found = await tools?.["search"]({ namespace: ${JSON.stringify(`${fast.slug}.queries`)}, limit: 1 }); return found.items.length`,
+          `const [first, second] = await Promise.all([tools.search({ namespace: ${JSON.stringify(fast.slug)} }), tools.search({ namespace: ${JSON.stringify(fast.slug)}, query: "version" })]); return first.items.length * second.items.length`,
+          `const found = await tools.search({ namespace: ${JSON.stringify(fast.slug)} }); return found.items.length * (await ${fastTool}({}))`,
         ]) {
-          expect((yield* execute(code)).execution).toMatchObject({ ok: true, value: 1 });
+          expect((yield* execute(code)).execution, code).toMatchObject({ ok: true, value: 1 });
         }
-        expect(fixture.calls()).toBe(0);
+        expect(fixture.calls(), "A literal search namespace must not load other apps").toBe(0);
         for (const code of [
           `const selected = tools; return await selected[${JSON.stringify(fast.slug)}].queries.version({})`,
           `const slug = ${JSON.stringify(fast.slug)}; return await tools[slug].queries.version({})`,
           `const names = Object.keys(tools); return names.includes(${JSON.stringify(slow.slug)}) ? 1 : 0`,
           `const found = await tools.search({ namespace: ${JSON.stringify(slow.slug)} }); return found.items.length`,
           `const found = await search({ namespace: ${JSON.stringify(slow.slug)} }); return found.items.length`,
+          `const found = await tools.search({ query: "version" }); return found.items.some((item) => item.path.includes(${JSON.stringify(slow.slug)})) ? 1 : 0`,
+          `const namespace = ${JSON.stringify(fast.slug)}; const found = await tools.search({ namespace }); return found.items.length`,
+          `const options = { namespace: ${JSON.stringify(fast.slug)} }; const found = await tools.search({ ...options }); return found.items.length`,
+          `const found = await tools.search({ namespace: ${JSON.stringify(`tools.${fast.slug}`)} }); return found.items.length`,
+          `await tools.search({ namespace: ${JSON.stringify(fast.slug)} }); const found = await tools.search({ query: ${JSON.stringify(slow.slug)} }); return found.items.length`,
+          `const found = await tools.search({ namespace: ${JSON.stringify(fast.slug)} }); return found.items.length * (await tools[${JSON.stringify(slow.slug)}].queries.version({})) / 99`,
         ]) {
           const previous = fixture.calls();
           const result = yield* execute(code);

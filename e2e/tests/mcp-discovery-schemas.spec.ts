@@ -266,7 +266,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP discovery schemas", (it) =
           "selected/describe/queries.alpha",
         ]);
         expect(fixture.requests.filter((path) => path.endsWith("/list"))).toEqual([]);
-        expect(fixture.requests).toContain("unrelated/summaries");
+        expect(fixture.requests).toContain("selected/summaries");
+        expect(fixture.requests).not.toContain("unrelated/summaries");
         fixture.reset();
         const second = yield* search({ namespace: selected.slug, limit: 2, offset: 1 });
         expect(second.items.map((item) => item.path)).toEqual([
