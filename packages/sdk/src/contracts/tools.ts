@@ -153,7 +153,7 @@ export type AppFailure = typeof AppFailure.Type;
 /** One line naming who raised the failure and its own message. */
 export const appFailureText = ({ source, errorName, code, message }: AppFailure) =>
   source === "storage"
-    ? `App data failed (${code ?? errorName}): ${message}`
+    ? `${errorName === "CacheError" ? "App cache" : "App data"} failed (${code ?? errorName}): ${message}`
     : source === "service"
       ? `The app's API call failed: ${message}`
       : `The app threw ${errorName}: ${message}`;

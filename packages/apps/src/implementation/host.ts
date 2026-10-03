@@ -974,6 +974,19 @@ export const createAppHandler =
             toolError = true;
           },
         }),
+        // Name what failed on the span; the bounded message stays in the reply only.
+        Effect.tapError((error) =>
+          (error._tag === "HostEvaluationFailed" ||
+            error._tag === "HostOperationFailed" ||
+            error._tag === "HostDeclarationInvalid") &&
+          error.errorName !== undefined
+            ? Effect.annotateCurrentSpan({
+                "error.type": error.errorName,
+                ...(error.source === undefined ? {} : { "executor.failure.source": error.source }),
+                ...(error.code === undefined ? {} : { "executor.failure.code": error.code }),
+              })
+            : Effect.void,
+        ),
         Effect.withSpan(`app.${command.operation}`),
       );
       if (toolError)

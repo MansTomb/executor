@@ -1,4 +1,5 @@
 import { Predicate, Redacted, Schema } from "effect";
+import { CacheError } from "@executor-js/app-cache/contracts";
 import { AppDatabaseError } from "@executor-js/app-data/contracts";
 import { AppStorageError, AppStorageUnavailable } from "../contracts/storage.ts";
 import { OpenapiError } from "../contracts/openapi.ts";
@@ -27,6 +28,15 @@ const storageMessages = {
   storage: "App storage failed to complete the operation.",
   replay: "A workflow step replayed with different input than its first run.",
 } satisfies Record<AppDatabaseError["reason"], string>;
+
+/** Fixed text per reason; cache keys, values and scopes never enter the message. */
+const cacheMessages = {
+  capacity: "A cache key, value or batch exceeded the app cache's size limits.",
+  invalid: "The app made a cache request the app cache could not accept.",
+  unavailable: "The app cache is not available on this host.",
+  storage: "The app cache failed to complete the operation.",
+  timeout: "The app cache did not respond in time.",
+} satisfies Record<CacheError["reason"], string>;
 
 /** Account field values of at least this length are replaced wherever a message contains them. */
 const minimumSecretLength = 6;
@@ -87,9 +97,17 @@ export const describeFailure = (error: unknown) =>
 
 /**
  * Describe what an operation raised for the app's own caller. App data failures keep their
- * reason as a code; any other thrown value is the app's own error. Account secrets are replaced.
+ * reason as a code, as do app cache failures; any other thrown value is the app's own error.
+ * Account secrets are replaced.
  */
 export const failureDetail = (error: unknown, secrets: readonly string[]): FailureDetail => {
+  if (Schema.is(CacheError)(error))
+    return {
+      source: "storage",
+      errorName: "CacheError",
+      code: error.reason,
+      message: cacheMessages[error.reason],
+    };
   if (Schema.is(AppDatabaseError)(error))
     return {
       source: "storage",
