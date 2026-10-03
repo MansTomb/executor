@@ -1,6 +1,7 @@
 import { folderSkillsEffect } from "./skill-files.ts";
 import { AppSkills, SkillFile, SkillLoadFailed } from "../contracts/skills.ts";
 import { parseProviderError } from "./provider-error.ts";
+import { operationFailureReason } from "./operation-failure.ts";
 import { McpError } from "../contracts/mcp.ts";
 import { OpenapiResponseError } from "../contracts/api-response-error.ts";
 import { toPromise } from "./authoring.ts";
@@ -705,7 +706,13 @@ function dispatch(
                       })
                     : Option.isSome(failure)
                       ? failure.value
-                      : new HostOperationFailed(),
+                      : new HostOperationFailed({
+                          reason: operationFailureReason(
+                            error,
+                            Redacted.value(context.accounts),
+                            input,
+                          ),
+                        }),
               );
             }),
             Effect.withSpan("app.operation.execute", {

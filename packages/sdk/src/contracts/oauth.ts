@@ -598,14 +598,18 @@ export type OAuthCompletionFailed = typeof OAuthCompletionFailed.Type;
 export const OAuthReconnectRequired = UserFacingError.define({
   tag: "OAuthReconnectRequired",
   status: 409,
-  fields: { account: AccountId, cause: Schema.optional(OAuthFailureCause) },
-  presentation: ({ cause }) =>
+  fields: {
+    account: AccountId,
+    label: Schema.optional(Schema.String),
+    cause: Schema.optional(OAuthFailureCause),
+  },
+  presentation: ({ account, label, cause }) =>
     withCause(
       {
         title: "An account needs to reconnect",
-        description: "The saved sign-in can no longer be used for this account.",
+        description: `The saved sign-in for account ${label === undefined ? account : `"${label}" (${account})`} can no longer be used.`,
         recovery: {
-          action: "Open Accounts and reconnect the affected account, then return to Tools.",
+          action: `Open Accounts and reconnect ${label === undefined ? account : `"${label}"`}. For an agent, discover Executor's accounts_reconnect tool with tools.search({namespace: 'executor', query: 'accounts_reconnect'}) and request a browser link for account ${account}.`,
           instructions:
             "Identify the selected account whose OAuth grant needs renewal. Guide the user through the supported reconnect flow for that same account. Preserve its identity and profile bindings, then verify tool discovery. Do not replace the account or switch authentication methods as a workaround.",
         },

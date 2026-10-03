@@ -6,12 +6,10 @@ import { CodeMode } from "@opencode-ai/codemode";
 
 const encodeResponse = Schema.encodeSync(Schema.fromJsonString(ApiErrorResponse));
 
-/** A product error's curated presentation. Arbitrary Error.message, causes and authored recovery never pass. */
 const presentation = (error: Error): Option.Option<typeof ApiErrorResponse.Type> => {
   const tool = Schema.decodeUnknownOption(ToolCallFailed)(error);
   if (Option.isSome(tool)) {
     if (tool.value.response !== undefined) return Option.some(tool.value.response);
-    // The SDK sets a fixed, safe reason for failures without a declared response.
     return Schema.decodeUnknownOption(ApiErrorResponse)({
       code: "ToolCallFailed",
       status: 502,
@@ -54,15 +52,33 @@ const identifier = (error: Error) => {
   return Schema.isSchema(schema) ? (SchemaAST.resolveIdentifier(schema.ast) ?? "Error") : "Error";
 };
 /** One line for agents: code, status, message and the declared recovery action. */
-const summary = ({ code, status, message, recovery }: typeof ApiErrorResponse.Type) =>
-  `${code} (HTTP ${status}): ${message}${recovery === undefined ? "" : ` Recovery: ${recovery.action}`}`;
+const summary = ({ code, status, message, recovery, operation }: typeof ApiErrorResponse.Type) =>
+  `${operation === undefined ? "" : `${operation}: `}${code} (HTTP ${status}): ${message}${recovery === undefined ? "" : ` Recovery: ${recovery.action}`}`;
+
+const withOperation = (response: typeof ApiErrorResponse.Type, operation?: string) => ({
+  ...response,
+  ...(operation === undefined
+    ? {}
+    : {
+        operation: operation.slice(0, 1024),
+        recovery: response.recovery ?? {
+          action: "Check current state with a safe read before repeating the operation.",
+          instructions:
+            "The operation failed. External effects may already have occurred; retry safety is not implied.",
+        },
+      }),
+});
 
 /**
  * Preserve bounded, curated framework recovery as JSON, which a program can read from a caught
  * tool error; unknown errors expose only their schema identifier.
  */
-export const diagnostic = (error: Error): string =>
-  Option.match(presentation(error), { onSome: encodeResponse, onNone: () => identifier(error) });
+export const diagnostic = (error: Error, operation?: string): string =>
+  Option.match(presentation(error), {
+    onSome: (response) => encodeResponse(withOperation(response, operation)),
+    onNone: () =>
+      `${operation === undefined ? "" : `${operation}: `}${identifier(error)}. Recovery: Check the app's status before repeating this operation; external effects may already have occurred.`,
+  });
 
 /** The same presentation as a single readable line, for failures agents read but never parse. */
 export const diagnosticSummary = (error: Error): string =>
@@ -72,7 +88,10 @@ export const diagnosticSummary = (error: Error): string =>
  * Decode our safe JSON projection back into structured MCP details for uncaught failures.
  * A declared recovery action is appended to the summary line; full recovery stays in `response`.
  */
-export const executionDiagnostic = <A extends CodeMode.Result>(execution: A) => {
+export const executionDiagnostic = <A extends CodeMode.Result>(
+  execution: A,
+  operation?: string,
+) => {
   if (
     execution.ok ||
     (execution.error.kind !== "ToolFailure" && execution.error.kind !== "ExecutionFailure")
@@ -82,8 +101,9 @@ export const executionDiagnostic = <A extends CodeMode.Result>(execution: A) => 
     execution.error.message,
   );
   if (Option.isNone(response)) return execution;
+  const presented = withOperation(response.value, operation);
   return {
     ...execution,
-    error: { ...execution.error, message: summary(response.value), response: response.value },
+    error: { ...execution.error, message: summary(presented), response: presented },
   };
 };

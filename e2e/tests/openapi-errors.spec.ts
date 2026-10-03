@@ -33,6 +33,7 @@ const Failure = Schema.Struct({
           code: Schema.String,
           status: Schema.Number,
           message: Schema.String,
+          operation: Schema.optional(Schema.String),
           recovery: Schema.optional(Recovery),
         }),
       ),
@@ -136,7 +137,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         expect(error.response?.message).toBe(openapiMemoryMessage);
         expect(error.response?.recovery).toEqual(openapiMemoryRecovery);
         expect(error.message).toBe(
-          `BuildMemoryExceeded (HTTP 422): ${openapiMemoryMessage} Recovery: ${openapiMemoryRecovery.action}`,
+          `${app.slug}.queries.fail: BuildMemoryExceeded (HTTP 422): ${openapiMemoryMessage} Recovery: ${openapiMemoryRecovery.action}`,
         );
         expect(JSON.stringify(known)).not.toContain(openapiSecretMarker);
         const dynamic = yield* invoke("dynamic");
@@ -170,13 +171,15 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         // A malformed optional recovery keeps the declared error and is not forwarded.
         const extrasError = (yield* Schema.decodeUnknownEffect(Failure)(extras.structuredContent))
           .execution.error;
-        expect(extrasError.response).not.toHaveProperty("recovery");
+        expect(extrasError.response?.recovery?.action).toBe(
+          "Check current state with a safe read before repeating the operation.",
+        );
         const conflict = yield* invoke("conflict-recovery");
         expect(conflict.structuredContent).toMatchObject({
           execution: {
             ok: false,
             error: {
-              message: `Conflict (HTTP 422): Read the current revision before saving again. Recovery: ${openapiConflictRecovery.action}`,
+              message: `${app.slug}.queries.fail: Conflict (HTTP 422): Read the current revision before saving again. Recovery: ${openapiConflictRecovery.action}`,
               response: {
                 code: "Conflict",
                 status: 422,
@@ -192,11 +195,19 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         const deniedError = (yield* Schema.decodeUnknownEffect(Failure)(
           denied403.structuredContent,
         )).execution.error;
-        expect(deniedError.message).toBe(`ExportDenied (HTTP 403): ${openapiDeniedMessage}`);
+        expect(deniedError.message).toBe(
+          `${app.slug}.queries.fail: ExportDenied (HTTP 403): ${openapiDeniedMessage} Recovery: Check current state with a safe read before repeating the operation.`,
+        );
         expect(deniedError.response).toEqual({
           code: "ExportDenied",
           status: 403,
           message: openapiDeniedMessage,
+          operation: `${app.slug}.queries.fail`,
+          recovery: {
+            action: "Check current state with a safe read before repeating the operation.",
+            instructions:
+              "The operation failed. External effects may already have occurred; retry safety is not implied.",
+          },
         });
         expect(JSON.stringify(denied403)).not.toContain("We could not identify the cause");
         // Rate-limit headers remain authoritative even when the body matches a declared error.
@@ -225,7 +236,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           invalidInput.structuredContent,
         )).execution.error;
         expect(inputError.message).toBe(
-          "InputInvalid (HTTP 422): Input failed validation: input.query.mode: Expected string Recovery: Fix the listed input fields and call the tool again.",
+          `${app.slug}.queries.fail: InputInvalid (HTTP 422): Input failed validation: input.query.mode: Expected string Recovery: Fix the listed input fields and call the tool again.`,
         );
         expect(inputError.response).toMatchObject({ code: "InputInvalid", status: 422 });
         expect(JSON.stringify(invalidInput)).not.toContain(openapiSecretMarker);
@@ -327,6 +338,13 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           "forbidden",
           "limited",
         ]) {
+          const statuses: Record<string, number> = {
+            unsupported: 418,
+            "unsupported-response": 421,
+            "ref-sibling": 425,
+            constrained: 424,
+            "wrong-status": 409,
+          };
           const result = yield* invoke(mode);
           const failure = (yield* Schema.decodeUnknownEffect(Failure)(result.structuredContent))
             .execution.error;
@@ -375,10 +393,9 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
                     : "rejected",
             });
           } else {
-            // Undeclared failures keep only the SDK's fixed reason and retry guidance.
             expect(failure.response).toMatchObject({ code: "ToolCallFailed", status: 502 });
             expect(failure.message).toBe(
-              "ToolCallFailed (HTTP 502): Operation execution failed Recovery: Check whether the tool already made changes before retrying.",
+              `${app.slug}.queries.fail: ToolCallFailed (HTTP 502): The connected service request failed: request (HTTP ${statuses[mode] ?? 422}) Recovery: Check whether the tool already made changes before retrying.`,
             );
           }
         }

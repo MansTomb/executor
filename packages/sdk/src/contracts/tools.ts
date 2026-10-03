@@ -303,8 +303,7 @@ export const AppProviderFailed = UserFacingError.define({
           title: "Authentication failed",
           description: `${service} rejected the credentials${target}${http}.`,
           recovery: {
-            action:
-              "Check the account’s credentials. Update its API key or reconnect its sign-in, then try again.",
+            action: `Check the account’s credentials${target}. Open Accounts and update its API key or reconnect its sign-in. For an agent, discover Executor's accounts_reconnect tool with tools.search({namespace: 'executor', query: 'accounts_reconnect'})${account === undefined ? " and identify the affected account" : ` and request a browser link for account ${account.id}`}. Check current state before repeating the failed operation.`,
             instructions: `The provider rejected authentication. This does not establish whether credentials are expired, revoked, missing, or sent incorrectly. ${instructions}`,
           },
           retryable: false,

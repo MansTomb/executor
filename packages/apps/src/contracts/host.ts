@@ -271,10 +271,9 @@ export class HostOperationNotFound extends Schema.TaggedError<HostOperationNotFo
   "HostOperationNotFound",
   {},
 ) {}
-/** An app operation failed. Raw author failures remain private. */
 export class HostOperationFailed extends Schema.TaggedError<HostOperationFailed>()(
   "HostOperationFailed",
-  {},
+  { reason: Schema.optional(Schema.String.check(Schema.isMaxLength(4096))) },
 ) {}
 /** The freshly evaluated catalog did not contain the requested tool. */
 export class HostToolNotFound extends Schema.TaggedError<HostToolNotFound>()(

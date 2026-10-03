@@ -268,7 +268,9 @@ function catalog(backend: McpBackend<Error>, selected: ReadonlySet<string> | und
                                 }),
                               ),
                         ),
-                        Effect.mapError((error) => toolError(diagnostic(error))),
+                        Effect.mapError((error) =>
+                          toolError(diagnostic(error, `${app.slug}.${path}`)),
+                        ),
                       ),
                   ),
                 ),
@@ -409,7 +411,7 @@ const unavailableTarget = (error: CodeMode.Diagnostic, namespaces: Namespaces) =
   for (let length = segments.length; length > 0; length--) {
     const found = namespaces.get(segments.slice(0, length).join("."));
     if (found === "available") return undefined;
-    if (found !== undefined) return found;
+    if (found !== undefined) return { ...found, operation: path };
   }
   return undefined;
 };
@@ -432,10 +434,14 @@ export const reportedCalls = (progress: ExecutionProgress): Array<McpToolCall> =
   );
 
 /** The phase a timed-out execution was in, so callers can tell slow discovery from a slow program. */
-export const timeoutMessage = (timeoutMs: number, phase: "discovery" | "program") =>
+export const timeoutMessage = (
+  timeoutMs: number,
+  phase: "discovery" | "program",
+  calls: ReadonlyArray<McpToolCall> = [],
+) =>
   phase === "discovery"
-    ? `Execution timed out after ${timeoutMs}ms while loading app tools; no program code ran.`
-    : `Execution timed out after ${timeoutMs}ms; earlier tool calls may have completed.`;
+    ? `Execution timed out after ${timeoutMs}ms while loading app tools. No program code ran and no action was attempted. Recovery: Use tools.search with the requested app's namespace, then try again.`
+    : `Execution timed out after ${timeoutMs}ms. ${calls.length === 0 ? "No tool call was recorded." : calls.map((call) => `${call.name}: ${call.outcome === "success" ? "completed" : call.outcome === "failure" ? "failed; external effects may have occurred" : call.outcome === "awaiting-approval" ? "not started; awaiting approval" : "outcome unknown"}`).join("; ") + "."} Recovery: Check current state with a safe read before repeating any mutation. A timeout does not establish that a mutation failed or that retrying is safe.`;
 
 /**
  * After the budget is spent, CodeMode interrupts the program and returns its calls and logs.
@@ -596,28 +602,31 @@ export function executeProgram(
         : unavailableTarget(result.error, prepared.namespaces);
       if (unavailable !== undefined)
         yield* Effect.annotateCurrentSpan("executor.unavailable_app.called", true);
-      const execution = executionDiagnostic({
-        ...result,
-        ...(unavailable === undefined
-          ? {}
-          : {
-              error: {
-                kind: "ToolFailure" as const,
-                message: unavailable.reason.startsWith("{")
-                  ? unavailable.reason
-                  : `${unavailable.name} could not be loaded in this execution (${unavailable.reason}); its tools cannot be called until it loads.`,
-              },
-            }),
-        ...(timedOut
-          ? {
-              error: {
-                kind: "TimeoutExceeded" as const,
-                message: timeoutMessage(limits.timeoutMs, "program"),
-              },
-            }
-          : {}),
-        toolCalls: reportedCalls(progress),
-      });
+      const execution = executionDiagnostic(
+        {
+          ...result,
+          ...(unavailable === undefined
+            ? {}
+            : {
+                error: {
+                  kind: "ToolFailure" as const,
+                  message: unavailable.reason.startsWith("{")
+                    ? unavailable.reason
+                    : `${unavailable.name} could not be loaded in this execution (${unavailable.reason}); its tools cannot be called until it loads.`,
+                },
+              }),
+          ...(timedOut
+            ? {
+                error: {
+                  kind: "TimeoutExceeded" as const,
+                  message: timeoutMessage(limits.timeoutMs, "program", reportedCalls(progress)),
+                },
+              }
+            : {}),
+          toolCalls: reportedCalls(progress),
+        },
+        unavailable?.operation,
+      );
       if (timedOut) yield* Effect.annotateCurrentSpan("executor.timeout.phase", "program");
       yield* Effect.annotateCurrentSpan("executor.outcome", execution.ok ? "completed" : "failed");
       return { execution, unavailableApps: prepared.unavailableApps };

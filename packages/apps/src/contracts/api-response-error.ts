@@ -13,6 +13,7 @@ export const ApiErrorResponse = Schema.Struct({
   code: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
   status: Schema.Int.check(Schema.isBetween({ minimum: 400, maximum: 599 })),
   message: Schema.NonEmptyString.check(Schema.isMaxLength(4096)),
+  operation: Schema.optionalKey(Schema.NonEmptyString.check(Schema.isMaxLength(1024))),
   recovery: Schema.optionalKey(ApiErrorRecovery),
 });
 /** Safe projection of a response matching a declared API error schema. */

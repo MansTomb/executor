@@ -50,3 +50,20 @@ The maintained branch is `selfhost`. Local patches:
 
 Keep these patches separate when merging upstream changes. Remove a patch when
 upstream provides the same behavior and its regression checks pass.
+
+## Error boundary
+
+The error-boundary patch preserves bounded, redacted thrown cause text through the
+app host and SDK. MCP failures include the attempted callable operation and a
+next step, including caught errors. Timeouts name each call's confirmed completion,
+failure or unknown outcome and require a safe read before repeating mutations.
+Expired accounts retain their trusted label and ID and name `accounts_reconnect`.
+The initial execute search example uses the `executor` namespace.
+
+The thrown-error handler is bundled into each app build. Existing builds need
+recompilation from their unchanged source to receive that handler; upgrading the
+server alone updates timeout, authentication and operation attribution. No schema
+migration or source change is required. The error-boundary E2Es exercise thrown
+causes, a timeout after an external mutation and refused account renewal. Existing
+OpenAPI, provider, discovery, worker-lifetime and timeout scenarios cover the
+shared contracts.

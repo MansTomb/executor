@@ -278,8 +278,11 @@ const runtimeFailure = (
       ElicitationFailed: ({ reason }) => new ToolElicitationFailed({ ...identity, reason }),
       HostToolNotFound: () => new ToolNotFound(identity),
       HostOperationNotFound: () => new ToolNotFound(identity),
-      HostOperationFailed: () =>
-        new ToolCallFailed({ ...identity, reason: "Operation execution failed" }),
+      HostOperationFailed: ({ reason }) =>
+        new ToolCallFailed({
+          ...identity,
+          reason: reason ?? "The app operation failed without an explanation.",
+        }),
       HostInputInvalid: ({ problems }) =>
         new InputInvalid({
           ...identity,

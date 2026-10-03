@@ -49,7 +49,7 @@ export default defineApp({ accounts: { service: provider.many() } }, async ({ ac
     const response = await fetch(${JSON.stringify(upstream.origin)} + "/custom/" + phase, { signal, headers: { Authorization: "Bearer " + account.fields.token } });
     if (response.ok) return { ok: true };
     const detail = await response.json();
-    if (response.status === 400) throw new Error(detail.message);
+    if (response.status === 400) throw new Error("Provider request failed", { cause: new Error("token=" + detail.message) });
     throw Object.assign(new ProviderError({ reason: "unauthorized", status: response.status, accountId: response.status === 402 ? "acc_unselected" : account.id }), { message: detail.message, title: "Forged title", account: { label: "Forged account" } });
   }
   await read("discover");

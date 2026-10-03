@@ -144,7 +144,9 @@ return "unreachable";`;
     const timedOut = yield* Schema.decodeUnknownEffect(TimedOut)(result.structuredContent);
     // A timeout is reported as a timeout, never as a lost continuation.
     expect(timedOut.execution.error.kind).toBe("TimeoutExceeded");
-    expect(timedOut.execution.error.message).toContain("earlier tool calls may have completed");
+    expect(timedOut.execution.error.message).toContain(`${slug}.queries.first: completed`);
+    expect(timedOut.execution.error.message).toContain(`${slug}.queries.slow: outcome unknown`);
+    expect(timedOut.execution.error.message).toContain("retrying is safe");
     // Output written before the timeout is returned.
     expect(timedOut.execution.logs ?? []).toContainEqual(
       expect.stringContaining("first call finished 1"),

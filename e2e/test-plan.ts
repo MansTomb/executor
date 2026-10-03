@@ -33,6 +33,36 @@ const cloudOnboarding = {
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = {
+  thrownAppError: {
+    fixtures: "actors",
+    file: "error-boundary.spec.ts",
+    title: "Thrown app errors preserve cause, operation and recovery through MCP",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host shared runtime boundary"),
+      local: na("Shared boundary covered on self-host"),
+    },
+  },
+  mutationTimeoutBoundary: {
+    fixtures: "actors",
+    file: "error-boundary.spec.ts",
+    title: "Timed-out mutations report unknown outcomes after an external write",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback controlled mutation"),
+      local: na("Shared boundary covered on self-host"),
+    },
+  },
+  expiredAccountBoundary: {
+    fixtures: "actors",
+    file: "error-boundary.spec.ts",
+    title: "Expired accounts name the account, attempted operation and reconnect tool",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback OAuth issuer"),
+      local: na("Shared boundary covered on self-host"),
+    },
+  },
   appWorkerLifetime: {
     fixtures: "actors",
     file: "app-worker-lifetime.spec.ts",

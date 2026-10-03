@@ -144,7 +144,7 @@ export const makeExecutions = (
         return failure(
           run,
           "TimeoutExceeded",
-          timeoutMessage(limits.timeoutMs, run.progress.phase),
+          timeoutMessage(limits.timeoutMs, run.progress.phase, reportedCalls(run.progress)),
         );
       });
     const wake = (run: Run) => Queue.offer(run.events, { kind: "wake" });

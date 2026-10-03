@@ -840,6 +840,7 @@ export const makeOAuth = (
             Effect.fail(
               new OAuthReconnectRequired({
                 account: account.id,
+                label: account.label,
                 ...(cause === undefined ? {} : { cause }),
               }),
             ),
@@ -1001,7 +1002,7 @@ export const makeOAuth = (
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
       if (provider.auth[account.method]?.type === "secrets") return;
-      const reconnect = new OAuthReconnectRequired({ account: account.id });
+      const reconnect = new OAuthReconnectRequired({ account: account.id, label: account.label });
       const row = yield* query(() =>
         db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
       );
