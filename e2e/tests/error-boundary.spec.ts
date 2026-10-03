@@ -61,22 +61,49 @@ layer(HostedLive, { excludeTestServices: true })("Error boundary", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const evidence = yield* Evidence;
-        const { app, execute } = yield* setup(`import {defineApp,query,object,string} from "apps";
-export default defineApp({accounts:{}},async()=>({queries:{read:query({input:object({privateValue:string()})},async(_,input)=>{
-throw new Error("Could not read the report",{cause:new Error("Report was deleted; token=synthetic-secret; private="+input.privateValue)});
+        const evidence = yield* Evidence,
+          api = yield* Api,
+          actors = yield* Actors;
+        const { app, prefix, execute } =
+          yield* setup(`import {defineApp,defineProvider,secrets,query,object,string} from "apps";
+const service=defineProvider({name:"Reports",auth:{key:secrets({label:"Password",fields:object({password:string()})})}});
+export default defineApp({accounts:{service}},async()=>({queries:{read:query({input:object({privateValue:string()})},async({accounts},input)=>{
+throw new Error("Could not read the report",{cause:new Error("Report was deleted; token=synthetic-secret; private="+input.privateValue+"; "+JSON.stringify({password:accounts.service.fields.password,detail:accounts.service.fields.password,secret:"unselected secret"}))});
 })}}));`);
-        const operation = `${app.slug}.queries.read`;
+        const path = `${prefix}/apps/${app.id}`;
+        const profile = yield* createProfile(actors.owner, path);
+        const connection = yield* body(
+          Resource,
+          yield* api.request(actors.owner, "POST", `${path}/connections`, {
+            requirement: "service",
+            profile: profile.id,
+          }),
+        );
+        const account = yield* body(
+          Resource,
+          yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/connections/${connection.id}/submit`,
+            { method: "key", label: "Reports", fields: { password: 'synthetic"secret\\value' } },
+          ),
+        );
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
+            .pipe(Effect.orDie),
+        );
+        const operation = `${app.slug}.profiles.${profile.id}.queries.read`;
         const result = yield* execute(
-          `return await tools[${JSON.stringify(app.slug)}].queries.read({privateValue:"synthetic-private-input"});`,
+          `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].queries.read({privateValue:"synthetic-private-input"});`,
         );
         const failure = yield* body(Failure, { status: 200, body: result.structuredContent });
         expect(failure.execution.error.message).toBe(
-          `${operation}: ToolCallFailed (HTTP 502): Could not read the report Caused by: Report was deleted; token=[redacted]; private=[redacted] Recovery: Check whether the tool already made changes before retrying.`,
+          `${operation}: ToolCallFailed (HTTP 502): Could not read the report Caused by: Report was deleted; token=[redacted]; private=[redacted]; {"password":"[redacted]","detail":"[redacted]","secret":"[redacted]"} Recovery: Check whether the tool already made changes before retrying.`,
         );
         yield* evidence.json("thrown-app-error.json", result.structuredContent);
         const caught = yield* execute(
-          `try { await tools[${JSON.stringify(app.slug)}].queries.read({privateValue:"synthetic-private-input"}); } catch (error) { return JSON.parse(error.message); }`,
+          `try { await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].queries.read({privateValue:"synthetic-private-input"}); } catch (error) { return JSON.parse(error.message); }`,
         );
         expect(caught.structuredContent).toMatchObject({
           execution: {
@@ -84,7 +111,7 @@ throw new Error("Could not read the report",{cause:new Error("Report was deleted
             value: {
               operation,
               message:
-                "Could not read the report Caused by: Report was deleted; token=[redacted]; private=[redacted]",
+                'Could not read the report Caused by: Report was deleted; token=[redacted]; private=[redacted]; {"password":"[redacted]","detail":"[redacted]","secret":"[redacted]"}',
               recovery: { action: "Check whether the tool already made changes before retrying." },
             },
           },

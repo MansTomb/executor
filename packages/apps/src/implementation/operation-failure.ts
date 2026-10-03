@@ -25,13 +25,19 @@ export function operationFailureReason(error: unknown, accounts: ResolvedAccount
       ),
     ),
     ...values(input),
-  ].sort((a, b) => b.length - a.length);
+  ]
+    .flatMap((value) => [value, JSON.stringify(value).slice(1, -1)])
+    .sort((a, b) => b.length - a.length);
   const redact = (text: string) => {
     let result = text;
     for (const value of privateValues) {
       result = result.replaceAll(value, "[redacted]");
     }
     return result
+      .replace(
+        /"(token|password|secret|api[-_]?key|authorization|cookie)"\s*:\s*"(?:\\.|[^"\\])*"/gi,
+        '"$1":"[redacted]"',
+      )
       .replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi, "$1 [redacted]")
       .replace(
         /\b(token|password|secret|api[-_]?key|authorization|cookie)\s*[=:]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi,
