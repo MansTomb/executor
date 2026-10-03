@@ -88,7 +88,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP app discovery", (it) => {
             );
             return app;
           });
-        const fast = yield* deploy("Fastdiscovery", source(1));
+        const fast = yield* deploy("Toolsfastdiscovery", source(1));
         const slow = yield* deploy("Slowdiscovery", source(99, fixture.origin));
         const key = yield* body(
           Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),

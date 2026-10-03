@@ -43,11 +43,11 @@ function searchedApp(call: CallExpression): string | undefined {
     duplicates.length > 0 ||
     namespace.kind !== "init" ||
     namespace.value.type !== "Literal" ||
-    typeof namespace.value.value !== "string" ||
-    namespace.value.value.startsWith("tools")
+    typeof namespace.value.value !== "string"
   )
     return undefined;
-  return namespace.value.value.split(".")[0];
+  const [app] = namespace.value.value.split(/[.[]/);
+  return app === "tools" ? undefined : app;
 }
 
 function scopedSearches(node: unknown, scopes: Map<number, string>): void {
