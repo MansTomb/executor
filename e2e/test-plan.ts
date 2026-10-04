@@ -2989,6 +2989,17 @@ export const scenarios = {
       cloud: na("Cloud runs the same step from its Worker's cron; see the hosted scenario."),
     },
   },
+  durableEvaluatedRefresh: {
+    fixtures: "actors",
+    file: "durable-evaluated-results.spec.ts",
+    title:
+      "Cloud writes the background refresh of a stale tool listing back to the app's supervisor",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host keeps evaluated results in its single server process."),
+      local: na("Local keeps evaluated results in its single server process."),
+    },
+  },
   cloudBuildReuse: {
     fixtures: "actors",
     file: "cloud-build-reuse.spec.ts",
@@ -3891,6 +3902,18 @@ export const scenarios = {
     fixtures: "actors",
     file: "dynamic-skills.spec.ts",
     title: "dynamic skills refresh remote publications without redeployment",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na(
+        "Shared runtime and HTTP behavior are covered on hosted targets; local MCP has its own skill scenario.",
+      ),
+    },
+  },
+  cachedSkillsRefresh: {
+    fixtures: "actors",
+    file: "cached-skills.spec.ts",
+    title: "a stale remote skill catalog is refreshed in the background with the author's fetch",
     targets: {
       "self-host": scheduled,
       cloud: managedCloud,
