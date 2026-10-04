@@ -79,6 +79,9 @@ Streamable HTTP and legacy SSE are supported. Every discovery/call owns and
 closes its connection. Session-local workflows do not survive separate tool
 calls. Results retain MCP `content`, `structuredContent`, `isError`, and `_meta`;
 remote tool failures are results, while transport failures reject the call.
+A tool's output type describes that whole result, with the server's output schema
+under `structuredContent`, and every result is checked against it. Read typed
+fields from `result.structuredContent` after checking `result.isError`.
 Calls are never automatically retried. Upstream form elicitation automatically
 uses the running tool context; preserve that context when wrapping generated tools.
 Request and response metadata, including approval persistence choices, pass through.
