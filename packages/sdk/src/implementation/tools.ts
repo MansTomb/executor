@@ -608,7 +608,7 @@ export const makeTools = (
         "executor.deployment.id": state.deployment.id,
         "executor.build.id": state.deployment.build,
       });
-      return yield* readCatalog(state, context, read);
+      return { deployment: state.deployment.id, value: yield* readCatalog(state, context, read) };
     });
   /** The invocation state a listing is read for, annotated on the caller's span. */
   const listed = (input: Parameters<typeof snapshot>[1]) =>
@@ -707,15 +707,22 @@ export const makeTools = (
      */
     scheduled: (input: Parameters<Executor["tools"]["list"]>[0]) =>
       Effect.gen(function* () {
-        const { tools } = yield* evaluate(input, (options, _toolIndex, scheduled) =>
+        const {
+          deployment,
+          value: { tools },
+        } = yield* evaluate(input, (options, _toolIndex, scheduled) =>
           runtime.inspect(scheduled ? { ...options, scheduled: true } : options),
         );
-        return tools.flatMap((tool) =>
-          (tool.schedules ?? []).map((schedule) => ({
-            ...schedule,
-            tool: ToolName.make(tool.name),
-          })),
-        );
+        // Callers that act on the result can require that this deployment is still active.
+        return {
+          deployment,
+          items: tools.flatMap((tool) =>
+            (tool.schedules ?? []).map((schedule) => ({
+              ...schedule,
+              tool: ToolName.make(tool.name),
+            })),
+          ),
+        };
       }).pipe(Effect.withSpan("sdk.tools.scheduled")),
     /**
      * The catalog without schemas, read from the same kept listing as `list`, so browsing an app

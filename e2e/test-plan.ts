@@ -308,6 +308,16 @@ export const scenarios = {
       local: na("Hosted profile API fixture; Node adapter exercised by self-host"),
     },
   },
+  appCacheEvaluation: {
+    fixtures: "actors",
+    file: "app-cache-evaluation.spec.ts",
+    title: "App cache failures during evaluation keep their safe reason in responses and traces",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses the shared runtime contract; self-host delivers its traces to Motel."),
+      local: na("Hosted API fixture; the runtime and collector are shared with Local."),
+    },
+  },
   appCache: {
     fixtures: "actors",
     file: "app-cache.spec.ts",
@@ -3926,6 +3936,16 @@ export const scenarios = {
       },
     },
   },
+  scheduleSourceRemoval: {
+    fixtures: "actors",
+    file: "hosted-schedule-browser.spec.ts",
+    title: "schedules removed from app source are deleted when a deployment activates",
+    targets: {
+      cloud: scheduled,
+      "self-host": scheduled,
+      local: na("Local covers removal with run history and approvals in scheduledRuns."),
+    },
+  },
   hostedScheduleBrowser: {
     fixtures: "actors",
     file: "hosted-schedule-browser.spec.ts",
@@ -3990,7 +4010,8 @@ export const scenarios = {
   },
   scheduledRuns: {
     file: "local-schedule-runs.spec.ts",
-    title: "scheduled runs honor approval policy, browser review and overlap exclusion",
+    title:
+      "scheduled runs honor approval policy, browser review, overlap exclusion and removal from source",
     targets: {
       local: scheduled,
       "self-host": na(
