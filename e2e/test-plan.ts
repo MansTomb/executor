@@ -1301,6 +1301,16 @@ export const scenarios = {
       local: na("The shared OpenAPI and MCP error path is covered on self-host."),
     },
   },
+  accountHealth: {
+    fixtures: "actors",
+    file: "account-health.spec.ts",
+    title: "Apps check a shared account their own way and report its identity",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a controlled loopback service through the shared runtime contract."),
+      local: na("The shared SDK and account view are exercised through hosted APIs."),
+    },
+  },
   providerErrorsGraphql: {
     fixtures: "actors",
     file: "provider-errors.spec.ts",
