@@ -777,6 +777,18 @@ export const scenarios = {
       local: na("The shared skill reader is exercised through hosted organization routes."),
     },
   },
+  skillEditor: {
+    fixtures: "actors",
+    file: "skill-editor.spec.ts",
+    title: "Skill editor saves minimal edits, deploys them and keeps drafts on conflict",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "The shared editor and commit route are exercised through hosted organization routes.",
+      ),
+    },
+  },
   appFilters: {
     fixtures: "actors",
     file: "app-filters.spec.ts",
