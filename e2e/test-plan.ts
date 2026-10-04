@@ -23,6 +23,8 @@ export const TestPlan = Schema.Struct({
   title: Schema.String,
   fixtures: Schema.optional(Schema.Literals(["actors", "cli"])),
   appOrigin: Schema.optional(Schema.Literal(true)),
+  /** Opt in to writing legacy/upgrade-era rows into the stopped product's own database. */
+  legacyStorage: Schema.optional(Schema.Literal(true)),
   managementProfiles: Schema.optional(Schema.Array(Schema.Literals(["owner", "admin", "member"]))),
   /** Labels of extra Testing SDK scenarios created during setup; each has its own closeable scope. */
   sdkScenarios: Schema.optional(Schema.Array(Schema.NonEmptyString)),
@@ -4041,6 +4043,20 @@ export const scenarios = {
         "Restart scenario owns a local target; hosted authorization is tested separately.",
       ),
       cloud: na("A deployed cloud endpoint cannot be restarted by this local process controller."),
+    },
+  },
+  legacyOrphanSchedules: {
+    legacyStorage: true,
+    file: "legacy-orphan-schedules.spec.ts",
+    title: "legacy orphan schedules are paused without starving a live schedule",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Reaching the live schedule's due time needs the stopped-process clock, which only Local provides; both hosts run the same SDK scheduler.",
+      ),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
     },
   },
   hostedSchedules: {

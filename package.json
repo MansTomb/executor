@@ -112,6 +112,7 @@
     "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
     "@effect/tsgo": "0.46.1",
     "@effect/vitest": "https://pkg.pr.new/Effect-TS/effect/@effect/vitest@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@electric-sql/pglite": "0.5.8",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/utils": "workspace:*",
     "@kitlangton/terminal-control": "^1.2.1",

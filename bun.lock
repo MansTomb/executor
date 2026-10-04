@@ -10,6 +10,7 @@
         "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "@effect/tsgo": "0.46.1",
         "@effect/vitest": "https://pkg.pr.new/Effect-TS/effect/@effect/vitest@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+        "@electric-sql/pglite": "0.5.8",
         "@executor-js/sdk": "workspace:*",
         "@executor-js/utils": "workspace:*",
         "@kitlangton/terminal-control": "^1.2.1",
@@ -833,8 +834,8 @@
     "@better-auth/passkey@1.7.5": "patches/@better-auth%2Fpasskey@1.7.5.patch",
     "pg-cloudflare@1.4.0": "patches/pg-cloudflare@1.4.0.patch",
     "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
-    "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
     "@electric-sql/pglite@0.5.8": "patches/@electric-sql%2Fpglite@0.5.8.patch",
+    "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
     "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
     "alchemy@2.0.0-beta.79": "patches/alchemy@2.0.0-beta.79.patch",
@@ -5165,10 +5166,6 @@
     "@effect/platform-node-shared/ws": ["ws@8.21.3", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw=="],
 
     "@effect/sql-d1/@cloudflare/workers-types": ["@cloudflare/workers-types@5.20260918.1", "", {}, "sha512-bUGc9gIdooYPi6lAUoB/eBXmy/ev9ok0XvDLzfJZQVCT8WCEQwv9f6smz6XeE83JzpX6ZSVi9CG1aDORnErYRQ=="],
-
-    "@electric-sql/pglite-socket/@electric-sql/pglite": ["@electric-sql/pglite@0.3.15", "", {}, "sha512-Cj++n1Mekf9ETfdc16TlDi+cDDQF0W7EcbyRHYOAeZdsAe8M/FJg18itDTSwyHfar2WIezawM9o0EKaRGVKygQ=="],
-
-    "@electric-sql/pglite-tools/@electric-sql/pglite": ["@electric-sql/pglite@0.3.15", "", {}, "sha512-Cj++n1Mekf9ETfdc16TlDi+cDDQF0W7EcbyRHYOAeZdsAe8M/FJg18itDTSwyHfar2WIezawM9o0EKaRGVKygQ=="],
 
     "@electron/asar/commander": ["commander@5.1.0", "", {}, "sha512-P0CysNDQ7rtVw4QIQtm+MRxV66vKFSvlsQvGYXZWR3qFU0jlMKHZZZgw8e+8DSah4UDKMqnknRDQz+xuQXQ/Zg=="],
 
