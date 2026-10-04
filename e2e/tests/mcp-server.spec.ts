@@ -1,6 +1,6 @@
 /** Hosted MCP journeys use isolated grants and run against Node and Cloudflare. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
+import { Effect, Exit, Layer, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
@@ -156,6 +156,40 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
             expect(yield* oauth.refreshStatus(refreshed)).toBe(400);
           }),
         );
+      }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
+    ),
+  );
+
+  it.effect(scenarios.mcpOAuthWithoutResource.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors,
+          browser = yield* Browser,
+          evidence = yield* Evidence;
+        const oauth = yield* McpOAuth,
+          mcp = yield* McpClient;
+        yield* browser.login(actors.owner);
+        const grant = yield* evidence.step(
+          "Authorize a client that sends no resource parameter",
+          oauth.authorizeWithoutResource,
+        );
+        const token = Redacted.make(Redacted.value(grant.tokens).access_token);
+        const client = yield* mcp.connect(token, "without-resource");
+        const listed = yield* client.use("The plain MCP URL accepts the grant", (client) =>
+          client.listTools(),
+        );
+        expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
+          "execute",
+          "resume",
+          "skills",
+        ]);
+        // The default is the plain URL's model mode only, not every approval mode.
+        const other = yield* Effect.exit(
+          mcp.connect(token, "without-resource-browser-mode", { mode: "browser" }),
+        );
+        expect(Exit.isFailure(other)).toBe(true);
+        yield* oauth.revoke(grant);
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );

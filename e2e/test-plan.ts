@@ -3294,6 +3294,15 @@ export const scenarios = {
       cloud: na("Hosted connections are covered by the hosted scoped connection scenarios."),
     },
   },
+  localMcpOAuthWithoutResource: {
+    file: "local-mcp-connections.spec.ts",
+    title: "Local MCP OAuth without a resource parameter grants the plain /mcp URL",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted consent is covered by mcpOAuthWithoutResource."),
+      cloud: na("Hosted consent is covered by mcpOAuthWithoutResource."),
+    },
+  },
   patMcp: {
     fixtures: "actors",
     file: "pat-mcp.spec.ts",
@@ -4118,6 +4127,16 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: scheduled,
       local: na("This scenario tests hosted organization consent, which Local does not have."),
+    },
+  },
+  mcpOAuthWithoutResource: {
+    fixtures: "actors",
+    file: "mcp-server.spec.ts",
+    title: "MCP OAuth without a resource parameter grants the plain /mcp URL",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local's consent is covered by localMcpOAuthWithoutResource."),
     },
   },
   mcpSkills: {
