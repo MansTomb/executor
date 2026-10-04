@@ -3863,7 +3863,7 @@ export const scenarios = {
   skillFolder: {
     fixtures: "actors",
     file: "skill-folder.spec.ts",
-    title: "skill folders share one loader and respect explicit catalogs",
+    title: "skill folders share one loader, ignore loose files and respect explicit catalogs",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,

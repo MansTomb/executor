@@ -13,6 +13,7 @@ layer(HostedLive, { excludeTestServices: true })("Skill folders", (it) => {
         const { bundle, packaged, helper } = yield* skillFolderFixture;
         // This is the regression: the SDK used to append the folder despite the explicit empty catalog.
         expect((yield* bundle("{ skills: [] }")).skills).toEqual([]);
+        // The packaged skills/README.md is ignored rather than failing or appearing as a skill.
         const defaults = yield* bundle("{}");
         expect(defaults.skills.map((skill) => skill.name)).toEqual(["local-guide"]);
         expect(defaults.skills[0]?.files).toEqual([
