@@ -243,6 +243,9 @@ network in `100.64.0.0/10`, gives the container a fixed address there and maps
 uses that name, and `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH` is unset. After
 first-admin setup, an API key calls the built-in Executor app through `/mcp`. An
 authored app then checks that it cannot fetch the container's private address.
+The same case points `EXECUTOR_REGISTRY_URL` at a synthetic registry and checks
+that the public app catalog, running in workerd, refuses redirects and reports
+status, invalid-response, forwarded and network failures distinctly.
 The runner reaches the server through a port published on `127.0.0.1` in the
 range 4431-4439. It sends each request with the tailnet `Host` header through
 `node:http`, because Node's `fetch` replaces that header. This works with Docker

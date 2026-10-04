@@ -3821,6 +3821,17 @@ export const scenarios = {
       cloud: na("Cloud requires a verified recipient instead of password registration."),
     },
   },
+  remoteRegistryFailures: {
+    file: "registry-failures.spec.ts",
+    title: "Public app catalog refuses registry redirects and reports distinct registry failures",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud serves the registry from its own database instead of a remote origin."),
+      local: na(
+        "Local uses the same registry client; only self-host starts a scenario-owned server.",
+      ),
+    },
+  },
   selfHostOnboarding: {
     file: "self-host-onboarding.spec.ts",
     title: "Self-host administrator setup opens the agent handoff before Apps",

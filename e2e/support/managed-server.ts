@@ -355,7 +355,11 @@ export const startManagedServer = (
     return { controlOrigin: `http://127.0.0.1:${server.address.port}`, origin };
   });
 
-const startIsolatedSelfHost = (target: typeof Target.Service, entry: "product" | "development") =>
+const startIsolatedSelfHost = (
+  target: typeof Target.Service,
+  entry: "product" | "development",
+  environment: Readonly<Record<string, string>> = {},
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const port =
@@ -379,6 +383,7 @@ const startIsolatedSelfHost = (target: typeof Target.Service, entry: "product" |
     const server = yield* startManagedServer(
       { ...target, directory, metadata: { ...target.metadata, origin, target: "self-host" } },
       entry,
+      environment,
     );
     return server.origin;
   });
@@ -388,5 +393,7 @@ export const startDevelopmentServer = (target: typeof Target.Service) =>
   startIsolatedSelfHost(target, "development");
 
 /** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
-export const startFreshSelfHost = (target: typeof Target.Service) =>
-  startIsolatedSelfHost(target, "product");
+export const startFreshSelfHost = (
+  target: typeof Target.Service,
+  environment: Readonly<Record<string, string>> = {},
+) => startIsolatedSelfHost(target, "product", environment);
