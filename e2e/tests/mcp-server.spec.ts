@@ -224,40 +224,57 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           content: Schema.String,
           deployment: Schema.String,
         });
+        const instructions = yield* client.use("Read the server's MCP instructions", (client) =>
+          Promise.resolve(client.getInstructions()),
+        );
         // The default app installs asynchronously after signup. Observe its public
         // MCP catalog instead of depending on how long earlier test actions took.
-        const guide = yield* client
-          .use("Discover the default Executor app's authoring skill", (client, signal) =>
+        const executorSkills = yield* client
+          .use("Discover the default Executor app's skills", (client, signal) =>
             client.callTool({ name: "skills", arguments: {} }, undefined, { signal }),
           )
           .pipe(
             Effect.flatMap((result) =>
               Schema.decodeUnknownEffect(skillIndex)(result.structuredContent),
             ),
-            Effect.map((index) =>
-              index.skills.find(
-                (entry) => entry.app.slug === "executor" && entry.name === "app-authoring",
-              ),
-            ),
+            Effect.map((index) => index.skills.filter((entry) => entry.app.slug === "executor")),
             Effect.repeat({
               schedule: Schedule.spaced("250 millis"),
-              until: (guide) => guide !== undefined,
+              until: (skills) => skills.length > 0,
             }),
             Effect.timeout("15 seconds"),
           );
+        expect(executorSkills.map((entry) => entry.name).sort()).toEqual([
+          "app-authoring",
+          "code-mode",
+          "executor",
+        ]);
+        const guide = executorSkills.find((entry) => entry.name === "executor");
         if (guide === undefined)
-          return yield* Effect.die("The installed Executor app must contain its authoring skill");
-        const guideResponse = yield* client.use(
+          return yield* Effect.die("The installed Executor app must contain its entry skill");
+        const readExecutorSkill = (name: string, operation: string) =>
+          client
+            .use(operation, (client, signal) =>
+              client.callTool(
+                { name: "skills", arguments: { app: guide.app.slug, name } },
+                undefined,
+                { signal },
+              ),
+            )
+            .pipe(
+              Effect.flatMap((response) =>
+                Schema.decodeUnknownEffect(skillDocument)(response.structuredContent),
+              ),
+            );
+        const entry = yield* readExecutorSkill("executor", "Read the Executor app's entry skill");
+        // The instructions are the entry skill without its frontmatter, so the two cannot drift.
+        expect(entry.content).toMatch(/^---\nname: executor\n/);
+        expect(instructions).toBe(entry.content.replace(/^---\n[\s\S]*?\n---\n/, "").trim());
+        expect(instructions).toContain("`code-mode`");
+        expect(instructions).toContain("`app-authoring`");
+        const guideDocument = yield* readExecutorSkill(
+          "app-authoring",
           "Read authoring instructions before connecting the Executor OAuth account",
-          (client, signal) =>
-            client.callTool(
-              { name: "skills", arguments: { app: guide.app.slug, name: guide.name } },
-              undefined,
-              { signal },
-            ),
-        );
-        const guideDocument = yield* Schema.decodeUnknownEffect(skillDocument)(
-          guideResponse.structuredContent,
         );
         expect(guideDocument.content).toContain("# Build an Executor app");
         const executorSource = yield* body(

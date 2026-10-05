@@ -105,12 +105,22 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         expect(listed.code, listed.stderr).toBe(0);
         const catalogs = yield* Schema.decodeUnknownEffect(Catalogs)(listed.stdout);
         expect(
-          catalogs.catalogs.some(
-            (catalog) =>
-              catalog.app.slug === "executor" &&
-              catalog.skills.some((skill) => skill.name === "app-authoring"),
-          ),
-        ).toBe(true);
+          catalogs.catalogs
+            .find((catalog) => catalog.app.slug === "executor")
+            ?.skills.map((skill) => skill.name)
+            .toSorted(),
+        ).toEqual(["app-authoring", "code-mode", "executor"]);
+
+        // Agents read the entry skill first; it links to the authoring guide.
+        const entry = yield* run(
+          ["skills", "--host", origin, "--app", "executor", "--name", "executor"],
+          true,
+        );
+        expect(entry.code, entry.stderr).toBe(0);
+        const entryDocument = yield* Schema.decodeUnknownEffect(Document)(entry.stdout);
+        expect(entryDocument.content).toContain("# Executor");
+        expect(entryDocument.content).toContain("`app-authoring`");
+        expect(entryDocument.files).toContain("feedback.md");
 
         const guide = yield* run(
           ["skills", "--host", origin, "--app", "executor", "--name", "app-authoring"],

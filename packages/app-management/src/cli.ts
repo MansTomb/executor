@@ -614,7 +614,7 @@ export const appsCommand = (platform: string) =>
         ),
         name: Flag.String("name").pipe(
           Flag.withSchema(AppSkillName),
-          Flag.withDescription("Skill name to read, for example app-authoring. Requires --app"),
+          Flag.withDescription("Skill name to read, for example executor. Requires --app"),
           Flag.optional,
         ),
         file: Flag.String("file").pipe(
@@ -626,7 +626,7 @@ export const appsCommand = (platform: string) =>
         ),
       }).pipe(
         Command.withDescription(
-          "List or read app skills served by the host. Start with --app executor --name app-authoring before writing an app",
+          "List or read app skills served by the host. Start with --app executor --name executor, then read its app-authoring skill before writing an app",
         ),
         Command.withHandler(readSkills),
       ),
