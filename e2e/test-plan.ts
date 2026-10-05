@@ -3014,6 +3014,16 @@ export const scenarios = {
       local: na("Local keeps evaluated results in its single server process."),
     },
   },
+  appWorkerModules: {
+    fixtures: "actors",
+    file: "app-worker-modules.spec.ts",
+    title: "a cold app Worker receives only the modules its entry can import",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("The module counts are read from Cloud's delivered traces."),
+      local: na("The module counts are read from Cloud's delivered traces."),
+    },
+  },
   cloudBuildReuse: {
     fixtures: "actors",
     file: "cloud-build-reuse.spec.ts",
