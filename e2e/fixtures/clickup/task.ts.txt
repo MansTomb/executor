@@ -126,7 +126,7 @@ export const readTask = async (
 ): Promise<TaskResult> => {
   if (!supportsTask(raw)) return { kind: "mcp" };
   const input = Input.parse(raw);
-  const params = new URLSearchParams({ include_markdown_description: "true" });
+  const params = new URLSearchParams({ include_markdown_description: "true", include_subtasks: "true" });
   if (input.workspace_id !== undefined) {
     if (!/^\d+$/.test(input.workspace_id)) throw new Error("Invalid ClickUp workspace ID");
     params.set("team_id", input.workspace_id);

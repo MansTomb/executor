@@ -165,7 +165,13 @@ export const clickupUpstream = (issuer: string) =>
             return HttpServerResponse.empty({ status: 401 });
           calls.push({ transport: "rest", operation: "task", task: id });
           return failure === undefined
-            ? yield* HttpServerResponse.json(task(id))
+            ? yield* HttpServerResponse.json({
+                ...task(id),
+                ...(new URL(request.url, "http://fixture").searchParams.get("include_subtasks") ===
+                "true"
+                  ? { subtasks: [{ id: "child-task" }] }
+                  : {}),
+              })
             : HttpServerResponse.empty({
                 status: failure,
                 ...(failure === 302 ? { headers: { location: "/api/v2/user" } } : {}),

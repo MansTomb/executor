@@ -103,9 +103,7 @@ Summaries aggregate in SQL and use the same scope.
 Retention is a rolling 30 days. Each append or summary removes at most 1,000
 expired rows. Queries always exclude expired rows, even when physical cleanup
 has a backlog. No service, queue, or scheduled job is required. The database
-must remain in the product's persistent data directory. Local and self-host
-products in this checkout use PGlite. An older deployed SQLite database requires
-the existing product upgrade procedure before replacing its image.
+must remain in the product's persistent data directory.
 
 Analytics is best effort. Emission and persistence failures cannot fail a
 successful primary operation. The native Node adapter captures analytics from its invocation logger.
@@ -120,6 +118,38 @@ Every response includes `bestEffort: true`, `completeness: "not-guaranteed"`,
 upstream usage. For attempt totals, count `started` groups, or group by `phase`
 and report incomplete pairs. These counters do not establish provider billing
 or remaining quota.
+
+## Storage and upgrade compatibility
+
+The current self-host primary registry uses PGlite with the PostgreSQL provider.
+Its PostgreSQL 18 files and WAL persist through the product Durable Object's
+SQLite VFS under the persistent data directory. The outer SQLite tables store
+PostgreSQL files and blocks. They are not the Executor registry schema.
+Authored app data and caches use separate Worker storage. Motel data is also
+separate from the primary registry.
+
+Read-only inspection of the deployed registry confirmed schema version `4.0.1`.
+Its primary storage, schema, and migration initialization match this branch's
+base revision. This change adds version `4.0.2` without changing that storage
+format. No SQLite-to-PostgreSQL conversion is required for this deployment.
+
+An upgrade preserves the persistent volume, encryption key, and auth secret.
+A whole-volume backup taken after the server stops provides the fallback for
+an image rollback, as described in the self-host update instructions.
+The replacement image applies the additive migration at startup. The rebuilt
+authored app then uses the new Promise APIs.
+
+An authored app rollback can keep the upgraded Executor image. An older image
+rejects schema metadata `4.0.2`, so replacing the image alone is not a database
+rollback. The registered public SDK migrator's `down()` preserves the additive
+analytics table and rows with its default safe options and registers `4.0.1`.
+The local PGlite E2E verifies that rollback and the subsequent startup upgrade.
+The packaged production Worker adapter has no migration-down command verified
+by this change. Restoring a consistent pre-upgrade volume before starting the
+older image is the backup fallback, and discards writes after that backup.
+The local E2E also restores a stopped-server whole-volume tar archive, confirms
+the original app and schema `4.0.1`, and verifies another startup upgrade.
+The packaged production image and its volume restore remain release checks.
 
 ## Verification
 
@@ -136,5 +166,6 @@ uses synthetic MCP, REST, and OAuth servers. Its source snapshot changes only
 the fixed upstream origins. It covers credential-bound identity setup, a remote
 edit, live MCP fallback, failures, redirect rejection, scope checks, and the
 generated analytics tool. The local scenario covers literal concurrent totals,
-restart, additive upgrade from the prior database layout, bounded physical
-pruning, retention, and honest result truncation.
+restart, additive upgrade from registered schema `4.0.1`, registered rollback
+and re-upgrade with retained rows, whole-volume backup and restore, bounded
+physical pruning, retention, and honest result truncation.

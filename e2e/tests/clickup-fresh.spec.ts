@@ -126,6 +126,7 @@ layer(HostedLive, { excludeTestServices: true })("ClickUp integration", (it) => 
         expect(cold.body).toMatchObject({
           structuredContent: {
             name: "Initial task",
+            subtasks_count: 1,
             attachments: [{ title: "Original attachment" }],
           },
         });
@@ -140,6 +141,7 @@ layer(HostedLive, { excludeTestServices: true })("ClickUp integration", (it) => 
         expect(warm.body).toMatchObject({
           structuredContent: {
             name: "Remote edit",
+            subtasks_count: 1,
             attachments: [{ title: "Changed attachment" }],
           },
         });

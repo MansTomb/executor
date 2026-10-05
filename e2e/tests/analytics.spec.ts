@@ -6,7 +6,7 @@ import { TestLive, withCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
 import { scenarios } from "../test-plan.ts";
-import { analyticsDatabase } from "../support/analytics-database.ts";
+import { analyticsDatabase, analyticsVolume } from "../support/analytics-database.ts";
 
 const Summary = Schema.Struct({
   matchedEvents: Schema.Number,
@@ -64,6 +64,7 @@ export default defineApp({ accounts: {} }, { queries: { emit: query({ input: obj
         yield* Effect.addFinalizer(() => send("DELETE", path).pipe(Effect.orDie));
         yield* serverControl("stop");
         expect(yield* analyticsDatabase("baseline")).toEqual({ version: "4.0.1", events: 0 });
+        yield* analyticsVolume("backup");
         yield* serverControl("start");
         expect((yield* send("GET", path)).status).toBe(200);
         const call = () =>
@@ -135,6 +136,17 @@ export default defineApp({ accounts: {} }, { queries: { emit: query({ input: obj
         const stored = yield* analyticsDatabase("inspect");
         expect(stored.version).toBe("4.0.2");
         expect(stored.events).toBe(6252);
+        expect(yield* analyticsDatabase("rollback")).toEqual({ version: "4.0.1", events: 6252 });
+        yield* serverControl("start");
+        expect((yield* send("GET", path)).status).toBe(200);
+        yield* serverControl("stop");
+        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.2", events: 6252 });
+        yield* analyticsVolume("restore");
+        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.1", events: 0 });
+        yield* serverControl("start");
+        expect((yield* send("GET", path)).status).toBe(200);
+        yield* serverControl("stop");
+        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.2", events: 0 });
         yield* serverControl("start");
       }),
     ),
