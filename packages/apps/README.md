@@ -91,6 +91,42 @@ metadata, and compile only the selected tool. The defaults are five minutes fres
 plus five minutes stale. Use `freshFor` / `staleFor` to change the windows, or
 `revalidate: true` to await a refresh. Tool results are never cached.
 
+`mcpOperations` accepts an optional Promise-based `intercept` handler:
+
+```ts
+await mcpOperations({
+  url: "https://example.com/mcp",
+  signal,
+  intercept: async ({ tool, context, input, next }) => {
+    if (tool.name !== "get_task") return next();
+    const response = await context.fetch("https://example.com/tasks/" + input.id, {
+      signal: context.signal,
+    });
+    if (!response.ok) throw new Error("Task read failed");
+    const value = await response.json();
+    return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value };
+  },
+});
+```
+
+The exported `McpOperationInterceptor` type receives native MCP tool metadata,
+validated input, and the current invocation's `AppContext`. `tool.name` is the
+upstream name, without `queries.` or `mutations.`. `next()` calls that same tool
+with the original input and selected credentials. Its Promise preserves the
+invocation's cancellation, elicitation, telemetry, and upstream errors.
+
+The host checks permissions, selected accounts, input, and approvals before the
+handler runs. Replacement results pass the same MCP envelope and output-schema
+validation as upstream results. `isError: true` keeps native MCP failure semantics.
+Thrown errors propagate through the normal tool error boundary. Discovery,
+metadata caching, and query or mutation classification remain unchanged.
+
+Bind credentials inside the existing `accountOperations` callback. The handler
+does not receive raw MCP headers or authority to call other tools. A replacement
+HTTP request must use an explicitly authorized credential with the intended
+account and workspace access. The SDK does not establish permission equivalence
+between upstream systems or cache interceptor results.
+
 Each combined tool takes `{ accountId, input }`. `input` keeps the upstream shape;
 `accountId` must identify a selected account that exposes that tool. Discovery
 and validation remain specific to each account. An empty selection returns no

@@ -8,6 +8,7 @@ export {
   type McpToolContext,
   type McpToolsOptions,
   type McpToolResult,
+  type McpOperationInterceptor,
 } from "./contracts/mcp.ts";
 
 /** Discover operations for the selected account. Kinds override uncertain upstream read-only hints. */

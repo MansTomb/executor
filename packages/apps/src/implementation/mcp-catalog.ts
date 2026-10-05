@@ -2,17 +2,24 @@
 import { cacheKey } from "@executor-js/app-cache";
 import { Effect, Schema } from "effect";
 import type { DynamicTools } from "../contracts/dynamic-tools.ts";
-import { McpError, McpToolMetadata, McpToolsOptions } from "../contracts/mcp.ts";
+import {
+  McpError,
+  McpToolMetadata,
+  McpToolsOptions,
+  type McpOperationInterceptor,
+} from "../contracts/mcp.ts";
 import { type JsonValue } from "../contracts/schema.ts";
 import { catalogCache, type CatalogCacheOptions } from "./catalog-cache.ts";
 import { mcpClientEffect } from "./mcp.ts";
-import { adaptMcpTool } from "./mcp-tools.ts";
+import { adaptMcpOperation } from "./mcp-tools.ts";
 import { mcpResultSchema } from "./mcp-result-schema.ts";
 import { protocolOperations, type OperationKinds } from "./protocol-operations.ts";
 import { nativeOperation } from "./operations.ts";
 
 /** Metadata policy for HTTP/SSE sources. A missing cache keeps discovery invocation-local. */
-export interface McpCatalogOptions extends McpToolsOptions, CatalogCacheOptions {}
+export interface McpCatalogOptions extends McpToolsOptions, CatalogCacheOptions {
+  readonly intercept?: McpOperationInterceptor;
+}
 
 /** Browsing metadata; schemas are read per tool. */
 const McpToolSummary = McpToolMetadata.mapFields(
@@ -94,7 +101,7 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
         Effect.gen(function* () {
           const tool = yield* selected(name);
           if (tool === undefined) return undefined;
-          const adapted = yield* adaptMcpTool(client, tool);
+          const adapted = yield* adaptMcpOperation(client, tool, options.intercept);
           const operations = protocolOperations({ selected: adapted }, { selected: kindOf(tool) });
           return nativeOperation(operations.queries.selected ?? operations.mutations.selected);
         }),

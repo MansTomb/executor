@@ -147,6 +147,17 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  mcpInterceptor: {
+    fixtures: "actors",
+    file: "mcp-interceptor.spec.ts",
+    title: "MCP Promise interceptors preserve native validation and selected-account isolation",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream fixture"),
+      local: na("Hosted account selection API scenario"),
+
+    },
+  },
   mcpCatalogCache: {
     fixtures: "actors",
     file: "mcp-catalog.spec.ts",
