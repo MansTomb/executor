@@ -38,6 +38,7 @@
     "hosted:cloud:dev:1password": "bun run with:cloud:dev bun run --cwd apps/hosted/cloud dev --stage development",
     "hosted:cloud:deploy": "bun run with:cloud bun run --cwd apps/hosted/cloud deploy",
     "hosted:cloud:test-stage": "bun run with:test-stage bun run --cwd apps/hosted/cloud test-stage",
+    "dns:deploy": "agent-vault run --env 'CLOUDFLARE_API_TOKEN=op://Agents/Cloudflare API Token/credential' -- env CLOUDFLARE_ACCOUNT_ID=6691acaf4b3f35d16446cce82110a6c5 bun run --cwd apps/hosted/cloud alchemy deploy alchemy.dns.ts --stage shared",
     "agent-mail:deploy": "bun run with:test-stage env CI=true bun run --cwd apps/hosted/cloud alchemy deploy alchemy.agent-mail.ts --stage shared",
     "hosted:docker": "bun run with:self-host env BETTER_AUTH_URL=http://localhost:4400 EXECUTOR_BUILD_VERSION=$(git rev-parse HEAD) docker compose -f apps/hosted/self-host/compose.yaml up --build -d",
     "hosted:docker:down": "bun run with:self-host docker compose -f apps/hosted/self-host/compose.yaml down",

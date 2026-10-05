@@ -86,7 +86,7 @@ import { reportCloudFailure } from "./implementation/error-reporting.ts";
 import { sentryBindings } from "./infrastructure/sentry.ts";
 import { cloudErrorTunnel } from "./implementation/error-tunnel.ts";
 import { cloudSentry } from "./implementation/error-reporting.ts";
-import { cloudOrigin } from "./infrastructure/stage.ts";
+import { cloudOrigin, customDomain } from "./infrastructure/stage.ts";
 import { appDataSupervisors } from "./infrastructure/app-data.ts";
 import { cloudDevelopment } from "./contracts/development.ts";
 import { requestServices } from "@executor-js/hosted-server";
@@ -125,7 +125,7 @@ export default Api.make(
       },
       build: workerBuild("api"),
       // Auth callbacks and the dashboard share the configured canonical origin.
-      ...(origin === undefined ? {} : { domain: origin.hostname }),
+      ...(origin === undefined ? {} : { domain: yield* customDomain(origin) }),
       // Opt in per deployment; the database's cloud region is a proximity hint,
       // not a Cloudflare data center or a change to local development routing.
       ...(dev
