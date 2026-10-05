@@ -41,10 +41,16 @@ export default defineApp({ accounts: {}, database }, {  tools: router({
   },
   {
     path: "ui/index.html",
-    content: `<!doctype html><html><head><title>Private app</title><link rel="stylesheet" href="./style.css"></head><body>
-<main><h1>Private app</h1><img src="./mark.svg" alt="Fixture logo"><form><label>Message<input name="message"></label><button>Save message</button></form><ul aria-label="Messages"></ul><p role="status">Loading</p></main><script type="module" src="./main.ts"></script></body></html>`,
+    content: `<!doctype html><html><head><title>Private app</title><link rel="stylesheet" href="./style.css"><link rel="canonical" href="inbox"><style>.inline-mark { background-image: url("./mark.svg"); } .inline-mark::after { content: "url(mark.svg)"; } .escaped-mark { background-image: url("mark\\2e svg"); } .syntax-mark { background-image: u\\72l(mark.svg); border-image-source: url("mark.svg"/**/); }</style><style>@import"imported.css";</style><style>@import " https://[</style></head><body>
+<main><h1>Private app</h1><img src="./mark.svg" alt="Fixture logo"><img alt="Responsive mark" srcset="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='4'%20height='4'%3E%3C/svg%3E 1x, mark.svg 2x"><div class="inline-mark" style="border-image-source: url(mark.svg)"></div><div class="escaped-mark"></div><div class="syntax-mark"></div><svg width="24" height="24"><use href="mark.svg#mark"></use></svg><input type="image" src="mark.svg" alt="Image button"><nav><a href="#/files">Files changed</a></nav><form><label>Message<input name="message"></label><button>Save message</button></form><ul aria-label="Messages"></ul><p role="status">Loading</p></main><script type="module" src="./main.ts"></script></body></html>`,
   },
   { path: "ui/style.css", content: ":root { --fixture-asset: loaded; }" },
+  { path: "ui/public/imported.css", content: ":root { --inline-import: loaded; }" },
+  {
+    path: "ui/badge.svg",
+    content:
+      '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="navy"/></svg>',
+  },
   {
     path: "ui/public/mark.svg",
     content:
@@ -55,6 +61,12 @@ export default defineApp({ accounts: {}, database }, {  tools: router({
     content: `import { array, string } from "apps";
 import { createAppClient, queryReference, mutationReference } from "apps/client";
 import type { list, save } from "../index.ts";
+import badge from "./badge.svg";
+const imported = document.createElement('img');
+imported.alt = "Imported badge";
+imported.src = badge;
+imported.dataset.required = String(require("./badge.svg") === badge);
+document.querySelector('main').append(imported);
 const client = createAppClient();
 const status = document.querySelector('[role="status"]');
 const load = async () => {
@@ -455,7 +467,7 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
         expect(
           yield* browser.use("Retained image is loaded", (page) =>
             page
-              .locator("img")
+              .getByRole("img", { name: "Fixture logo" })
               .evaluate((image) =>
                 image instanceof HTMLImageElement
                   ? image.decode().then(() => image.complete && image.naturalWidth === 24)
@@ -463,6 +475,84 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
               ),
           ),
         ).toBe(true);
+        expect(
+          yield* browser.use("A script-imported image loads from a nested page path", (page) =>
+            page
+              .getByRole("img", { name: "Imported badge" })
+              .evaluate((image) =>
+                image instanceof HTMLImageElement
+                  ? image.decode().then(() => image.complete && image.naturalWidth === 16)
+                  : false,
+              ),
+          ),
+        ).toBe(true);
+        expect(
+          yield* browser.use("The page URL is the document base", (page) =>
+            page.evaluate(() => {
+              const inline = document.querySelector(".inline-mark");
+              const style = inline === null ? undefined : getComputedStyle(inline);
+              return {
+                base: document.querySelector("base") === null,
+                baseURI: document.baseURI === location.href,
+                logo: new URL(document.querySelector("img")?.src ?? "", location.href).pathname,
+                canonical: document.querySelector('link[rel="canonical"]')?.getAttribute("href"),
+                srcset: document
+                  .querySelector<HTMLImageElement>('img[alt="Responsive mark"]')
+                  ?.srcset.split(" ")[0],
+                inlineStyle: style?.backgroundImage,
+                styleAttribute: style?.borderImageSource,
+                quoted: inline === null ? "" : getComputedStyle(inline, "::after").content,
+                escaped: getComputedStyle(document.querySelector(".escaped-mark") ?? document.body)
+                  .backgroundImage,
+                use: document.querySelector("use")?.getAttribute("href"),
+                escapedName: getComputedStyle(
+                  document.querySelector(".syntax-mark") ?? document.body,
+                ).backgroundImage,
+                commented: getComputedStyle(document.querySelector(".syntax-mark") ?? document.body)
+                  .borderImageSource,
+                inlineImport: getComputedStyle(document.documentElement)
+                  .getPropertyValue("--inline-import")
+                  .trim(),
+                imageInput: document.querySelector<HTMLInputElement>('input[type="image"]')?.src,
+                required: document.querySelector<HTMLImageElement>('img[alt="Imported badge"]')
+                  ?.dataset.required,
+              };
+            }),
+          ),
+        ).toEqual({
+          base: true,
+          baseURI: true,
+          logo: expect.stringMatching(/^\/_executor\/assets\/[^/]+\/mark\.svg$/),
+          canonical: "inbox",
+          srcset:
+            "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='4'%20height='4'%3E%3C/svg%3E",
+          inlineStyle: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg"\)$/),
+          styleAttribute: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg"\)$/),
+          quoted: '"url(mark.svg)"',
+          escaped: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg"\)$/),
+          escapedName: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg"\)$/),
+          commented: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg"\)$/),
+          inlineImport: "loaded",
+          use: expect.stringMatching(/^\/_executor\/assets\/[^/]+\/mark\.svg#mark$/),
+          imageInput: expect.stringMatching(/\/_executor\/assets\/[^/]+\/mark\.svg$/),
+          required: "true",
+        });
+        yield* browser.use("A fragment link stays on the page", (page) =>
+          page.getByRole("link", { name: "Files changed" }).click(),
+        );
+        expect(
+          yield* browser.use("Only the fragment changed", (page) =>
+            page
+              .waitForURL((url) => url.hash === "#/files")
+              .then(() => {
+                const current = new URL(page.url());
+                return { path: current.pathname, search: current.search };
+              }),
+          ),
+        ).toEqual({ path: "/inbox/unread", search: "?filter=new" });
+        yield* browser.use("The app document remains after the fragment link", (page) =>
+          page.getByRole("heading", { name: "Private app" }).waitFor(),
+        );
         expect(
           yield* browser.use("Retained CSS is loaded", (page) =>
             page.evaluate(() =>
