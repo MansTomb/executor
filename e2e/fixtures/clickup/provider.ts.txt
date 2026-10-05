@@ -1,0 +1,20 @@
+import { defineProvider, object, oauth2, secrets, string } from "apps";
+
+export const provider = defineProvider({
+  name: "ClickUp",
+  auth: { oauth: oauth2({ discover: "https://mcp.clickup.com/mcp" }) },
+});
+
+export const restProvider = defineProvider({
+  name: "ClickUp REST task reads",
+  auth: {
+    apiKey: secrets({
+      label: "Explicit REST authority: personal API token, bound MCP account ID and workspace ID",
+      fields: object({
+        token: string({ minLength: 1 }),
+        mcpAccountId: string({ minLength: 1 }),
+        workspaceId: string({ minLength: 1 }),
+      }),
+    }),
+  },
+});

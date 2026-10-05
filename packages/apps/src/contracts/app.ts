@@ -51,6 +51,9 @@ type AccountsFor<Slot> =
 
 /** Current credentials for one invocation. Never retained in source or build output. */
 export interface BoundContext<Slots extends AccountSlots> {
+  readonly analytics: {
+    readonly emit: (event: import("@executor-js/telemetry").AnalyticsEvent) => Promise<void>;
+  };
   /** Explicit app/build-scoped caching. Account-specific loaders opt into forAccount. */
   readonly cache: import("./cache.ts").AppCache;
   /** Text files retained in this deployment. Paths are package-relative, never host filesystem paths. */

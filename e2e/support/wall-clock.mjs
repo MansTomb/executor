@@ -1,6 +1,6 @@
 /** Test-process entry preload: advance wall time without changing timers or monotonic durations. */
 const offset = Number(process.env.EXECUTOR_TEST_CLOCK_OFFSET_MS);
-if (!Number.isSafeInteger(offset) || offset < 0 || offset > 86_400_000) {
+if (!Number.isSafeInteger(offset) || offset < 0 || offset > 31 * 86_400_000) {
   throw new Error("The isolated test process needs a valid wall-clock offset");
 }
 

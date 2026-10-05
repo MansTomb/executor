@@ -25,3 +25,5 @@ export * from "./scheduler.ts";
 export * from "./source.ts";
 
 export * from "./profiles.ts";
+
+export * from "./analytics.ts";

@@ -147,6 +147,26 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  clickupFresh: {
+    fixtures: "actors",
+    file: "clickup-fresh.spec.ts",
+    title:
+      "ClickUp authored app verifies identity once and returns fresh REST tasks with live MCP fallback",
+    targets: {
+      "self-host": scheduled,
+      local: na("Hosted OAuth and profile API scenario"),
+      cloud: na("Loopback upstream fixture"),
+    },
+  },
+  analytics: {
+    file: "analytics.spec.ts",
+    title: "Analytics totals survive concurrency and restart and expire after thirty days",
+    targets: {
+      local: scheduled,
+      "self-host": na("Local process wall-clock retention control"),
+      cloud: na("Local process wall-clock retention control"),
+    },
+  },
   mcpInterceptor: {
     fixtures: "actors",
     file: "mcp-interceptor.spec.ts",
@@ -155,7 +175,6 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: na("Loopback upstream fixture"),
       local: na("Hosted account selection API scenario"),
-
     },
   },
   mcpCatalogCache: {

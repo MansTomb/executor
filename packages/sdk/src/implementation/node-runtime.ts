@@ -1,7 +1,7 @@
 import { nodeCacheSession } from "./node-cache.ts";
 /** Retained trusted-code builds using Effect platform services and direct handler invocation. */
 import { build as compile } from "esbuild";
-import { captureTelemetry, traceHeaders } from "@executor-js/telemetry";
+import { captureTelemetry, collectAnalytics, traceHeaders } from "@executor-js/telemetry";
 import { Crypto, Effect, Exit, FileSystem, Path, Redacted, Schema } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import {
@@ -82,7 +82,7 @@ function dispatch<A, E>(
   value: Schema.Decoder<A>,
   error: Schema.Decoder<E>,
 ) {
-  return Effect.gen(function* () {
+  const work = Effect.gen(function* () {
     const request = yield* Schema.decodeUnknownEffect(HostRequest)(command).pipe(
       Effect.mapError(() => new RuntimeProtocolFailed()),
     );
@@ -123,6 +123,9 @@ function dispatch<A, E>(
       Effect.mapError(() => new RuntimeProtocolFailed()),
     );
   });
+  return context.recordAnalytics === undefined
+    ? work
+    : collectAnalytics(work, context.recordAnalytics);
 }
 
 /** Create native operations; the composition boundary supplies platform services. */

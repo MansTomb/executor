@@ -1,3 +1,5 @@
+import type { McpCallGuard } from "./mcp-client.ts";
+import { measureAnalytics } from "@executor-js/telemetry";
 import type { ProviderError } from "../contracts/provider-error.ts";
 /** One upstream call, with form requests forwarded to the invocation's existing elicitation capability. */
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -68,6 +70,7 @@ export const mcpCall = (
   context: McpToolContext,
   timeoutMs: number,
   failure: (phase: McpError["phase"], error: unknown) => McpError | ProviderError,
+  guard: McpCallGuard,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -127,24 +130,30 @@ export const mcpCall = (
         callbacks.add(callback);
         return callback.finally(() => callbacks.delete(callback));
       });
-      return yield* Effect.tryPromise({
-        try: (signal) =>
-          client.callTool({ name, arguments: input }, undefined, {
-            signal: AbortSignal.any([signal, lifetime.signal]),
-            timeout: mcpSdkTimerCeilingMs,
-          }),
-        catch: (error) => failure("call", error),
-      }).pipe(
-        Effect.raceFirst(Deferred.await(failed)),
-        Effect.raceFirst(budget.expired),
-        Effect.flatMap((result) =>
-          Schema.decodeUnknownEffect(McpToolResult)(result).pipe(
-            Effect.mapError(() => new McpError({ phase: "call", reason: "invalid_response" })),
+      return yield* measureAnalytics(
+        { event: "upstream_request", operation: name, transport: "mcp", purpose: "tool" },
+        guard(
+          Effect.tryPromise({
+            try: (signal) =>
+              client.callTool({ name, arguments: input }, undefined, {
+                signal: AbortSignal.any([signal, lifetime.signal]),
+                timeout: mcpSdkTimerCeilingMs,
+              }),
+            catch: (error) => failure("call", error),
+          }).pipe(
+            Effect.raceFirst(Deferred.await(failed)),
+            Effect.raceFirst(budget.expired),
+            Effect.flatMap((result) =>
+              Schema.decodeUnknownEffect(McpToolResult)(result).pipe(
+                Effect.mapError(() => new McpError({ phase: "call", reason: "invalid_response" })),
+              ),
+            ),
+            Effect.tap((result) =>
+              Effect.annotateCurrentSpan("mcp.tool.is_error", result.isError === true),
+            ),
           ),
         ),
-        Effect.tap((result) =>
-          Effect.annotateCurrentSpan("mcp.tool.is_error", result.isError === true),
-        ),
+        (result) => result.isError === true,
       );
     }),
   ).pipe(

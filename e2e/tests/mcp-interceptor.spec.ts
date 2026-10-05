@@ -24,6 +24,7 @@ const Wire = Schema.Struct({
 
 const fixture = () =>
   Effect.gen(function* () {
+    let handshakeFailure = false;
     const calls: { account: string; path: string; message: Schema.Json }[] = [];
     const resultSchema = {
       type: "object",
@@ -58,6 +59,8 @@ const fixture = () =>
           if (message.id === undefined) return HttpServerResponse.empty({ status: 202 });
           const respond = (result: Schema.Json) =>
             HttpServerResponse.json({ jsonrpc: "2.0", id: message.id ?? null, result });
+          if (message.method === "initialize" && handshakeFailure)
+            return HttpServerResponse.empty({ status: 503 });
           if (message.method === "initialize")
             return yield* respond({
               protocolVersion: "2025-06-18",
@@ -93,6 +96,11 @@ const fixture = () =>
             });
             if (arguments_.message === "upstream-failure")
               return HttpServerResponse.empty({ status: 503 });
+            if (arguments_.message === "native-toolerror")
+              return yield* respond({
+                content: [{ type: "text", text: "Native tool failure" }],
+                isError: true,
+              });
             const value = { account, message: arguments_.message, path: "mcp" };
             return yield* respond({
               content: [{ type: "text", text: JSON.stringify(value) }],
@@ -110,7 +118,13 @@ const fixture = () =>
     );
     const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
     if (!("port" in server.address)) return yield* Effect.die("Expected TCP fixture");
-    return { origin: `http://127.0.0.1:${server.address.port}`, calls };
+    return {
+      origin: `http://127.0.0.1:${server.address.port}`,
+      calls,
+      failHandshake: () => {
+        handshakeFailure = true;
+      },
+    };
   });
 
 const source = (origin: string) => [
@@ -129,16 +143,20 @@ export default defineApp({ accounts: { service: provider.many() } }, async ctx =
     url: ${JSON.stringify(`${origin}/mcp`)}, headers: { "X-Account": account.fields.token }, accountId: account.id,
     signal: ctx.signal, cache: ctx.cache.forAccount(account),
     intercept: async ({ tool, context, input, next }) => {
+      await context.analytics.emit({ event: "webhook_received", purpose: "slack" });
       if (tool.name !== "read" || input.message === "next" || input.message === "upstream-failure" || String(input.message).startsWith("native-")) return next();
       if (input.message === "throw") throw new McpError({ phase: "call", reason: "timeout" });
       if (input.message === "badoutput") return { content: [], structuredContent: { account: 42 } };
       if (input.message === "bad-envelope") return { content: "invalid" };
       if (input.message === "toolerror") return { content: [{ type: "text", text: "Explicit tool failure" }], isError: true };
       if (context.signal.aborted || !context.accounts.service.some(selected => selected.id === account.id)) throw new Error("Wrong invocation context");
+      await context.analytics.emit({ event: "upstream_request", operation: "read", transport: "rest", purpose: "task", phase: "started" });
       const response = await context.fetch(${JSON.stringify(`${origin}/rest`)} + "?message=" + encodeURIComponent(String(input.message)), {
         headers: { "X-Account": account.fields.token }, signal: context.signal,
       });
       const value = await response.json();
+      await context.analytics.emit({ event: "upstream_request", operation: "read", transport: "rest", purpose: "task", phase: "completed", outcome: "success", statusCode: response.status });
+      await context.analytics.emit(JSON.parse('{"event":"invalid","contents":"must be rejected"}'));
       return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value, _meta: { intercepted: true } };
     },
   }), { signal: ctx.signal }));`,
@@ -150,6 +168,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
+        const started = Date.now();
         const upstream = yield* fixture();
         const api = yield* Api,
           actors = yield* Actors;
@@ -316,6 +335,97 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
           path: "rest",
           message: "selected",
         });
+        const nativeError = yield* call(bravo, "native-toolerror");
+        expect(nativeError.status).toBe(200);
+        expect(nativeError.body).toEqual({
+          content: [{ type: "text", text: "Native tool failure" }],
+          isError: true,
+        });
+        upstream.failHandshake();
+        expect((yield* call(bravo, "native-handshake-failure")).status).toBe(502);
+        const Summary = Schema.Struct({
+          matchedEvents: Schema.Number,
+          retentionDays: Schema.Number,
+          bestEffort: Schema.Boolean,
+          completeness: Schema.String,
+          truncated: Schema.Boolean,
+          groups: Schema.Array(
+            Schema.Struct({
+              dimensions: Schema.Record(
+                Schema.String,
+                Schema.NullOr(Schema.Union([Schema.String, Schema.Number])),
+              ),
+              count: Schema.Number,
+              durationMs: Schema.Number,
+            }),
+          ),
+        });
+        const readSummary = (event: string, groups: readonly string[]) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(
+              actors.owner,
+              "GET",
+              `${path}/analytics?from=${started}&to=${Date.now()}&event=${event}&${groups.map((group) => `groupBy=${group}`).join("&")}`,
+            );
+            expect(response.status, JSON.stringify(response.body)).toBe(200);
+            return yield* body(Summary, response);
+          });
+        const upstreamSummary = yield* readSummary("upstream_request", ["transport", "outcome"]);
+        expect(upstreamSummary).toMatchObject({
+          matchedEvents: 20,
+          retentionDays: 30,
+          bestEffort: true,
+          completeness: "not-guaranteed",
+          truncated: false,
+        });
+        expect(
+          upstreamSummary.groups
+            .map((group) => ({ ...group, durationMs: 0 }))
+            .sort((a, b) =>
+              JSON.stringify(a.dimensions).localeCompare(JSON.stringify(b.dimensions)),
+            ),
+        ).toEqual(
+          [
+            { dimensions: { transport: "mcp", outcome: null }, count: 6, durationMs: 0 },
+            { dimensions: { transport: "mcp", outcome: "error" }, count: 2, durationMs: 0 },
+            { dimensions: { transport: "mcp", outcome: "success" }, count: 4, durationMs: 0 },
+            { dimensions: { transport: "rest", outcome: null }, count: 4, durationMs: 0 },
+            { dimensions: { transport: "rest", outcome: "success" }, count: 4, durationMs: 0 },
+          ].sort((a, b) =>
+            JSON.stringify(a.dimensions).localeCompare(JSON.stringify(b.dimensions)),
+          ),
+        );
+        const invocations = yield* readSummary("tool_invocation", ["outcome"]);
+        expect(invocations.matchedEvents).toBe(30);
+        expect(
+          invocations.groups
+            .map((group) => ({ dimensions: group.dimensions, count: group.count }))
+            .sort((a, b) => a.count - b.count),
+        ).toEqual([
+          { dimensions: { outcome: "error" }, count: 7 },
+          { dimensions: { outcome: "success" }, count: 8 },
+          { dimensions: { outcome: null }, count: 15 },
+        ]);
+        const generic = yield* readSummary("webhook_received", ["purpose"]);
+        expect(generic.matchedEvents).toBe(15);
+        expect(generic.groups).toEqual([
+          { dimensions: { purpose: "slack" }, count: 15, durationMs: 0 },
+        ]);
+        expect((yield* readSummary("invalid", ["event"])).matchedEvents).toBe(0);
+        expect(
+          (yield* api.request(actors.owner, "GET", `${path}/analytics?from=2&to=1`)).status,
+        ).toBe(400);
+        expect(
+          (yield* api.request(actors.owner, "GET", `${path}/analytics?from=0&to=${Date.now()}`))
+            .status,
+        ).toBe(400);
+        expect(
+          (yield* api.request(
+            actors.owner,
+            "GET",
+            `${path}/analytics?from=${started}&to=${Date.now()}&groupBy=accountId`,
+          )).status,
+        ).toBe(400);
       }),
     ),
   );

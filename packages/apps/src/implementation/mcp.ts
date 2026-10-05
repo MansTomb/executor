@@ -24,7 +24,7 @@ import {
   type McpConnection,
 } from "../contracts/mcp.ts";
 import { adaptMcpTools } from "./mcp-tools.ts";
-import { mcpClient, mcpJsonSchemaValidator } from "./mcp-client.ts";
+import { mcpClient, mcpJsonSchemaValidator, type McpCallGuard } from "./mcp-client.ts";
 
 /** Safe projection of transport errors. Raw messages can contain credential-bearing URLs. */
 const failure = (phase: McpError["phase"], error: unknown): McpError | ProviderError => {
@@ -112,7 +112,7 @@ const transportFetch =
 function withClient<A, E>(
   connection: McpConnection,
   mode: "discover" | "call",
-  use: (client: Client) => Effect.Effect<A, E>,
+  use: (client: Client, guard: McpCallGuard) => Effect.Effect<A, E>,
   changed?: Effect.Effect<void, unknown>,
 ) {
   const attempt = (kind: "http" | "sse") =>
@@ -191,7 +191,7 @@ function withClient<A, E>(
           Effect.timeout(connection.timeoutMs),
           Effect.withSpan("provider.mcp.connect"),
         );
-        return yield* use(client).pipe(Effect.raceFirst(Deferred.await(rejected)));
+        return yield* use(client, (work) => work.pipe(Effect.raceFirst(Deferred.await(rejected))));
       }),
     ).pipe(
       Effect.withSpan("provider.mcp.session", {

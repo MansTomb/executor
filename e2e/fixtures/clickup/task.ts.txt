@@ -1,0 +1,162 @@
+import { array, boolean, type Infer, type JsonObject, json, number, object, record, string } from "apps";
+import type { OperationContext } from "apps";
+import type { McpToolResult } from "apps/mcp";
+import { upstreamRequest } from "./analytics.ts";
+
+const Input = object({
+  task_id: string({ minLength: 1 }),
+  workspace_id: string().optional(),
+  include: array(string()).optional(),
+  expand_statuses: boolean().optional(),
+});
+const User = object({ id: number(), username: string() });
+const Location = object({ id: string(), name: string().optional() });
+const Task = object({
+  id: string(),
+  team_id: string(),
+  custom_id: json(),
+  custom_item_id: number(),
+  name: string(),
+  markdown_description: string().optional(),
+  text_content: string(),
+  url: string(),
+  status: object({ status: string(), color: string() }),
+  date_created: string(),
+  date_updated: string(),
+  date_closed: json(),
+  creator: User,
+  assignees: array(json()),
+  tags: array(json()),
+  parent: json(),
+  priority: json(),
+  due_date: json(),
+  start_date: json(),
+  time_estimate: json(),
+  time_spent: number().optional(),
+  list: Location,
+  folder: Location,
+  space: object({ id: string() }),
+  custom_fields: array(json()),
+  checklists: array(json()),
+  dependencies: array(json()),
+  linked_tasks: array(json()),
+  watchers: array(json()),
+  attachments: array(json()),
+  subtasks: array(json()).optional(),
+});
+const Priority = object({ priority: string() });
+const Assignee = object({ id: number(), username: string(), email: string().optional() });
+const Tag = object({ name: string(), tag_bg: string(), tag_fg: string() });
+const Attachment = object({
+  id: string(),
+  title: string(),
+  extension: string().optional(),
+  mimetype: string().optional(),
+  size: number().optional(),
+  date: string().optional(),
+  source: number().optional(),
+});
+const sections = ["attachments", "checklists", "custom_fields", "dependencies", "linked_tasks", "watchers"] as const;
+const supported = new Set<string>([...sections, "description"]);
+
+export type TaskResult = { readonly kind: "mcp" } | { readonly kind: "rest"; readonly value: McpToolResult };
+
+export const supportsTask = (raw: JsonObject) => {
+  if (Object.keys(raw).some((key) => !["task_id", "workspace_id", "include", "expand_statuses"].includes(key)))
+    return false;
+  const input = Input.parse(raw);
+  return (
+    !input.expand_statuses &&
+    !input.include?.some((section) => !supported.has(section)) &&
+    /^[a-zA-Z0-9]+$/.test(input.task_id)
+  );
+};
+
+const project = (task: Infer<typeof Task>, include: readonly string[]) => {
+  const fullDescription = include.includes("description");
+  const output: Record<string, unknown> = {
+    id: task.id,
+    custom_id: task.custom_id,
+    custom_item_id: task.custom_item_id,
+    name: task.name,
+    ...(task.markdown_description === undefined
+      ? {}
+      : {
+          markdown_description: fullDescription
+            ? task.markdown_description
+            : task.markdown_description.slice(0, 10_000),
+        }),
+    text_content: fullDescription ? task.text_content : task.text_content.slice(0, 10_000),
+    url: task.url,
+    status: task.status.status,
+    status_color: task.status.color,
+    date_created: task.date_created,
+    date_updated: task.date_updated,
+    date_closed: task.date_closed,
+    creator: task.creator,
+    assignees: task.assignees.map((user) => Assignee.parse(user)),
+    tags: task.tags.map((tag) => Tag.parse(tag)),
+    parent: task.parent,
+    priority: task.priority === null ? null : Priority.parse(task.priority).priority,
+    due_date: task.due_date,
+    start_date: task.start_date,
+    time_estimate: task.time_estimate,
+    ...(task.time_spent === undefined ? {} : { time_spent: task.time_spent }),
+    list: task.list,
+    folder: task.folder,
+    space: task.space,
+    subtasks_count: task.subtasks?.length ?? 0,
+    task_type: null,
+  };
+  for (const section of sections) {
+    if (include.includes(section)) {
+      output[section] =
+        section === "attachments" ? task.attachments.map((row) => Attachment.parse(row)) : task[section];
+    } else {
+      output[`${section}_count`] = task[section].length;
+    }
+  }
+  return record(json()).parse(output);
+};
+
+export const readTask = async (
+  ctx: Pick<OperationContext, "fetch" | "signal" | "analytics">,
+  accessToken: string,
+  raw: JsonObject,
+): Promise<TaskResult> => {
+  if (!supportsTask(raw)) return { kind: "mcp" };
+  const input = Input.parse(raw);
+  const params = new URLSearchParams({ include_markdown_description: "true" });
+  if (input.workspace_id !== undefined) {
+    if (!/^\d+$/.test(input.workspace_id)) throw new Error("Invalid ClickUp workspace ID");
+    params.set("team_id", input.workspace_id);
+  }
+  return upstreamRequest(
+    ctx,
+    { operation: "get_task", transport: "rest", purpose: "task" },
+    async (status): Promise<TaskResult> => {
+      const response = await ctx.fetch(
+        `https://api.clickup.com/api/v2/task/${encodeURIComponent(input.task_id)}?${params}`,
+        {
+          method: "GET",
+          headers: { Authorization: accessToken, "Cache-Control": "no-cache" },
+          redirect: "error",
+          signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(30_000)]),
+        },
+      );
+      status(response.status);
+      if (response.status !== 200)
+        throw new Error(`Fresh ClickUp task read failed with HTTP ${response.status}; no result reused`);
+      const task = Task.parse(await response.json());
+      if (task.id !== input.task_id || (input.workspace_id !== undefined && task.team_id !== input.workspace_id)) {
+        throw new Error("ClickUp returned a different task or workspace; no result reused");
+      }
+      if (task.custom_item_id !== 0) return { kind: "mcp" };
+      const structuredContent = project(task, input.include ?? []);
+      return {
+        kind: "rest",
+        value: { content: [{ type: "text", text: JSON.stringify(structuredContent) }], structuredContent },
+      };
+    },
+  );
+};

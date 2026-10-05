@@ -1,3 +1,4 @@
+import { AnalyticsInputs } from "../contracts/analytics.ts";
 import { CheckOAuthSetup } from "../contracts/oauth.ts";
 import { ProfileInputs } from "../contracts/profiles.ts";
 import {
@@ -58,6 +59,7 @@ const invocationOptions = (
 /** Adapt an existing native client; each Promise call runs one decoded operation. */
 export const promiseExecutor = (executor: Executor): PromiseExecutor => {
   return {
+    analytics: { summary: (input) => run(AnalyticsInputs, input, executor.analytics.summary) },
     skills: {
       bundle: (input) => run(AppSkillInputs.list, input, executor.skills.bundle),
       list: (input) => run(AppSkillInputs.list, input, executor.skills.list),

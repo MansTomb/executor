@@ -1,3 +1,4 @@
+import { makeAnalyticsStorage } from "./analytics-storage.ts";
 /** Runtime storage and the explicit, transactional migration boundary. */
 import { Effect, Option } from "effect";
 import { SqlClient } from "effect/unstable/sql";
@@ -6,7 +7,12 @@ import type { Provider as SqlProvider } from "fumadb-effect";
 import { makeReactiveStore } from "@executor-js/reactivity";
 import { StorageError } from "../contracts/shared.ts";
 import { bindOrm } from "./reactive-orm.ts";
-import { executorDatabase, storageIndexes, storageSchemas } from "./storage-migrations.ts";
+import {
+  executorDatabase,
+  storageIndexes,
+  analyticsIndexes,
+  storageSchemas,
+} from "./storage-migrations.ts";
 
 /** Capture caller-owned SQL. Migrations accept only fresh or supported version 4 databases. */
 export const makeExecutorStorage = (options: { readonly provider: SqlProvider }) =>
@@ -33,9 +39,13 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
         // A new database needs the current layout and all of its indexes, not
         // historical data conversions. FumaDB's direct diff omits custom steps.
         yield* (yield* migrator.migrateToLatest()).execute;
-        yield* Effect.forEach(storageIndexes, (statement) => sql.unsafe(statement).unprepared, {
-          discard: true,
-        });
+        yield* Effect.forEach(
+          [...storageIndexes, ...analyticsIndexes],
+          (statement) => sql.unsafe(statement).unprepared,
+          {
+            discard: true,
+          },
+        );
       } else {
         // Execute every registered upgrade. A direct diff to latest can skip
         // an intermediate guard, data conversion, or custom index operation.
@@ -46,7 +56,13 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.mapError(() => new StorageError()),
     );
-    return { orm: (_version: "4.0.0") => db, reactivity, checkMigration, migrate };
+    return {
+      analytics: makeAnalyticsStorage(sql),
+      orm: (_version: "4.0.0") => db,
+      reactivity,
+      checkMigration,
+      migrate,
+    };
   });
 /** Caller-owned, Effect-native persistence with commit-driven subscriptions. */
 export type ExecutorDatabase = Effect.Success<ReturnType<typeof makeExecutorStorage>>;

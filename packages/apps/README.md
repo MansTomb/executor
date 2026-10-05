@@ -323,3 +323,13 @@ awaits a refresh. Concurrent refreshes share a load. The previous value stays
 available to ordinary readers while refresh runs, and a failed refresh does not
 remove it. Use this at an explicit connection or user refresh boundary; it is
 not a reason to refresh on every tool call.
+
+## Analytics
+
+App contexts expose `await context.analytics.emit({ event: "webhook_received", purpose: "slack" })`.
+Names and dimensions are bounded; payloads, credentials, and account or task IDs
+do not belong in events. Executor counts native MCP calls and top-level tool
+invocations. App authors count REST and their own direct upstream requests.
+Emission is best effort and cannot fail a successful primary operation. See the
+[analytics reference](../sdk/ANALYTICS.md) for schemas, summary queries, retention,
+and completeness limits.
