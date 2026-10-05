@@ -190,7 +190,8 @@ scenarios on Linux instead of moving them to a Mac.
   in parallel with the functional jobs. This preserves the four concurrent writers,
   the catalog and listing latency bounds and the inventory case's 120-second limit without
   competing with the functional job's product servers.
-- `e2e-cloud` runs Cloud onboarding and delivered observability scenarios. It starts the local Cloud
+- `e2e-cloud` runs Cloud onboarding, delivered observability and bearer refusal scenarios; the
+  refusal scenario writes stored rows into the runner-owned Postgres. It starts the local Cloud
   Worker, a throwaway Postgres container and the service emulators, so it needs
   Docker but no credentials.
 

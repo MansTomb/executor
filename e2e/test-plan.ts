@@ -3313,6 +3313,28 @@ export const scenarios = {
       cloud: na("Hosted consent is covered by mcpOAuthWithoutResource."),
     },
   },
+  bearerAuthRefusals: {
+    fixtures: "actors",
+    file: "bearer-auth-refusals.spec.ts",
+    title: "MCP and API bearer authentication refuses every stored state Better Auth refuses",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Stored-row cases write the product database directly; self-host's PGlite lives inside its workerd product object. Both hosts run the same bearer statement.",
+      ),
+      local: na("Local uses its instance credential."),
+    },
+  },
+  bearerAuthStatements: {
+    fixtures: "actors",
+    file: "bearer-auth-statements.spec.ts",
+    title: "MCP and API bearer authentication reads its grant in one SQL statement",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      local: na("Local uses its instance credential."),
+    },
+  },
   patMcp: {
     fixtures: "actors",
     file: "pat-mcp.spec.ts",

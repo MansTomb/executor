@@ -49,10 +49,10 @@ export { hostedMcpBackend } from "./implementation/mcp.ts";
 export * from "./contracts/mcp.ts";
 export {
   mcpAuthenticationError,
-  apiAuthenticationError,
   mcpConnectionStore,
   provisionHostedOAuthResources,
 } from "./implementation/mcp-oauth.ts";
+export { apiBearerAccess, mcpBearerAccess } from "./implementation/bearer-access.ts";
 export {
   makeHostedMcp,
   mcpSessionKey,
