@@ -126,6 +126,15 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
                     : failed("compile", cause instanceof Error ? cause : error),
                 );
               }),
+              // Builds share a compiler isolate, so another build can exhaust its memory. The
+              // runtime discards that isolate: one retry compiles alone on a fresh one, and a
+              // build that cannot fit fails again.
+              Effect.tapError((error) =>
+                Schema.is(BuildMemoryExceeded)(error)
+                  ? Effect.annotateCurrentSpan("build.memory_retry", true)
+                  : Effect.void,
+              ),
+              Effect.retry({ times: 1, while: Schema.is(BuildMemoryExceeded) }),
               Effect.flatMap(Schema.decodeUnknownEffect(CloudCompileResult)),
               Effect.catchTag("SchemaError", (cause) => Effect.fail(failed("compile", cause))),
               Effect.withSpan("runtime.cloud.compiler.request"),
