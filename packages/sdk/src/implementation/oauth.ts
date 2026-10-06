@@ -457,7 +457,10 @@ export const makeOAuth = (
       ) {
         return yield* new OAuthSetupFailed({ reason: "unsupported" });
       }
-      // A client registered for fewer scopes cannot be assumed to allow new ones.
+      // A client registered for fewer scopes cannot be assumed to allow new ones. Only registered
+      // and entered clients are saved, and the metadata URL does not change them, so turning the
+      // setting on or off keeps every saved client. The null once held that URL; it stays so
+      // clients saved without the setting keep their keys.
       const clientId = OAuthClientId.make(
         `client_${yield* hash(
           JSON.stringify([
@@ -466,7 +469,7 @@ export const makeOAuth = (
             input.method,
             redirect?.href,
             discovered.server.issuer,
-            options.clientMetadataUrl,
+            null,
             [...discovered.scopes].sort(),
           ]),
         )}`,
@@ -693,8 +696,12 @@ export const makeOAuth = (
       }
       if (redirect === undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
-      // A reused client is already saved; writing it again could restore one discarded meanwhile.
-      if (input.client === undefined && reused === undefined) yield* saveClient(db);
+      // A metadata document client is the host's configuration, read again on every sign-in.
+      const fromDocument = reused === undefined && source === "metadata";
+      // Only a client this start registered is saved here. A reused client is already saved, and
+      // writing it again could restore one discarded meanwhile; an entered one is saved when its
+      // sign-in completes.
+      if (reused === undefined && source === "registered") yield* saveClient(db);
       const authorization = yield* protocol
         .authorize({ ...discovered, client: registered, redirectUri: redirect.href })
         .pipe(Effect.mapError(() => new OAuthSetupFailed({ reason: "unsupported" })));
@@ -710,14 +717,16 @@ export const makeOAuth = (
         client: registered,
         ...(input.client !== undefined
           ? { clientKey: clientId }
-          : {
-              savedClient: {
-                key: clientId,
-                version: Encoding.encodeBase64(reused?.version ?? encryptedClient),
-                ...(source === undefined ? {} : { source }),
-                fresh: reused === undefined,
-              },
-            }),
+          : fromDocument
+            ? {}
+            : {
+                savedClient: {
+                  key: clientId,
+                  version: Encoding.encodeBase64(reused?.version ?? encryptedClient),
+                  ...(source === undefined ? {} : { source }),
+                  fresh: reused === undefined,
+                },
+              }),
         response: method.response,
       });
       const encrypted = yield* encrypt(id, attempt);

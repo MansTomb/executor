@@ -2760,6 +2760,50 @@ export const scenarios = {
       local: na("Exercises shared OAuth through the hosted API."),
     },
   },
+  oauthClientMetadataDocument: {
+    fixtures: "actors",
+    file: "oauth-client-metadata.spec.ts",
+    title:
+      "a host with a client metadata document signs in without registering a client, and still registers where the server does not accept documents",
+    serverEnvironment: {
+      EXECUTOR_OAUTH_CLIENT_METADATA_URL: "https://executor.example/oauth/client-metadata.json",
+      // A relay callback in a valid form other than its serialization, which the SDK sends.
+      EXECUTOR_OAUTH_CALLBACK_URL:
+        "https://Relay.Executor.example:443/api/oauth/callback?tenant=fixture",
+    },
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Managed Cloud runs on loopback without a public HTTPS origin; deployed stages serve the document.",
+      ),
+      local: na("Local's loopback callback has no public document; it registers dynamically."),
+    },
+  },
+  oauthClientMetadataEnabled: {
+    fixtures: "actors",
+    file: "oauth-client-metadata.spec.ts",
+    title:
+      "turning on a client metadata URL keeps the clients owners already registered, and new owners use the document",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Managed Cloud has no public HTTPS origin to serve a document; this restarts a runner-owned self-host with the setting.",
+      ),
+      local: na("Local's loopback callback has no public document; it registers dynamically."),
+    },
+  },
+  oauthClientMetadataUnset: {
+    fixtures: "actors",
+    file: "oauth-client-metadata.spec.ts",
+    title: "a host without a client metadata URL serves no document and registers a client",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Managed Cloud leaves the setting unset like self-host; one host proves the default.",
+      ),
+      local: na("Local's loopback callback has no public document; it registers dynamically."),
+    },
+  },
   oauthClientSetup: {
     fixtures: "actors",
     file: "oauth-client-setup.spec.ts",

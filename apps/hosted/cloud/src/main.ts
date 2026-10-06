@@ -30,6 +30,9 @@ import { hideRemovedOrganizations } from "./implementation/organization-removal.
 import {
   browserTelemetry,
   hostedOAuthCallback,
+  clientMetadataDocument,
+  clientMetadataDocumentPath,
+  clientMetadataSetting,
   hostedWebhookCallback,
   catalogLive,
   hostedMiddlewareLive,
@@ -86,6 +89,7 @@ import { sentryBindings } from "./infrastructure/sentry.ts";
 import { cloudErrorTunnel } from "./implementation/error-tunnel.ts";
 import { cloudSentry } from "./implementation/error-reporting.ts";
 import { cloudOrigin, customDomain } from "./infrastructure/stage.ts";
+import { clientMetadataBinding } from "./infrastructure/client-metadata.ts";
 import { appDataSupervisors } from "./infrastructure/app-data.ts";
 import { cloudDevelopment } from "./contracts/development.ts";
 import { requestServices } from "@executor-js/hosted-server";
@@ -121,6 +125,8 @@ export default Api.make(
         [selfBinding]: Cloudflare.Workers.Self,
         ...sentry.env,
         ...(yield* billingBindings),
+        // A deployed stage identifies Executor to authorization servers by its own document.
+        ...(origin === undefined ? {} : yield* clientMetadataBinding(origin)),
       },
       build: workerBuild("api"),
       // Auth callbacks and the dashboard share the configured canonical origin.
@@ -307,6 +313,7 @@ export default Api.make(
 
     const onboarding = yield* cloudOnboarding.pipe(Effect.orDie);
     const egress = yield* cloudEgress;
+    const clientMetadata = yield* clientMetadataSetting(auth.origin).pipe(Effect.orDie);
     // Only /openapi.json and preparing the Executor catalog app read the document.
     const document = lazyHostedApiDocument(() => executorCloudApiDocument(auth.origin));
     // Only framework lookups and the published skills read the large authoring reference.
@@ -428,6 +435,11 @@ export default Api.make(
       HttpRouter.add("GET", "/api/oauth/callback", hostedOAuthCallback).pipe(
         HttpRouter.provideRequest(auth.identity),
       ),
+      HttpRouter.add(
+        "GET",
+        clientMetadataDocumentPath,
+        clientMetadataDocument(clientMetadata),
+      ).pipe(HttpRouter.provideRequest(auth.identity)),
       mcpRoutes,
       HttpRouter.add("GET", "/.well-known/openai-apps-challenge", openAiAppsChallenge),
       Layer.mergeAll(

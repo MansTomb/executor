@@ -812,8 +812,9 @@ export const OAuthRegistration = Schema.Union([
 ]);
 export type OAuthRegistration = typeof OAuthRegistration.Type;
 /**
- * How a saved client came to exist. Only a `registered` client is Executor's to discard and
- * replace; saved records written before sources were recorded have none.
+ * How a client came to exist. Only a `registered` client is Executor's to discard and replace;
+ * saved records written before sources were recorded have none. A `metadata` client is the
+ * host's client metadata document and is not saved; only earlier versions saved one.
  */
 export const OAuthClientSource = Schema.Literals(["registered", "metadata", "manual"]);
 export type OAuthClientSource = typeof OAuthClientSource.Type;

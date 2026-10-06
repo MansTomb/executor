@@ -10,6 +10,7 @@ import {
   type ExecutorOptions,
 } from "@executor-js/sdk/core";
 import { Config, Effect, type Redacted, Schema } from "effect";
+import { hostedOAuthClientName } from "../contracts/oauth-client-metadata.ts";
 import { hostedResourceLifecycle } from "./resource-lifecycle.ts";
 
 /** Explicit connection URL shared by Better Auth and Executor; never logged or returned. */
@@ -82,7 +83,7 @@ export const postgresExecutor = (
       runtime,
       oauth: {
         httpClient: oauth.httpClient,
-        clientName: "Executor",
+        clientName: hostedOAuthClientName,
         urlPolicy: oauth.urlPolicy,
         ...(oauth.clientMetadataUrl === undefined
           ? {}

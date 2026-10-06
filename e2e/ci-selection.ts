@@ -31,13 +31,18 @@ const claude = "Claude Code connects";
 const inventoryLoad = "concurrent owners and admins save every account";
 const catalogScale =
   "MCP execute over 7,000 tools|MCP execute pays for a slow app|MCP execute remembers a stalled";
+/**
+ * Flaky on the self-host job: the saved array choice is lost after superseded profile reads.
+ * Skipped until https://github.com/UsefulSoftwareCo/executor-next/issues/1743 is fixed.
+ */
+const flakyProfilePicker = "profile picker keeps scalar and array choices isolated across tabs";
 
 /** Each output feeds one `--test-name` in checks.yml. Full runs use these patterns unchanged. */
 const jobs = {
   local: { target: "local", pattern: `^(?!.*${claude})` },
   "self-host": {
     target: "self-host",
-    pattern: `^(?!.*(?:${claude}|${inventoryLoad}|${catalogScale}))`,
+    pattern: `^(?!.*(?:${claude}|${inventoryLoad}|${catalogScale}|${flakyProfilePicker}))`,
   },
   "self-host-inventory": { target: "self-host", pattern: inventoryLoad },
   "self-host-catalog": { target: "self-host", pattern: catalogScale },

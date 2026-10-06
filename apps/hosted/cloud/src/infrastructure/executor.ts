@@ -15,6 +15,7 @@ import {
   OrganizationRemovals,
   OrganizationRemovalUnavailable,
   OrganizationTombstones,
+  clientMetadataSetting,
   withExecutorAnalytics,
 } from "@executor-js/hosted-server";
 import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
@@ -31,7 +32,7 @@ import {
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Config, Context, Effect, FiberSet, Layer, Option } from "effect";
+import { Context, Effect, FiberSet, Layer, Option } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/unstable/http";
 import { SqlClient } from "effect/unstable/sql";
 import { cloudBuildAsset } from "../implementation/build-storage.ts";
@@ -77,10 +78,8 @@ export const cloudExecutor = Effect.fn(function* (
   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
   const origin = yield* cloudOrigin.pipe(Effect.orDie);
   const egress = yield* cloudEgress;
-  const clientMetadataUrl = yield* Config.String("EXECUTOR_OAUTH_CLIENT_METADATA_URL").pipe(
-    Config.option,
-    Config.map(Option.getOrUndefined),
-  );
+  // Deployed stages bind this to their own document; see `clientMetadataBinding`.
+  const clientMetadata = yield* clientMetadataSetting(origin).pipe(Effect.orDie);
   const makeRuntime = yield* cloudRuntime(origin);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
@@ -130,7 +129,7 @@ export const cloudExecutor = Effect.fn(function* (
         {
           httpClient: egress.client,
           urlPolicy: egress.policy,
-          ...(clientMetadataUrl === undefined ? {} : { clientMetadataUrl }),
+          ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
         },
         {
           storage,
