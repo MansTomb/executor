@@ -2959,6 +2959,17 @@ export const scenarios = {
       local: na("Hosted discovery journey; local skills have separate MCP coverage."),
     },
   },
+  frameworkReferenceCoverage: {
+    fixtures: "actors",
+    file: "framework-discovery.spec.ts",
+    managementProfiles: ["owner"],
+    title: "framework describe answers every symbol the apps package exports",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted discovery journey; local serves the same framework reference."),
+    },
+  },
   frameworkAuthoring: {
     fixtures: "actors",
     file: "framework-authoring.spec.ts",

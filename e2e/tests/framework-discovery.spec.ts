@@ -3,9 +3,11 @@ import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
+import { Api, body } from "../support/api.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { frameworkSession } from "../support/framework.ts";
+import { appsPackageExports } from "../support/apps-package.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
 
@@ -41,6 +43,31 @@ const Rejected = Schema.Struct({
     }),
   }),
 });
+const Listing = Schema.Struct({ reference: Reference, symbols: Schema.Array(Schema.String) });
+const Described = Schema.Struct({
+  entry: Schema.optional(
+    Schema.Struct({
+      symbol: Schema.String,
+      kind: Schema.String,
+      summary: Schema.String,
+      signatures: Schema.Array(Schema.String),
+      definition: Schema.optional(Schema.String),
+      docs: Schema.String,
+      related: Schema.Array(Schema.String),
+      examples: Schema.Array(Schema.String),
+    }),
+  ),
+  types: Schema.Array(Schema.Struct({ symbol: Schema.String })),
+  examples: Schema.Array(Schema.Struct({ id: Schema.String })),
+  matches: Schema.Array(Schema.Struct({ symbol: Schema.String })),
+});
+/** Symbols an agent reported as describing without content. */
+const reported = [
+  "apps/mcp.mcpRouter",
+  "apps.accountRouter",
+  "apps.defineProvider",
+  "apps.secrets",
+];
 
 layer(HostedLive, { excludeTestServices: true })("Framework discovery", (it) => {
   it.effect(scenarios.frameworkDiscovery.title, (context) =>
@@ -236,6 +263,143 @@ layer(HostedLive, { excludeTestServices: true })("Framework discovery", (it) => 
           tools,
         });
         expect(update.examples.some((example) => example.id === "live-inbox")).toBe(true);
+      }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
+    ),
+  );
+
+  it.effect(scenarios.frameworkReferenceCoverage.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          evidence = yield* Evidence;
+        const { client, execute, queries } = yield* frameworkSession;
+        // An empty search pages through the whole reference, as an agent browsing it would.
+        const listing = yield* execute(`
+          const symbols = [];
+          let page = await ${queries}.framework.search({ query: {} });
+          symbols.push(...page.items.map((item) => item.symbol));
+          while (page.remaining > 0) {
+            page = await ${queries}.framework.search({ query: { offset: String(symbols.length) } });
+            symbols.push(...page.items.map((item) => item.symbol));
+          }
+          return { reference: page.reference, symbols };
+        `).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Listing)));
+        // The reported call, made as the agent made it: the symbol goes inside query.
+        const answered = yield* execute(`
+          const reference = ${JSON.stringify(listing.reference)};
+          return await Promise.all(${JSON.stringify(reported)}.map((symbol) =>
+            ${queries}.framework.describe({ query: { symbol, ...reference } })));
+        `).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Described))));
+        // Every symbol through the endpoint that MCP tool forwards to; one MCP call each would
+        // spend most of the scenario's deadline on tool dispatch.
+        const described = yield* Effect.forEach(
+          listing.symbols,
+          (symbol) =>
+            api
+              .request(
+                actors.owner,
+                "GET",
+                `/api/organizations/${actors.organization.id}/framework/describe?${new URLSearchParams({ symbol, ...listing.reference })}`,
+              )
+              .pipe(
+                Effect.flatMap((response) => body(Described, response)),
+                Effect.map((found) => ({ symbol, ...found })),
+              ),
+          { concurrency: 8 },
+        );
+        const exported = yield* appsPackageExports;
+        // Every linked skill document opens through the same skills tool an agent uses.
+        const documents = [
+          ...new Set(described.flatMap(({ entry }) => (entry === undefined ? [] : [entry.docs]))),
+        ];
+        const opened = yield* Effect.forEach(
+          documents,
+          (file) =>
+            client
+              .use("Open a linked framework skill document", (client, signal) =>
+                client.callTool(
+                  { name: "skills", arguments: { app: "executor", name: "app-authoring", file } },
+                  undefined,
+                  { signal },
+                ),
+              )
+              .pipe(
+                Effect.flatMap((result) =>
+                  Schema.decodeUnknownEffect(Document)(result.structuredContent),
+                ),
+              ),
+          { concurrency: 4 },
+        );
+        yield* evidence.json("framework-reference-coverage.json", {
+          reference: listing.reference,
+          answered,
+          described,
+          documents,
+          exported: Object.fromEntries(exported),
+        });
+        expect(new Set(listing.symbols).size).toBe(listing.symbols.length);
+        expect(described.map((item) => item.symbol)).toEqual(listing.symbols);
+        const same = (left: readonly string[], right: readonly string[]) =>
+          left.toSorted().join("\n") === right.toSorted().join("\n");
+        const problems = described.flatMap(({ symbol, entry, types, examples, matches }) => {
+          if (entry === undefined)
+            return [
+              `${symbol}: no entry; matches ${matches.map((match) => match.symbol).join(", ")}`,
+            ];
+          const callable = entry.kind === "function" || entry.kind === "method";
+          return [
+            ...(entry.symbol === symbol ? [] : [`${symbol}: described ${entry.symbol}`]),
+            ...((callable ? entry.signatures.length > 0 : entry.definition !== undefined)
+              ? []
+              : [`${symbol}: no ${callable ? "signature" : "definition"}`]),
+            // Module exports carry JSDoc; some methods reached through context do not.
+            ...(/^apps[./]/.test(symbol) && entry.summary === "" ? [`${symbol}: no summary`] : []),
+            ...(same(
+              types.map((type) => type.symbol),
+              entry.related,
+            )
+              ? []
+              : [`${symbol}: related types do not resolve`]),
+            ...(same(
+              examples.map((example) => example.id),
+              entry.examples,
+            )
+              ? []
+              : [`${symbol}: examples do not resolve`]),
+            ...(matches.length === 0 ? [] : [`${symbol}: matches beside its entry`]),
+          ];
+        });
+        expect(problems).toEqual([]);
+        expect(opened.map(({ content }) => content.length > 0)).toEqual(documents.map(() => true));
+        // The reference covers every export of each module it documents, as the package declares them.
+        const modules = new Map<string, string[]>();
+        for (const symbol of listing.symbols.filter((symbol) => /^apps[./]/.test(symbol))) {
+          const module = symbol.slice(0, symbol.lastIndexOf("."));
+          modules.set(module, [...(modules.get(module) ?? []), symbol.slice(module.length + 1)]);
+        }
+        for (const [module, names] of modules)
+          expect({ module, names: names.toSorted() }).toEqual({
+            module,
+            names: exported.get(module)?.toSorted(),
+          });
+        expect(
+          answered.map(({ entry, types }) => ({
+            symbol: entry?.symbol,
+            signed: entry !== undefined && entry.signatures.length > 0,
+            types: types.map((type) => type.symbol),
+          })),
+        ).toEqual(
+          reported.map((symbol) => ({
+            symbol,
+            signed: true,
+            types: described.find((item) => item.symbol === symbol)?.entry?.related,
+          })),
+        );
+        expect(answered[0]?.types.map((type) => type.symbol)).toContain(
+          "apps/mcp.McpCatalogOptions",
+        );
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );
