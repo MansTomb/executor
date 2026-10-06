@@ -84,14 +84,17 @@ export const AppDiscoveryTimedOut = UserFacingError.define({
 export const ExecuteInput = Schema.Struct({
   code: Schema.String.check(Schema.isMaxLength(defaultMcpRuntimeLimits.maxCodeChars)),
 });
-/** Incomplete or failing apps stay visible as explicit discovery diagnostics. */
+/**
+ * Incomplete or failing apps stay visible as explicit discovery diagnostics. Absent fields are
+ * omitted: execution results are MCP JSON, which has no undefined.
+ */
 export const UnavailableApp = Schema.Struct({
   app: Schema.String,
   name: Schema.String,
   reason: Schema.String,
-  profile: Schema.optional(Schema.String),
+  profile: Schema.optionalKey(Schema.String),
   /** Only this router's tools are missing; the rest of the app loaded. */
-  router: Schema.optional(Schema.String),
+  router: Schema.optionalKey(Schema.String),
 });
 /**
  * One admitted tool call in call order. `interrupted` calls were still running when the

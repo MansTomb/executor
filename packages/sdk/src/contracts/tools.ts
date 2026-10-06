@@ -746,10 +746,13 @@ export const InvocationAccount = Schema.Struct({
   provider: ProviderId,
   method: Schema.String,
 });
-/** Reviewed call with decoded arguments, exact code version and account identities. */
+/**
+ * Reviewed call with decoded arguments, exact code version and account identities. A call without
+ * a profile omits both profile keys: pending requests are JSON, which has no undefined.
+ */
 export const ToolInvocation = Schema.Struct({
-  profile: Schema.optional(ProfileId),
-  profileRevision: Schema.optional(ProfileRevision),
+  profile: Schema.optionalKey(ProfileId),
+  profileRevision: Schema.optionalKey(ProfileRevision),
   app: AppId,
   owner: OwnerId,
   deployment: DeploymentId,

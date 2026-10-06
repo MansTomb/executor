@@ -3858,6 +3858,27 @@ export const scenarios = {
       cloud: na("Hosted products run the same protocol checks in mcpProtocolVersions."),
     },
   },
+  mcpToolInput: {
+    fixtures: "actors",
+    file: "mcp-tool-input.spec.ts",
+    title:
+      "Hosted MCP model and browser modes return an account-free tool's input request and resume it with the answer",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local runs the same flow in localMcpToolInput."),
+    },
+  },
+  localMcpToolInput: {
+    file: "mcp-tool-input.spec.ts",
+    title:
+      "Local MCP model and browser modes return an account-free tool's input request and resume it with the answer",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted products run the same flow in mcpToolInput."),
+      cloud: na("Hosted products run the same flow in mcpToolInput."),
+    },
+  },
   accountSettings: {
     fixtures: "actors",
     file: "account-settings.spec.ts",
