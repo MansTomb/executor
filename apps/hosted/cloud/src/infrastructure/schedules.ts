@@ -13,7 +13,7 @@ import { RuntimeContext } from "alchemy";
 import { Config, Clock, Effect, Layer, Schema, Semaphore } from "effect";
 import { HostedExecutor, ScheduledAuthority, ScheduleWakeup } from "@executor-js/hosted-server";
 import { defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
-import { cloudExecutor } from "./executor.ts";
+import { cloudProduct } from "./product.ts";
 import { appDataSupervisors } from "./app-data.ts";
 import { cloudAuthDatabase } from "./auth-database.ts";
 import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
@@ -21,10 +21,7 @@ import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
 const makeScheduleCoordinator = Effect.gen(function* () {
   const analytics = yield* cloudAnalytics;
   const report = yield* cloudSentry;
-  const resources = yield* cloudExecutor(
-    yield* appDataSupervisors,
-    yield* cloudArtifactsTokensLive,
-  );
+  const resources = yield* cloudProduct(yield* appDataSupervisors, yield* cloudArtifactsTokensLive);
   const concurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
     Config.withDefault(defaultScheduleWorkerOptions.concurrency),
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Int.check(Schema.isGreaterThan(0)))),

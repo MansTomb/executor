@@ -20,8 +20,9 @@ import {
   sourceErrors,
   SourceSnapshot,
   StorageError,
+  PublicationReadiness,
+  RegistryError,
 } from "@executor-js/sdk/core";
-import { PublicationReadiness, RegistryError } from "@executor-js/app-registry/contracts";
 export * from "./framework.ts";
 
 /** Authentication failures never expose whether another owner's app exists. */
@@ -90,16 +91,14 @@ import {
   AppName,
   DeployedApp,
   Deployment,
+  GitCommit,
   OwnerId,
   SourceCommit,
   SourceFiles,
-} from "@executor-js/sdk/core";
-import {
   Publication,
   PackageName,
   PublicationReference,
-} from "@executor-js/app-registry/contracts";
-import { GitCommit } from "@executor-js/app-source/contracts";
+} from "@executor-js/sdk/core";
 /** Both public and owned copies use this one request and result contract. */
 export const CopyApp = Schema.Struct({
   from: Schema.Union([Schema.Struct({ app: AppId }), PublicationReference]),

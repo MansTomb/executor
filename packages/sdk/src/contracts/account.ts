@@ -169,6 +169,13 @@ export const AccountInputs = {
     fields: AccountFieldsInput,
   }),
   get: Schema.Struct({ account: AccountId, owner: Schema.optional(OwnerId) }),
+  /** `clear` drops the account from every profile selection, leaving those profiles pending. */
+  remove: Schema.Struct({
+    account: AccountId,
+    owner: Schema.optional(OwnerId),
+    bindings: Schema.optional(Schema.Literals(["keep", "clear"])),
+  }),
+  providers: Schema.Struct({ owner: Schema.optional(OwnerId) }),
   list: Schema.Struct({ provider: Schema.optional(ProviderId), owner: Schema.optional(OwnerId) }),
   /** Change only the supplied fields. A null description removes it. */
   update: Schema.Struct({
@@ -216,6 +223,21 @@ export const AccountWorkflowsActive = ApiError.define({
   message: "Terminate this account's active workflow runs before deleting it.",
 });
 export type AccountWorkflowsActive = typeof AccountWorkflowsActive.Type;
+
+/**
+ * Saved sign-in state without refreshing tokens or contacting the provider. `reconnectAt` is the
+ * moment a non-renewable grant expires. The fingerprint changes whenever stored credentials do.
+ */
+export const AccountSignIn = Schema.Union([
+  Schema.Struct({
+    state: Schema.Literal("saved"),
+    reconnectAt: Schema.NullOr(Schema.Date),
+    credentialsFingerprint: Schema.String,
+  }),
+  Schema.Struct({ state: Schema.Literal("reconnect"), credentialsFingerprint: Schema.String }),
+  Schema.Struct({ state: Schema.Literal("unavailable"), credentialsFingerprint: Schema.String }),
+]);
+export type AccountSignIn = typeof AccountSignIn.Type;
 
 export const AccountsGroup = HttpApiGroup.make("accounts")
   .add(
@@ -271,7 +293,7 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
   .add(
     HttpApiEndpoint.delete("remove", "/v1/accounts/:account", {
       params: accountParams,
-      query: ownerQuery,
+      query: { ...ownerQuery, bindings: AccountInputs.remove.fields.bindings },
       success: Schema.Struct({ account: AccountId }),
       error: [StorageError, AccountWebhooksActive, AccountWorkflowsActive],
     }).annotate(
@@ -339,5 +361,26 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
     }).annotate(
       OpenApi.Description,
       "List saved account metadata, optionally filtered by owner or provider. Credentials are never returned.",
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get("signIn", "/v1/accounts/:account/sign-in", {
+      params: accountParams,
+      query: ownerQuery,
+      success: AccountSignIn,
+      error: [StorageError, AccountNotFound],
+    }).annotate(
+      OpenApi.Description,
+      "Saved sign-in state for one account without refreshing tokens or contacting the provider.",
+    ),
+  )
+  .add(
+    HttpApiEndpoint.get("providers", "/v1/providers", {
+      query: AccountInputs.providers.fields,
+      success: Schema.Array(Provider),
+      error: StorageError,
+    }).annotate(
+      OpenApi.Description,
+      "Provider definitions known to this executor, optionally limited to those with saved accounts for an owner.",
     ),
   );

@@ -13,6 +13,7 @@ import {
   OwnerId,
   JsonObject,
   CredentialsError,
+  StorageError,
 } from "./shared.ts";
 import { AccountConnectionDestination } from "./account-connection.ts";
 import type { Effect, Redacted } from "effect";
@@ -70,6 +71,18 @@ export const StoredConnectionTarget = Schema.Struct({
 }).pipe(Schema.encodeKeys({ profile: "installation" }));
 export type StoredConnectionTarget = typeof StoredConnectionTarget.Type;
 
+/** Atomic product writes beside SDK writes are host-only, outside the public HTTP/Promise facade. */
+export const StorageHost = Symbol("executor.StorageHost");
+/**
+ * Hosts keep product tables in the same database as the executor. This is the one tracked
+ * transaction boundary: product SQL inside it shares the executor's connection, and SDK operations
+ * called inside it join the same transaction. Wrapping SDK calls in a raw SQL transaction fails.
+ */
+export interface StorageHost {
+  readonly transaction: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | StorageError, R>;
+}
 /** The host owns encryption and key custody. Ciphertexts are bound to their stable resource identity. */
 export interface Credentials {
   readonly encrypt: (

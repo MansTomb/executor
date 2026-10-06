@@ -15,7 +15,8 @@ import {
   CredentialCheck,
 } from "./account.ts";
 import { AuthMethodInvalid, AuthMethodName, ProviderDefinition } from "./provider.ts";
-import { SourceCommit, sourceErrors, SourceSnapshot } from "./source.ts";
+import { GitCommit, SourceCommit, sourceErrors, SourceSnapshot } from "./source.ts";
+import { PublicationReference, RegistryError } from "./registry.ts";
 import {
   AppDeploymentChanged,
   Deployment,
@@ -268,10 +269,12 @@ export const AppInputs = {
     message: Schema.NonEmptyString,
   }),
   copy: Schema.Struct({
-    from: Schema.Union([AppId, AppCopySnapshot]),
+    from: Schema.Union([AppId, AppCopySnapshot, PublicationReference]),
     owner: OwnerId,
     name: AppName,
   }),
+  history: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId) }),
+  revision: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId), commit: SourceCommit }),
   deploy: DeployAppInput,
   get: Schema.Struct({ app: AppId, owner: Schema.optional(OwnerId) }),
   // Omitted IDs select all apps for the owner; an empty list selects none.
@@ -350,12 +353,25 @@ export const AppsGroup = HttpApiGroup.make("apps")
       success: SourceSnapshot,
       error: [StorageError, ...sourceErrors, AppNotFound],
     }),
+    HttpApiEndpoint.get("history", "/v1/apps/:app/history", {
+      params: appParams,
+      query: ownerQuery,
+      success: Schema.Array(GitCommit),
+      error: [StorageError, ...sourceErrors, AppNotFound],
+    }).annotate(OpenApi.Description, "Recent commits on the app's working branch."),
+    HttpApiEndpoint.get("revision", "/v1/apps/:app/revisions/:commit", {
+      params: { app: AppInputs.revision.fields.app, commit: AppInputs.revision.fields.commit },
+      query: ownerQuery,
+      success: SourceFiles,
+      error: [StorageError, ...sourceErrors, AppNotFound],
+    }).annotate(OpenApi.Description, "The complete files at one commit in the app's code lineage."),
     HttpApiEndpoint.post("copy", "/v1/apps/copies", {
       payload: AppInputs.copy,
       success: App,
       error: [
         StorageError,
         ...sourceErrors,
+        RegistryError,
         AppNotFound,
         AppNameTaken,
         AppSlugTaken,

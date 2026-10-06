@@ -38,10 +38,12 @@ import {
   SourceFilePath,
   SourceFiles,
   SourceRevision,
+  PackageName,
+  RegistryError,
+  hostedExecutorOrigin,
   type App,
 } from "@executor-js/sdk/core";
 import { packageFile } from "@executor-js/app-templates";
-import { PackageName } from "@executor-js/app-registry/contracts";
 import { AppClientError } from "./client-error.ts";
 import {
   AppAccess,
@@ -49,7 +51,6 @@ import {
   AppOperationError,
   appManagementApi,
 } from "./contracts/api.ts";
-import { hostedExecutorOrigin, RegistryError } from "@executor-js/app-registry";
 import { RegistryOrigin, registryLogin, registrySession } from "./implementation/node-auth.ts";
 
 /** Skill lookups report the host's failure tag or the missing option; never a response body. */

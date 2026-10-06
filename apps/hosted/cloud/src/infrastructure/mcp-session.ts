@@ -14,7 +14,7 @@ import { HttpServer, HttpServerRequest } from "effect/unstable/http";
 import { cloudSentry } from "../implementation/error-reporting.ts";
 import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
 import { cloudAnalytics } from "../implementation/product-analytics.ts";
-import type { cloudExecutor } from "./executor.ts";
+import type { cloudProduct } from "./product.ts";
 import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
 
 /**
@@ -22,7 +22,7 @@ import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
  * it. Both use the calling object's held database connections.
  */
 export interface McpSessionServices {
-  readonly executor: Effect.Success<ReturnType<typeof cloudExecutor>>;
+  readonly executor: Effect.Success<ReturnType<typeof cloudProduct>>;
   readonly identity: Layer.Layer<McpAuthentication>;
 }
 

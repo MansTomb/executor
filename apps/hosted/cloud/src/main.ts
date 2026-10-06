@@ -14,7 +14,6 @@ import { AppWorkflows } from "./infrastructure/workflows.ts";
 import { cloudDataSteps } from "./infrastructure/data-steps.ts";
 import {
   OrganizationRemoval,
-  OrganizationRemovalHost,
   OrganizationRemovalStart,
   dispatchOrganizationRemovals,
   startOrganizationRemoval,
@@ -58,7 +57,8 @@ import {
   selfBinding,
   type BackgroundJob,
 } from "./infrastructure/background-jobs.ts";
-import { cloudEgress, cloudExecutor } from "./infrastructure/executor.ts";
+import { cloudEgress } from "./infrastructure/executor.ts";
+import { cloudProduct } from "./infrastructure/product.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
 import {
   cloudObservability,
@@ -172,18 +172,14 @@ export default Api.make(
     const welcomeEmails = yield* cloudWelcomeEmails(email.welcome);
     yield* AppWorkflows;
     yield* Provisioning;
-    const executor = yield* cloudExecutor(
+    const executor = yield* cloudProduct(
       yield* appDataSupervisors,
       yield* cloudArtifactsTokensLive,
     );
     const billing = yield* billingLive.pipe(Effect.orDie);
     // The removal workflow runs in this isolate and shares its services.
     const removal = yield* OrganizationRemoval.pipe(
-      Effect.provideService(OrganizationRemovalHost, {
-        executor,
-        identity: auth.identity,
-        billing,
-      }),
+      Effect.provide(Layer.mergeAll(executor, auth.identity, billing)),
     );
     const removals = Layer.succeed(OrganizationRemovalStart, startOrganizationRemoval(removal));
     const schedules = yield* cloudSchedules;

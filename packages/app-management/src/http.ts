@@ -27,26 +27,19 @@ import {
   AppSlug,
   AppSlugTaken,
   AppNotFound,
+  RepositoryHost,
   SourceCommit,
   SourceError,
   StorageError,
-  type App,
-  type AppSourceStorage,
-  type BlobStorage,
-  type Executor,
-} from "@executor-js/sdk/core";
-import {
   RegistryError,
   Publication,
   PublicationSnapshot,
   PackageName,
-  resolvePublication,
-  type Registry,
-  type createAppRegistry,
-} from "@executor-js/app-registry";
-import { type RepositoryBackend } from "@executor-js/app-source/contracts";
+  type App,
+  type Executor,
+} from "@executor-js/sdk/core";
 
-/** Hosts retain platform resources; these operations run inside each request's scope. */
+/** The executor and the product's authorization policy; every operation goes through the SDK. */
 export class AppManagementHost extends Context.Service<
   AppManagementHost,
   Effect.Effect<
@@ -59,11 +52,6 @@ export class AppManagementHost extends Context.Service<
             identity: Context.Service.Shape<typeof AppIdentity>,
           ) => Effect.Effect<AppCapabilities, AppAccessDenied | StorageError>)
         | undefined;
-      readonly sources: AppSourceStorage;
-      readonly repositories: RepositoryBackend;
-      readonly registry: Registry;
-      readonly blobs: BlobStorage;
-      readonly publisher: ReturnType<typeof createAppRegistry> | undefined;
     },
     StorageError
   >
@@ -131,6 +119,9 @@ const authoring = (id: AppId) =>
     const host = yield* Effect.flatten(AppManagementHost);
     const { app, access } = yield* ownedSource(host, identity, id);
     const canEdit = identity.canWrite && access.edit && !identity.protectedApps.includes(id);
+    const { publishing } = yield* host.executor.publications
+      .status()
+      .pipe(Effect.mapError(() => new StorageError()));
     return {
       app,
       host,
@@ -138,7 +129,7 @@ const authoring = (id: AppId) =>
         namespace: identity.namespace,
         gitPath: `/git/${encodeURIComponent(identity.scope)}/${app.slug}.git`,
         canEdit,
-        canPublish: canEdit && host.publisher !== undefined && identity.namespace !== null,
+        canPublish: canEdit && publishing && identity.namespace !== null,
       },
     };
   });
@@ -177,12 +168,11 @@ const workspaceSource = (id: AppId) =>
       ...source,
       ...fields,
       publication:
-        canPublish && host.publisher !== undefined && metadata.namespace !== null
-          ? yield* host.publisher.preview({
+        canPublish && metadata.namespace !== null
+          ? yield* host.executor.publications.preview({
               owner: app.owner,
               namespace: metadata.namespace,
               app: app.id,
-              name: app.name,
               files: source.files,
             })
           : null,
@@ -230,8 +220,11 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
       .handle("sourceDisplayFile", ({ params, query }) =>
         Effect.gen(function* () {
           const { app, host } = yield* authoring(params.app);
-          // The commit pins the listed revision; the app's own code lineage pins its repository.
-          const files = yield* host.sources.read({ code: app.code, commit: params.commit });
+          const files = yield* host.executor.apps.revision({
+            owner: app.owner,
+            app: app.id,
+            commit: params.commit,
+          });
           return yield* sourceDisplayFile(files, query.path);
         }),
       )
@@ -270,7 +263,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           const from =
             "app" in payload.from
               ? (yield* ownedSource(host, identity, payload.from.app)).app.id
-              : yield* resolvePublication(host.registry, payload.from);
+              : payload.from;
           return yield* host.executor.apps
             .copy({
               owner: identity.owner,
@@ -296,9 +289,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           const identity = yield* AppIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
           const { app } = yield* ownedSource(host, identity, params.app);
-          if (app.repository === null)
-            yield* host.executor.apps.workspace({ app: app.id, owner: app.owner });
-          return yield* host.repositories.history(app.code);
+          return yield* host.executor.apps.history({ owner: app.owner, app: app.id });
         }),
       )
       .handle("publish", ({ params, payload }) =>
@@ -306,36 +297,50 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           const identity = yield* editIdentity(params.app);
           const host = yield* Effect.flatten(AppManagementHost);
           yield* ownedSource(host, identity, params.app, true);
-          if (host.publisher === undefined || identity.namespace === null)
+          if (identity.namespace === null)
             return yield* new AppAccessDenied({ reason: "forbidden" });
-          return yield* host.publisher.publish({
-            owner: identity.owner,
-            namespace: identity.namespace,
-            app: params.app,
-            ...payload,
-          });
+          return yield* host.executor.publications
+            .publish({
+              owner: identity.owner,
+              namespace: identity.namespace,
+              app: params.app,
+              ...payload,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                Schema.is(RegistryError)(error) && error.reason === "unsupported"
+                  ? new AppAccessDenied({ reason: "forbidden" })
+                  : error,
+              ),
+            );
         }),
       )
       .handle("catalog", ({ query }) =>
         Effect.gen(function* () {
-          return yield* (yield* Effect.flatten(AppManagementHost)).registry.list(query.name);
+          const host = yield* Effect.flatten(AppManagementHost);
+          return yield* host.executor.registry.list(query);
         }),
       )
       .handle("published", () =>
         Effect.gen(function* () {
           const identity = yield* AppIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
-          return host.publisher === undefined ? [] : yield* host.publisher.owned(identity.owner);
+          return yield* host.executor.publications.owned({ owner: identity.owner });
         }),
       )
       .handle("unpublish", ({ payload }) =>
         Effect.gen(function* () {
           const identity = yield* writeIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
-          if (host.publisher === undefined)
-            return yield* new AppAccessDenied({ reason: "forbidden" });
-          yield* host.publisher.unpublish(identity.owner, payload.package);
-          return { name: payload.package };
+          return yield* host.executor.publications
+            .unpublish({ owner: identity.owner, package: payload.package })
+            .pipe(
+              Effect.mapError((error) =>
+                Schema.is(RegistryError)(error) && error.reason === "unsupported"
+                  ? new AppAccessDenied({ reason: "forbidden" })
+                  : error,
+              ),
+            );
         }),
       ),
   );
@@ -370,12 +375,10 @@ export const registryRoutes = (() => {
       HttpApiBuilder.group(api, "registry", (h) =>
         h
           .handle("list", ({ query }) =>
-            Effect.flatMap(publicRegistry, (host) => host.registry.list(query.name)),
+            Effect.flatMap(publicRegistry, (host) => host.executor.registry.list(query)),
           )
           .handle("snapshot", ({ query }) =>
-            Effect.flatMap(publicRegistry, (host) =>
-              host.registry.snapshot(query.name, query.commit),
-            ),
+            Effect.flatMap(publicRegistry, (host) => host.executor.registry.snapshot(query)),
           ),
       ),
     ),
@@ -410,10 +413,11 @@ export const gitRoutes = (() => {
       url.searchParams.get("service") === "git-receive-pack";
     if (write && (!identity.canWrite || !access.edit || identity.protectedApps.includes(app.id)))
       return yield* new AppAccessDenied({ reason: "forbidden" });
-    if (app.repository === null)
-      yield* host.executor.apps.workspace({ app: app.id, owner: app.owner });
     return HttpServerResponse.fromWeb(
-      yield* host.repositories.request(app.code, yield* HttpServerRequest.toWeb(request)),
+      yield* host.executor[RepositoryHost].request(
+        { owner: app.owner, app: app.id },
+        yield* HttpServerRequest.toWeb(request),
+      ),
     ).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
   }).pipe(
     Effect.catch((error) =>

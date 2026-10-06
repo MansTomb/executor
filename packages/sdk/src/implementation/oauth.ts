@@ -66,6 +66,7 @@ import {
 } from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
+import { storedProfile } from "./profiles.ts";
 import {
   idTokenIdentity,
   isOAuthErrorResponse,
@@ -686,7 +687,22 @@ export const makeOAuth = (
                 update: state,
               }),
             );
-            if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
+            if (lifecycle)
+              yield* lifecycle.connectionCompleting({
+                id: current.id,
+                owner: current.owner,
+                reconnectAccount: current.reconnectAccount,
+                target:
+                  current.target === null
+                    ? null
+                    : {
+                        app: current.target.app,
+                        profile: yield* storedProfile(tx, {
+                          app: current.target.app,
+                          profile: current.target.profile,
+                        }),
+                      },
+              });
             yield* finishConnection(tx, claimed, saved);
             yield* saveClient(tx);
             return saved;
@@ -1020,7 +1036,22 @@ export const makeOAuth = (
               set: { status: "completed", encrypted: new Uint8Array() },
             }),
           );
-          if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
+          if (lifecycle)
+            yield* lifecycle.connectionCompleting({
+              id: current.id,
+              owner: current.owner,
+              reconnectAccount: current.reconnectAccount,
+              target:
+                current.target === null
+                  ? null
+                  : {
+                      app: current.target.app,
+                      profile: yield* storedProfile(tx, {
+                        app: current.target.app,
+                        profile: current.target.profile,
+                      }),
+                    },
+            });
           yield* finishConnection(tx, current, saved);
           if (savedClient !== undefined)
             yield* query(() =>

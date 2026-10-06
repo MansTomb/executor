@@ -20,6 +20,8 @@ export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/sto
 
 /** Optional Web Crypto adapter; callers retain signing-key custody. */
 export { aesGcmCredentials } from "./implementation/credentials.ts";
+/** Read another host's public catalog over HTTPS. */
+export { remoteRegistry } from "./implementation/remote-registry.ts";
 export { webhookCallback } from "./implementation/webhook-http.ts";
 
 export * from "./contracts/workflows.ts";
@@ -32,4 +34,4 @@ export {
 } from "./contracts/workflow-runtime.ts";
 export { decodeWorkflowFailure, workflowFailureMessage } from "./contracts/workflow-errors.ts";
 
-export { recoverAppRepositories, AppRepositoryRecovery } from "./implementation/initial-source.ts";
+export { AppRepositoryRecovery } from "./implementation/initial-source.ts";
