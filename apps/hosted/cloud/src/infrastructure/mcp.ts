@@ -6,7 +6,7 @@ import { Effect } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { forwardMcpRequest } from "../implementation/mcp-forward.ts";
 import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
-import { makeMcpSession, type McpSessionObject, type McpSessionServices } from "./mcp-session.ts";
+import type { McpSessionObject } from "./mcp-session.ts";
 import { McpServer } from "./mcp-server-worker.ts";
 
 /**
@@ -17,18 +17,6 @@ import { McpServer } from "./mcp-server-worker.ts";
 export class McpSession extends Cloudflare.DurableObject<McpSession, McpSessionObject>()(
   "McpSession",
 ) {}
-
-/**
- * The API Worker's former session class. API isolates still on the previous version forward
- * here while this version rolls out, so the API serves it for one more release.
- */
-export class McpSessions extends Cloudflare.DurableObject<McpSessions, McpSessionObject>()(
-  "McpSessions",
-) {}
-
-/** Serve the former class with the API's own executor and MCP identity. */
-export const McpSessionsLive = (services: McpSessionServices) =>
-  McpSessions.make(makeMcpSession(services));
 
 /** Resolve the session binding at startup; return a handler authenticated on each request. */
 export const cloudMcp = Effect.gen(function* () {

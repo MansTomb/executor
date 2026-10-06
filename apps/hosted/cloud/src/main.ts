@@ -46,7 +46,7 @@ import { Config, Effect, Layer, Option, Path, Ref } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudOnboarding } from "./infrastructure/onboarding.ts";
-import { cloudMcp, McpSessionsLive } from "./infrastructure/mcp.ts";
+import { cloudMcp } from "./infrastructure/mcp.ts";
 import { cloudApi } from "./implementation/api.ts";
 import { billingLive } from "./implementation/billing.ts";
 import { cloudSchedules, ScheduleCoordinatorLive } from "./infrastructure/schedules.ts";
@@ -259,9 +259,6 @@ export default Api.make(
     );
     // Session objects run in the MCP server Worker; this isolate authenticates and forwards.
     const mcp = yield* cloudMcp;
-    yield* Effect.void.pipe(
-      Effect.provide(McpSessionsLive({ executor, identity: auth.mcpIdentity })),
-    );
     const meter = yield* BillingMeter.pipe(Effect.provide(billing));
     // Each job reports its own failure, so a workflow problem cannot prevent email delivery.
     const workflowReconcile = Effect.flatten(HostedExecutor).pipe(
