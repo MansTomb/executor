@@ -152,7 +152,8 @@ the signal and the selected account. It downloads and compiles the definition
 inside the app, caching each revision; no extra dependency is needed. Pass the
 settings the definition cannot be trusted to decide:
 
-- `source`: `{ url }` for a public definition (up to 40 MB), or `{ document }`.
+- `source`: `{ url }` for a public definition (up to 40 MB), or `{ document }`:
+  Swagger 2.0 or OpenAPI 3.0, 3.1 or 3.2.
 - `allowedOrigin`: the one origin that may receive credentials. `baseUrl`
   overrides the definition's server.
 - `securitySchemes`: usually `components.securitySchemes` from the definition.
@@ -164,22 +165,34 @@ settings the definition cannot be trusted to decide:
   [accounts.md](accounts.md#oauth-sign-in), preferring `discover`.
 - Optional `fallbackSecurity` when the definition declares no security, and
   `patches` for mistakes in a definition you do not control.
+- Optional `pathPrefix`, such as `/projects/{project}`, when the definition's
+  paths omit leading segments. It goes between the server and every path; each
+  `{name}` becomes a required path parameter of every tool.
 - Optional `kinds`, keyed by operationId, when an operation's HTTP method
   misclassifies it as a query or mutation.
 
 Tools are grouped by the operation's first tag, or its first path segment:
 operationId `listProjects` tagged `projects` becomes
 `projects.listProjects`, and `accounts_connect` tagged `accounts`
-becomes `accounts.connect`. Discover the exact names with search.
+becomes `accounts.connect`. Without an operationId the name comes from the
+method and path, and operations that would share one add the path segments
+that differ: `GET /builds` and `GET /builds/{build_num}` become
+`builds.getBuilds` and `builds.getBuildsByBuildNum`. Discover the exact names
+with search.
 
 Operations the helper cannot represent, and operations whose security needs
-another method, are left out rather than failing the app. Public APIs need no
+another method, are left out rather than failing the app. Reading or calling a
+left-out operation's tool fails with why, such as the JSON Pointer of an
+invalid schema. When none can be imported, the router's error lists the
+operations left out and why, and the origins the operations use when none
+matches `allowedOrigin`. Public APIs need no
 account: call `liveOpenapiRouter` without `accountRouter` and with
 `methods: {}` and `oauth: []`. `openapiRouter` is the lower-level helper for
 normalized metadata. Use `contentType` to choose an alternate declared request
 media type. Binary request bodies and multipart binary fields take base64
-strings. Binary responses return `{ base64, contentType }`; text and NDJSON
-return text. Success responses have a 16 MiB / 30-second read bound. Live SSE
+strings. Binary responses return `{ base64, contentType }`; text and JSON
+sequences (NDJSON, JSON Lines, `json-seq`) return text. Success responses have
+a 16 MiB / 30-second read bound. Live SSE
 requires an authored subscription.
 
 OpenAPI apps return documented errors with an exact HTTP status, a required

@@ -286,6 +286,27 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  liveOpenapiDiagnostics: {
+    fixtures: "actors",
+    file: "live-openapi-import.spec.ts",
+    title: "Live OpenAPI names the operations, origins and schema pointers it cannot import",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The importer runs the same app code on every host; covered on self-host."),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  liveOpenapi32: {
+    fixtures: "actors",
+    file: "live-openapi-import.spec.ts",
+    title:
+      "Live OpenAPI imports OpenAPI 3.2 QUERY, querystring and JSON Lines operations under a path prefix",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream fixture"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   liveOpenapiCache: {
     fixtures: "actors",
     file: "live-openapi-cache.spec.ts",

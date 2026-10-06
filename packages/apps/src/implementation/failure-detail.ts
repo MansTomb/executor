@@ -3,6 +3,7 @@ import { CacheError } from "@executor-js/app-cache/contracts";
 import { AppDatabaseError } from "@executor-js/app-data/contracts";
 import { AppStorageError, AppStorageUnavailable } from "../contracts/storage.ts";
 import { OpenapiError } from "../contracts/openapi.ts";
+import { OpenapiCompileError } from "../contracts/openapi-compile.ts";
 import type { ResolvedAccounts } from "../contracts/host.ts";
 import { McpError } from "../contracts/mcp.ts";
 import type { ProviderError } from "../contracts/provider-error.ts";
@@ -259,6 +260,15 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
           : error.reason === "invalid_input"
             ? "The input could not be encoded as a request for this API operation."
             : "The API's OpenAPI definition for this operation is invalid.",
+    };
+  // The OpenAPI helper runs in the app and reads a definition the app chose, so its compile
+  // failures are the app's: their code and message say what to change.
+  if (Schema.is(OpenapiCompileError)(error))
+    return {
+      source: "app",
+      errorName: "OpenapiCompileError",
+      code: error.code,
+      message: boundFailureMessage(error.message, secrets),
     };
   if (error instanceof Error) {
     const code = ownCode(error, secrets);
