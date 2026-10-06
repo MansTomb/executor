@@ -18,6 +18,7 @@ import AppDataLive from "./src/app-data.ts";
 import ArtifactsCredentialsLive from "./src/artifacts-credentials.ts";
 import McpServerLive from "./src/mcp-server.ts";
 import { McpServer } from "./src/infrastructure/mcp-server-worker.ts";
+import { mcpSessionForwardingGate } from "./src/infrastructure/mcp-session-release.ts";
 import AppDomainControllerLive from "./src/app-domains.ts";
 import { AppDomainController } from "./src/infrastructure/app-domain-controller-worker.ts";
 import InvocationTelemetryLive from "./src/invocation-telemetry.ts";
@@ -57,6 +58,8 @@ export default Alchemy.Stack(
     state: stackState,
   },
   Effect.gen(function* () {
+    // Stops the deploy before anything changes when the release before this one is not live.
+    yield* mcpSessionForwardingGate.pipe(Effect.orDie);
     // Provisioning settings resolve outside Worker initialization and are not bound into it.
     yield* databaseInfrastructure;
     if (!(yield* AlchemyContext).dev) yield* previewPoolSize;

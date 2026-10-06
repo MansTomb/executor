@@ -7,31 +7,32 @@ import { HttpServerRequest } from "effect/unstable/http";
 import { forwardMcpRequest } from "../implementation/mcp-forward.ts";
 import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
 import { makeMcpSession, type McpSessionObject, type McpSessionServices } from "./mcp-session.ts";
+import { McpServer } from "./mcp-server-worker.ts";
 
 /**
- * The gateway selects one private object per authenticated user/client/organization. Objects
- * keep no storage: an MCP session lives in the object's memory until it is evicted.
- */
-export class McpSessions extends Cloudflare.DurableObject<McpSessions, McpSessionObject>()(
-  "McpSessions",
-) {}
-
-/** The API owns the sessions and supplies its executor and MCP identity. */
-export const McpSessionsLive = (services: McpSessionServices) =>
-  McpSessions.make(makeMcpSession(services));
-
-/**
- * The same session object, hosted by the MCP server Worker so a wake never starts the API
- * Worker. A new class rather than a transfer, since objects keep no storage. The gateway moves
- * here once this Worker is deployed, so no request reaches it before its code does.
+ * The gateway selects one private object per authenticated user/client/organization. The MCP
+ * server Worker hosts them, so a wake never starts the API Worker. Objects keep no storage: an
+ * MCP session lives in the object's memory until it is evicted.
  */
 export class McpSession extends Cloudflare.DurableObject<McpSession, McpSessionObject>()(
   "McpSession",
 ) {}
 
+/**
+ * The API Worker's former session class. API isolates still on the previous version forward
+ * here while this version rolls out, so the API serves it for one more release.
+ */
+export class McpSessions extends Cloudflare.DurableObject<McpSessions, McpSessionObject>()(
+  "McpSessions",
+) {}
+
+/** Serve the former class with the API's own executor and MCP identity. */
+export const McpSessionsLive = (services: McpSessionServices) =>
+  McpSessions.make(makeMcpSession(services));
+
 /** Resolve the session binding at startup; return a handler authenticated on each request. */
 export const cloudMcp = Effect.gen(function* () {
-  const sessions = yield* McpSessions;
+  const sessions = yield* McpSession.from(McpServer);
   const forward = (access: Parameters<typeof mcpSessionKey>[0]) =>
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;

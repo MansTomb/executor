@@ -22,6 +22,7 @@ import { compareLoad, loadTable, runLoad, type LoadWindow } from "./perf/load.ts
 import { Observation, observe, summarizeObservations } from "./perf/observer.ts";
 import { sqlStats } from "./perf/sql-stats.ts";
 import { runIdle } from "./perf/idle.ts";
+import { runSessionHop } from "./perf/session-hop.ts";
 
 const stage = Command.make(
   "stage",
@@ -198,6 +199,44 @@ const idle = Command.make(
       });
       yield* writeJson(input.output, {
         kind: "perf-idle",
+        origin: control.origin,
+        slug: control.slug,
+        commit: control.commit,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        samples,
+      });
+    }),
+);
+
+const sessionHop = Command.make(
+  "session-hop",
+  {
+    control: Flag.String("control"),
+    receipt: Flag.String("receipt"),
+    output: Flag.String("output"),
+    orgs: Flag.String("orgs").pipe(Flag.withDefault("a1f,a8f,a24f,a1s,a8s,a24s")),
+    gap: Flag.Int("gap").pipe(Flag.withDefault(180)),
+    rounds: Flag.Int("rounds").pipe(Flag.withDefault(8)),
+    warm: Flag.Int("warm").pipe(Flag.withDefault(5)),
+    concurrent: Flag.Int("concurrent").pipe(Flag.withDefault(4)),
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const control = yield* readStageControl(input.control);
+      const receipt = yield* readReceipt(input.receipt);
+      const target = yield* makeTarget(control.slug, control, receipt);
+      const startedAt = new Date().toISOString();
+      const samples = yield* runSessionHop({
+        target,
+        orgs: input.orgs.split(","),
+        gapSeconds: input.gap,
+        rounds: input.rounds,
+        warm: input.warm,
+        concurrent: input.concurrent,
+      });
+      yield* writeJson(input.output, {
+        kind: "perf-session-hop",
         origin: control.origin,
         slug: control.slug,
         commit: control.commit,
@@ -439,6 +478,7 @@ const root = Command.make("perf").pipe(
     list,
     run,
     idle,
+    sessionHop,
     compare,
     flamechart,
     table,

@@ -257,8 +257,9 @@ export default Api.make(
       appAddresses(auth.origin, yield* cloudAppUiBase.pipe(Effect.orDie)),
       appDomains.status,
     );
-    // Session objects run in this isolate and share its executor and MCP identity.
-    const mcp = yield* cloudMcp.pipe(
+    // Session objects run in the MCP server Worker; this isolate authenticates and forwards.
+    const mcp = yield* cloudMcp;
+    yield* Effect.void.pipe(
       Effect.provide(McpSessionsLive({ executor, identity: auth.mcpIdentity })),
     );
     const meter = yield* BillingMeter.pipe(Effect.provide(billing));
