@@ -322,7 +322,7 @@ export default Api.make(
       HttpRouter.provideRequest(yield* cloudSourceFormatter),
       Layer.provide(appUi.dashboard),
       Layer.provide(requestServices(auth.appSessions).layer),
-      HttpRouter.provideRequest(catalogLive(document.document, egress)),
+      HttpRouter.provideRequest(catalogLive(document.document, egress, clientMetadata)),
       Layer.provide(schedules.layer),
       Layer.provide(billing),
       Layer.provide(removals),

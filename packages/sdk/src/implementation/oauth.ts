@@ -70,6 +70,7 @@ import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { storedProfile } from "./profiles.ts";
 import {
+  clientRegistration,
   idTokenIdentity,
   isOAuthErrorResponse,
   makeOAuthProtocol,
@@ -473,24 +474,6 @@ export const makeOAuth = (
           });
         }),
       );
-      // The optional revocation endpoint is not required to connect; the transport still
-      // enforces this policy when revocation calls it.
-      for (const address of [
-        discovered.server.issuer,
-        discovered.server.authorization_endpoint,
-        discovered.server.token_endpoint,
-        discovered.server.registration_endpoint,
-      ].filter((address) => address !== undefined)) {
-        const url = parseDestination(address, options.urlPolicy);
-        if (url === undefined) return yield* new OAuthSetupFailed({ reason: "discovery_blocked" });
-      }
-      if (
-        discovered.grant === "authorization_code" &&
-        discovered.server.code_challenge_methods_supported !== undefined &&
-        !discovered.server.code_challenge_methods_supported.includes("S256")
-      ) {
-        return yield* new OAuthSetupFailed({ reason: "unsupported" });
-      }
       // A client registered for fewer scopes cannot be assumed to allow new ones. Only registered
       // and entered clients are saved, and the metadata URL does not change them, so turning the
       // setting on or off keeps every saved client. The null once held that URL; it stays so
@@ -530,32 +513,33 @@ export const makeOAuth = (
         }
       }
       const savedClient = client !== undefined;
-      if (
-        automatic &&
-        discovered.grant === "authorization_code" &&
-        client === undefined &&
-        (method.tokenEndpointAuthMethod === undefined ||
-          method.tokenEndpointAuthMethod === "none") &&
-        discovered.server.client_id_metadata_document_supported === true &&
-        options.clientMetadataUrl !== undefined
-      ) {
-        const metadataUrl = options.clientMetadataUrl;
-        const url = parseDestination(metadataUrl, httpsOnlyUrlPolicy);
+      // Import checks report the same choice for the providers they generate.
+      const registration =
+        discovered.grant === "authorization_code"
+          ? clientRegistration(
+              discovered.server,
+              method.tokenEndpointAuthMethod,
+              options.clientMetadataUrl,
+            )
+          : "manual";
+      if (automatic && client === undefined && registration === "client_id_metadata_document") {
+        const url =
+          options.clientMetadataUrl === undefined
+            ? undefined
+            : parseDestination(options.clientMetadataUrl, httpsOnlyUrlPolicy);
         if (url === undefined) return yield* new OAuthSetupFailed({ reason: "invalid_client" });
         client = { client_id: url.href, token_endpoint_auth_method: "none" };
       }
-      return { method, redirect, discovered, clientId, client, savedClient, reused };
+      return { method, redirect, discovered, clientId, client, savedClient, reused, registration };
     });
   const oauthSetup = (input: typeof CheckOAuthSetup.Type) =>
     resolveSetup(input, true).pipe(
-      Effect.map(({ client, discovered, method, savedClient }): OAuthClientSetup => {
+      Effect.map(({ discovered, method, savedClient, registration }): OAuthClientSetup => {
         const mode = savedClient
           ? "saved"
-          : client !== undefined ||
-              (discovered.grant === "authorization_code" &&
-                discovered.server.registration_endpoint !== undefined)
-            ? "automatic"
-            : "client-required";
+          : registration === "manual"
+            ? "client-required"
+            : "automatic";
         return method.grant === "client_credentials"
           ? {
               mode,
@@ -592,6 +576,7 @@ export const makeOAuth = (
         clientId,
         client: availableClient,
         reused,
+        registration,
       } = yield* resolveSetup(input, input.client === undefined);
       /** Where the client came from; a reused client keeps its recorded source, if any. */
       let source: OAuthClientSource | undefined =
@@ -619,17 +604,12 @@ export const makeOAuth = (
       if (
         client === undefined &&
         discovered.grant === "authorization_code" &&
-        discovered.server.registration_endpoint !== undefined
+        registration === "dynamic"
       ) {
         if (redirect === undefined)
           return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
         client = yield* protocol
-          .register(
-            discovered.server,
-            redirect.href,
-            discovered.scopes,
-            method.tokenEndpointAuthMethod,
-          )
+          .register(discovered.server, redirect, discovered.scopes, method.tokenEndpointAuthMethod)
           .pipe(Effect.mapError((error) => registrationFailed(error, HttpUrl.make(redirect.href))));
         source = "registered";
       }

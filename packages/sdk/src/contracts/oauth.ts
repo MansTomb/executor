@@ -96,6 +96,7 @@ export const OAuthResponseField = Schema.Literals([
   "issuer",
   "authorization_endpoint",
   "token_endpoint",
+  "code_challenge_methods_supported",
   "jwt_alg",
 ]);
 /**
@@ -944,7 +945,73 @@ export const OAuthResource = Schema.Struct({
   resource: HttpUrl,
   authorization_servers: Schema.Array(HttpUrl),
   scopes_supported: Schema.optional(Schema.Array(Schema.String)),
+  /** Ahrefs lists its scopes under this name instead of RFC 9728's `scopes_supported`. */
+  scopes_provided: Schema.optional(Schema.Array(Schema.String)),
 });
+export type OAuthResource = typeof OAuthResource.Type;
+
+/**
+ * Where protected-resource metadata was read, in the order MCP clients look: the document a
+ * Bearer challenge names, else the path-suffixed well-known URL, then the root one (RFC 9728).
+ */
+export const ResourceMetadataLocation = Schema.Literals(["challenge", "path", "root"]);
+export type ResourceMetadataLocation = typeof ResourceMetadataLocation.Type;
+/**
+ * How a client is obtained at an authorization server, in MCP's order of preference: a Client ID
+ * Metadata Document, dynamic client registration (RFC 7591), or a client the user registers.
+ */
+export const OAuthClientRegistration = Schema.Literals([
+  "client_id_metadata_document",
+  "dynamic",
+  "manual",
+]);
+export type OAuthClientRegistration = typeof OAuthClientRegistration.Type;
+/** One protected-resource metadata lookup and what it found, without its URL or body. */
+export const ResourceMetadataSignal = Schema.TaggedStruct("ResourceMetadata", {
+  location: ResourceMetadataLocation,
+  status: Schema.optionalKey(Schema.Int),
+  result: Schema.Literals(["found", "missing", "invalid", "mismatch", "blocked", "unavailable"]),
+});
+export type ResourceMetadataSignal = typeof ResourceMetadataSignal.Type;
+/** The authorization server's RFC 8414 or OpenID Connect metadata, without its URL or body. */
+export const AuthorizationServerSignal = Schema.TaggedStruct("AuthorizationServerMetadata", {
+  /** Named by the resource metadata, or the MCP server's origin when it publishes none. */
+  issuer: Schema.Literals(["resource_metadata", "origin"]),
+  status: Schema.optionalKey(Schema.Int),
+  result: Schema.Literals(["found", "missing", "invalid", "blocked", "unavailable", "unsupported"]),
+  /** The document that answered: RFC 8414 metadata or OpenID Connect Discovery. */
+  document: Schema.optionalKey(Schema.Literals(["oauth", "openid"])),
+  registration: Schema.optionalKey(OAuthClientRegistration),
+});
+export type AuthorizationServerSignal = typeof AuthorizationServerSignal.Type;
+export const ResourceOAuthSignal = Schema.Union([
+  ResourceMetadataSignal,
+  AuthorizationServerSignal,
+]);
+export type ResourceOAuthSignal = typeof ResourceOAuthSignal.Type;
+/**
+ * What a protected resource advertises about authorization-code OAuth, and the lookups that
+ * decided it. Unusable OAuth names the step that failed; it never selects another method.
+ */
+export const ResourceOAuth = Schema.TaggedUnion({
+  OAuthNotAdvertised: { signals: Schema.Array(ResourceOAuthSignal) },
+  OAuthAdvertised: {
+    registration: OAuthClientRegistration,
+    signals: Schema.Array(ResourceOAuthSignal),
+  },
+  OAuthUnusable: {
+    reason: Schema.Literals([
+      "unavailable",
+      "metadata_missing",
+      "invalid",
+      "resource_mismatch",
+      "blocked",
+      "unsupported",
+    ]),
+    signals: Schema.Array(ResourceOAuthSignal),
+  },
+});
+export type ResourceOAuth = typeof ResourceOAuth.Type;
 /** This record is only read inside encrypted host state; never return it to app code. */
 const registration = {
   client_id: Schema.NonEmptyString,

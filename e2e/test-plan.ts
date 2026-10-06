@@ -2155,6 +2155,36 @@ export const scenarios = {
       local: na("Exercises the shared import and OAuth implementation through hosted APIs."),
     },
   },
+  mcpAuthDetectionPublic: {
+    fixtures: "actors",
+    file: "mcp-auth-detection.spec.ts",
+    title: "MCP quick add imports public servers and keeps the OAuth a public server also offers",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud egress refuses loopback MCP hosts, so no Cloud scenario imports one."),
+      local: na("Exercises the shared importer through the hosted import route."),
+    },
+  },
+  mcpAuthDetectionOAuth: {
+    fixtures: "actors",
+    file: "mcp-auth-detection.spec.ts",
+    title: "MCP quick add imports OAuth servers and connects each with the client it needs",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud egress refuses loopback MCP hosts, so no Cloud scenario imports one."),
+      local: na("Exercises the shared importer and OAuth setup through hosted APIs."),
+    },
+  },
+  mcpAuthDetectionSetup: {
+    fixtures: "actors",
+    file: "mcp-auth-detection.spec.ts",
+    title: "MCP quick add explains servers it cannot add with the signals that decided",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud egress refuses loopback MCP hosts, so no Cloud scenario imports one."),
+      local: na("Exercises the shared importer and its error view through hosted pages."),
+    },
+  },
   importApprovals: {
     fixtures: "actors",
     file: "import-approvals.spec.ts",
@@ -2571,7 +2601,7 @@ export const scenarios = {
     fixtures: "actors",
     file: "oauth-interop.spec.ts",
     title:
-      "OAuth discovery tries OpenID configuration when the RFC 8414 location redirects or refuses",
+      "OAuth discovery tries MCP's metadata locations in order when one redirects, refuses or is missing",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer."),

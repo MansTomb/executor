@@ -522,22 +522,32 @@ visit("/app/data/hosted.pglite");process.stdout.write(hash.digest("hex"));`,
                 `
 const http = require("node:http");
 const net = require("node:net");
-const hosts = [];
+const requests = [];
 let blockedConnections = 0;
 net.createServer(socket => { blockedConnections++; socket.destroy(); }).listen(8092, "::");
 http.createServer((request, response) => {
   response.setHeader("content-type", "application/json");
-  if (request.url === "/stats") return response.end(JSON.stringify({ hosts, blockedConnections }));
-  hosts.push(request.headers.host);
+  if (request.url === "/stats") return response.end(JSON.stringify({ requests, blockedConnections }));
+  requests.push(request.method + " " + request.headers.host + request.url);
   if (request.url === "/redirect") {
     response.writeHead(302, { location: "https://blocked.example.test:8092/mcp" }).end();
     return;
   }
-  // A public MCP server: anonymous initialization succeeds, so quick add needs no account.
-  response.end(JSON.stringify({
-    jsonrpc: "2.0", id: 1,
-    result: { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "Release network fixture", version: "1.0.0" } }
-  }));
+  if (request.method !== "POST" || request.url !== "/mcp") return response.writeHead(404).end();
+  // A public MCP server: anonymous initialization and tool listing succeed, so quick add needs
+  // no account. Each answer echoes its request's id, as JSON-RPC requires.
+  let body = "";
+  request.on("data", chunk => { body += chunk; });
+  request.on("end", () => {
+    const message = JSON.parse(body);
+    if (message.id === undefined) return response.writeHead(202).end();
+    response.end(JSON.stringify({
+      jsonrpc: "2.0", id: message.id,
+      result: message.method === "initialize"
+        ? { protocolVersion: "2025-11-25", capabilities: { tools: {} }, serverInfo: { name: "Release network fixture", version: "1.0.0" } }
+        : { tools: [] }
+    }));
+  });
 }).listen(8091, "::");
 `,
               ]),
@@ -554,7 +564,7 @@ http.createServer((request, response) => {
                 Schema.decodeUnknownEffect(
                   Schema.fromJsonString(
                     Schema.Struct({
-                      hosts: Schema.Array(Schema.String),
+                      requests: Schema.Array(Schema.String),
                       blockedConnections: Schema.Number,
                     }),
                   ),
@@ -593,9 +603,15 @@ http.createServer((request, response) => {
               });
             }
             const observed = yield* stats;
-            expect(observed.hosts).toEqual([
-              "allowed.example.test:8091",
-              "allowed.example.test:8091",
+            // The allowed import's anonymous check, then one request to the redirect that was
+            // refused without following it. The blocked host was never contacted.
+            expect(observed.requests).toEqual([
+              "POST allowed.example.test:8091/mcp",
+              "POST allowed.example.test:8091/mcp",
+              "POST allowed.example.test:8091/mcp",
+              "GET allowed.example.test:8091/.well-known/oauth-protected-resource/mcp",
+              "GET allowed.example.test:8091/.well-known/oauth-protected-resource",
+              "POST allowed.example.test:8091/redirect",
             ]);
             expect(observed.blockedConnections).toBe(0);
           }

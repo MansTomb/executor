@@ -204,7 +204,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let registrations = 0;
   let discoveries = 0;
   let authMethods = ["client_secret_basic"];
-  let lastRegistration: { scope: string; method: string } | undefined;
+  /** The latest registration request, with the OpenID Connect `application_type` it named. */
+  let lastRegistration:
+    | { scope: string; method: string; applicationType: string | undefined }
+    | undefined;
   /**
    * How the service reads HTTP Basic client credentials. "form-decoded" follows RFC 6749
    * section 2.3.1. "literal" compares them as sent, as Google and PlanetScale (Doorkeeper) do.
@@ -697,11 +700,16 @@ export const oauthSetupIssuer = Effect.gen(function* () {
                 redirect_uris: Schema.Array(Schema.String),
                 token_endpoint_auth_method: Schema.String,
                 scope: Schema.optional(Schema.String),
+                application_type: Schema.optional(Schema.String),
               }),
             ),
           ),
         );
-        lastRegistration = { scope: input.scope ?? "", method: input.token_endpoint_auth_method };
+        lastRegistration = {
+          scope: input.scope ?? "",
+          method: input.token_endpoint_auth_method,
+          applicationType: input.application_type,
+        };
         const description =
           registrationErrorDescription === undefined
             ? {}

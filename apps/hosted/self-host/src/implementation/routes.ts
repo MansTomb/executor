@@ -106,7 +106,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       HttpRouter.provideRequest(localSourceFormatter),
       Layer.provide(appUi.dashboard),
       HttpRouter.provideRequest(auth.appSessions),
-      HttpRouter.provideRequest(catalogLive(document.document, egress)),
+      HttpRouter.provideRequest(catalogLive(document.document, egress, clientMetadata)),
       Layer.provide(hostedMiddlewareLive),
       HttpRouter.provideRequest(executorServices),
       Layer.provide(auth.identity),

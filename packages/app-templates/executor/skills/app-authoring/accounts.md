@@ -219,10 +219,10 @@ The host adds `offline_access` when advertised and `scopes` is omitted.
 
 Standard discovery requires the metadata's `issuer` to equal the issuer used to
 construct the well-known metadata URL.
-Multi-tenant endpoints that publish a template instead, such as Microsoft's
-`common` endpoint (`https://login.microsoftonline.com/{tenantid}/v2.0`), cannot
-pass that check: use a tenant-specific issuer URL, or declare the endpoints
-without `issuer`.
+Microsoft Entra ID's multi-tenant `common` and `organizations` endpoints publish
+the template `https://login.microsoftonline.com/{tenantid}/v2.0` instead, which
+discovery accepts. Its `consumers` endpoint names a different issuer in its
+metadata and fails the check: declare its endpoints and issuer.
 
 `authorizationParams` adds service-defined parameters to the sign-in request,
 from the service's docs. Use it for settings such as offline access or a

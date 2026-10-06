@@ -73,7 +73,10 @@ export const dashboard = (
   } = {},
 ) => {
   const owner = OwnerId.make("local");
-  const appCatalog = createCatalog(egress, catalog);
+  const appCatalog = createCatalog(
+    { egress, clientMetadataUrl: config.oauthClientMetadataUrl },
+    catalog,
+  );
   /** Only status and a non-refreshable expiry leave the trusted host. */
   const signIn = (account: AccountId) =>
     executor.accounts.signIn({ account }).pipe(

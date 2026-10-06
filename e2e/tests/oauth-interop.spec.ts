@@ -263,12 +263,22 @@ layer(HostedLive, { excludeTestServices: true })("OAuth service interoperability
             "apple",
             ["/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"],
           ],
-          // Atlassian refuses the path-inserted RFC 8414 location with 401.
+          // An issuer with a path: MCP's order is RFC 8414 and then OpenID configuration with
+          // the path inserted, then OpenID configuration appended. Atlassian refuses the first
+          // with 401 and publishes at the last.
           [
             "atlassian",
             [
               "/.well-known/oauth-authorization-server/oauth",
+              "/.well-known/openid-configuration/oauth",
               "/oauth/.well-known/openid-configuration",
+            ],
+          ],
+          [
+            "openid-inserted",
+            [
+              "/.well-known/oauth-authorization-server/oauth",
+              "/.well-known/openid-configuration/oauth",
             ],
           ],
         ] as const) {

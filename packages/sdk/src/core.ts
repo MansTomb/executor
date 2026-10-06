@@ -5,8 +5,8 @@ export { makeDeclarationCache } from "./implementation/declarations.ts";
 export { declarationConfig } from "./implementation/declaration-config.ts";
 export { executorHandlers } from "./implementation/handlers.ts";
 export { probeOAuthChallenge } from "./implementation/oauth-probe.ts";
-export { discoversResourceOAuth } from "./implementation/oauth-protocol.ts";
-export { bearerResourceMetadata } from "./implementation/oauth-challenge.ts";
+export { discoverResourceOAuth } from "./implementation/oauth-protocol.ts";
+export { bearerChallenge, bearerResourceMetadata } from "./implementation/oauth-challenge.ts";
 export { subscribeAppQuery } from "./implementation/live.ts";
 export {
   runtimeAdapter,

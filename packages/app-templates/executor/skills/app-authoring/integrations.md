@@ -82,6 +82,13 @@ OAuth uses `oauth2({ discover: "https://example.com/mcp" })`
 and `Authorization: "Bearer " + account.fields.access_token`.
 API-key methods use a `secrets` field and the header the server documents,
 for example `headers: { "X-API-Key": account.fields.token }`.
+
+When quick add refuses a server, its reason names what the server answered
+without credentials. A 401 with a Bearer challenge and no OAuth metadata means
+a key sent as `Authorization: "Bearer " + ...`; confirm the header in the
+service's documentation. A 403 web page means a firewall refused Executor's
+check, not that a key is needed. A public server that also offers OAuth is
+added without an account; its `provider.ts` keeps the discovered OAuth.
 The factory runs with each configured app's selected account, so different
 accounts can expose different catalogs. Do not keep a global authenticated catalog.
 

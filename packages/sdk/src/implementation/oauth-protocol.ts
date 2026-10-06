@@ -1,12 +1,14 @@
 /** OAuth wire protocol. Effect owns transport and cancellation; oauth4webapi validates responses. */
 import { parseDestination } from "@executor-js/utils/url-policy";
-import { Clock, Effect, Encoding, Schema } from "effect";
+import { Clock, Effect, Encoding, Match, Result, Schema } from "effect";
 import { captureTelemetry } from "@executor-js/telemetry";
 import { FetchHttpClient, HttpClientRequest } from "effect/unstable/http";
 import * as oauth from "oauth4webapi";
 import {
+  AuthorizationServerSignal,
   maxOAuthServiceErrorLength,
   maxOAuthServiceTextLength,
+  type OAuthClientRegistration,
   OAuthProviderErrorCode,
   OAuthResponseField,
   OAuthResource,
@@ -17,6 +19,10 @@ import {
   OAuthRegistration,
   type OAuthOptions,
   type OAuthClientAuth,
+  ResourceMetadataSignal,
+  type ResourceMetadataLocation,
+  ResourceOAuth,
+  type ResourceOAuthSignal,
 } from "../contracts/oauth.ts";
 import type { OAuthTokenRequestFormat, OAuthTokenResponse } from "apps/contracts";
 import type { ProviderAuthMethod } from "../contracts/provider.ts";
@@ -841,8 +847,108 @@ const sameIdentity = (
 
 /** Issuer metadata, or the answer that said it is missing there. */
 type IssuerMissing = { readonly missing: OAuthProtocolFailed };
-type IssuerFound = { readonly server: OAuthTokenServer; readonly audienceFromScopes: boolean };
+type IssuerFound = {
+  readonly server: OAuthTokenServer;
+  readonly audienceFromScopes: boolean;
+  /** The document that answered; absent for an explicitly declared metadata URL. */
+  readonly document?: "oauth" | "openid";
+};
 type IssuerDiscovery = IssuerFound | IssuerMissing;
+/** A metadata document before validation, and the document that answered. */
+type IssuerAnswer =
+  | { readonly server: oauth.AuthorizationServer; readonly document?: "oauth" | "openid" }
+  | IssuerMissing;
+
+/** Resource metadata lookups, with the validated document or the failure that ended them. */
+type ResourceRead = {
+  readonly lookups: ReadonlyArray<ResourceMetadataSignal>;
+  readonly found?: {
+    readonly metadata: OAuthResource;
+    readonly location: ResourceMetadataLocation;
+  };
+  readonly failed?: OAuthProtocolFailed;
+};
+
+/**
+ * Where an issuer publishes its metadata, in the order MCP clients try: RFC 8414's well-known
+ * URL with the issuer's path inserted after it, OpenID Connect Discovery inserted the same way
+ * (RFC 8414 §5), then OpenID Connect Discovery appended to the issuer's path. An issuer without
+ * a path has one location for each document. URLs are built as oauth4webapi builds the first
+ * and last.
+ */
+const metadataLocations = (
+  issuer: URL,
+): ReadonlyArray<{ readonly url: URL; readonly document: "oauth" | "openid" }> => {
+  const at = (pathname: string) => {
+    const url = new URL(issuer.href);
+    url.pathname = pathname.replace("//", "/");
+    return url;
+  };
+  const path = issuer.pathname.replace(/\/$/, "");
+  const inserted = [
+    { url: at(`/.well-known/oauth-authorization-server${path}`), document: "oauth" },
+    { url: at(`/.well-known/openid-configuration${path}`), document: "openid" },
+  ] as const;
+  return path === ""
+    ? inserted
+    : [
+        ...inserted,
+        { url: at(`${issuer.pathname}/.well-known/openid-configuration`), document: "openid" },
+      ];
+};
+
+/** RFC 9728 names the resource's scopes `scopes_supported`; Ahrefs uses `scopes_provided`. */
+const resourceScopes = (metadata: OAuthResource | undefined) =>
+  metadata?.scopes_supported ?? metadata?.scopes_provided;
+
+/** Why advertised OAuth cannot be used, from the discovery failure that said so. */
+const unusableReason = (failed: OAuthProtocolFailed) =>
+  Match.value(failed.reason).pipe(
+    Match.when("request", () => "unavailable" as const),
+    Match.when("metadata_missing", () => "metadata_missing" as const),
+    Match.when("destination_blocked", () => "blocked" as const),
+    Match.when("resource_mismatch", () => "resource_mismatch" as const),
+    Match.when("unsupported", () => "unsupported" as const),
+    Match.whenOr(
+      "invalid_response",
+      "invalid_client",
+      "invalid_grant",
+      "subject_changed",
+      () => "invalid" as const,
+    ),
+    Match.exhaustive,
+  );
+
+/**
+ * How account setup obtains a client for a browser sign-in without a saved one, in MCP's order:
+ * this host's Client ID Metadata Document when the server accepts one and the method allows a
+ * public client, dynamic client registration (RFC 7591), otherwise a client the user registers.
+ */
+export const clientRegistration = (
+  server: OAuthServer,
+  tokenEndpointAuthMethod: OAuthClientAuth | undefined,
+  clientMetadataUrl: string | undefined,
+): OAuthClientRegistration =>
+  (tokenEndpointAuthMethod === undefined || tokenEndpointAuthMethod === "none") &&
+  server.client_id_metadata_document_supported === true &&
+  clientMetadataUrl !== undefined
+    ? "client_id_metadata_document"
+    : server.registration_endpoint !== undefined
+      ? "dynamic"
+      : "manual";
+
+/**
+ * OpenID Connect Registration's client type, which MCP requires in every dynamic registration.
+ * An HTTP callback on `localhost` or a loopback IP literal is a native app's loopback redirect
+ * (RFC 8252 §7.3). An omitted type means `web`, for which OpenID providers may refuse that
+ * redirect, and they refuse a native client's HTTP redirect to any other host. Any other
+ * callback, including a named `*.localhost` host, therefore belongs to a web client. Servers
+ * without OpenID Connect ignore the member (RFC 7591 §2).
+ */
+const applicationType = (redirect: URL) =>
+  redirect.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(redirect.hostname)
+    ? "native"
+    : "web";
 
 /**
  * A token request as the JSON object some services require instead of RFC 6749's form. The
@@ -1035,10 +1141,10 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
   };
 
   /**
-   * RFC 8414 metadata, then OpenID Connect Discovery for the same issuer. A location that does
-   * not answer 200 serves no metadata, so the next one is tried: Apple redirects the RFC 8414
-   * path and Atlassian refuses it with 401. Redirects are never followed. A served document
-   * that fails validation is reported if no other location succeeds; it never selects another
+   * Every metadata location MCP lists for the issuer, in its order. A location that does not
+   * answer 200 serves no metadata, so the next one is tried: Apple redirects the RFC 8414 path
+   * and Atlassian refuses it with 401. Redirects are never followed. A served document that
+   * fails validation is reported if no other location succeeds; it never selects another
    * issuer, because every document must name the requested one.
    *
    * Missing metadata is an answer, not a failed request: a caller may fall back to another
@@ -1048,22 +1154,22 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     issuer: URL,
     metadataUrl?: URL,
   ): Effect.Effect<IssuerDiscovery, OAuthProtocolFailed> =>
-    request(async (settings): Promise<{ server: oauth.AuthorizationServer } | IssuerMissing> => {
-      if (metadataUrl !== undefined) {
-        const response = await settings[oauth.customFetch](metadataUrl.href, {
+    request(async (settings): Promise<IssuerAnswer> => {
+      const get = (url: URL) =>
+        settings[oauth.customFetch](url.href, {
           method: "GET",
           body: undefined,
           headers: { accept: "application/json" },
           redirect: "manual",
           signal: settings.signal,
         });
-        return { server: await issuerMetadata(issuer, discoveryResponse(response)) };
-      }
+      if (metadataUrl !== undefined)
+        return { server: await issuerMetadata(issuer, discoveryResponse(await get(metadataUrl))) };
       let unusable: unknown;
       let unavailable: number | undefined;
       let last: { status: number; contentType: OAuthMediaType | undefined } | undefined;
-      for (const algorithm of ["oauth2", "oidc"] as const) {
-        const response = await oauth.discoveryRequest(issuer, { ...settings, algorithm });
+      for (const location of metadataLocations(issuer)) {
+        const response = await get(location.url);
         last = {
           status: response.status,
           contentType: mediaType(response.headers.get("content-type")),
@@ -1071,7 +1177,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         if (response.status === 429 || response.status >= 500) unavailable ??= response.status;
         if (response.status !== 200) continue;
         try {
-          return { server: await issuerMetadata(issuer, response) };
+          return { server: await issuerMetadata(issuer, response), document: location.document };
         } catch (error) {
           unusable ??= withStatus(failure(error), 200);
         }
@@ -1094,6 +1200,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               Effect.map((server) => ({
                 server,
                 audienceFromScopes: scopedAudience(found.server),
+                ...(found.document === undefined ? {} : { document: found.document }),
               })),
             ),
       ),
@@ -1109,6 +1216,133 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       ? Effect.fail(new OAuthProtocolFailed({ reason: "destination_blocked" }))
       : Effect.succeed(url);
   };
+
+  /** One metadata document, read only from a 200 response. Redirects are never followed. */
+  const metadataDocument = (location: ResourceMetadataLocation, endpoint: URL, url?: URL) =>
+    request(async (settings) => {
+      const response =
+        location === "path"
+          ? await oauth.resourceDiscoveryRequest(endpoint, settings)
+          : await settings[oauth.customFetch](
+              (url ?? new URL("/.well-known/oauth-protected-resource", endpoint)).href,
+              {
+                method: "GET",
+                body: undefined,
+                headers: { accept: "application/json" },
+                redirect: "manual",
+                signal: settings.signal,
+              },
+            );
+      const document: unknown = response.status === 200 ? await response.json() : undefined;
+      return { status: response.status, document };
+    });
+
+  /**
+   * RFC 9728 protected-resource metadata, as MCP clients look for it: the document a Bearer
+   * challenge names, otherwise the path-suffixed well-known URL and then the root one. A
+   * well-known URL that does not answer 200 publishes nothing, so the next one is tried; a
+   * challenge names its own document, so a missing one is a failure. Every lookup is recorded.
+   */
+  const readResourceMetadata = (endpoint: URL, advertised: string | undefined) =>
+    Effect.gen(function* () {
+      const lookups: Array<ResourceMetadataSignal> = [];
+      const done = (outcome: Omit<ResourceRead, "lookups">): ResourceRead => ({
+        lookups,
+        ...outcome,
+      });
+      const record = (
+        location: ResourceMetadataLocation,
+        result: ResourceMetadataSignal["result"],
+        status?: number,
+      ) =>
+        lookups.push(
+          ResourceMetadataSignal.make({
+            location,
+            result,
+            ...(status === undefined ? {} : { status }),
+          }),
+        );
+      const challengeUrl =
+        advertised === undefined ? undefined : parseDestination(advertised, options.urlPolicy);
+      if (advertised !== undefined && challengeUrl === undefined) {
+        record("challenge", "blocked");
+        return done({ failed: new OAuthProtocolFailed({ reason: "destination_blocked" }) });
+      }
+      const locations: ReadonlyArray<ResourceMetadataLocation> =
+        challengeUrl !== undefined
+          ? ["challenge"]
+          : endpoint.pathname === "/"
+            ? ["root"]
+            : ["path", "root"];
+      for (const location of locations) {
+        const answer = yield* Effect.result(metadataDocument(location, endpoint, challengeUrl));
+        if (Result.isFailure(answer)) {
+          const failed = answer.failure;
+          record(location, failed.reason === "request" ? "unavailable" : "invalid", failed.status);
+          return done({ failed });
+        }
+        const { status, document } = answer.success;
+        if (status === 429 || status >= 500) {
+          record(location, "unavailable", status);
+          return done({ failed: new OAuthProtocolFailed({ reason: "request", status }) });
+        }
+        if (status !== 200) {
+          record(location, "missing", status);
+          if (location !== "challenge") continue;
+          return done({
+            failed: new OAuthProtocolFailed({
+              reason: status === 404 || status === 410 ? "metadata_missing" : "invalid_response",
+              status,
+            }),
+          });
+        }
+        const decoded = yield* Effect.result(decode(OAuthResource, document));
+        if (Result.isFailure(decoded)) {
+          record(location, "invalid", status);
+          return done({ failed: decoded.failure });
+        }
+        const metadata = decoded.success;
+        const resource = parseDestination(metadata.resource, options.urlPolicy);
+        if (resource === undefined) {
+          record(location, "blocked", status);
+          return done({ failed: new OAuthProtocolFailed({ reason: "destination_blocked" }) });
+        }
+        // A resource can cover /mcp from the origin root, but cannot name a sibling
+        // service or a different host. Preserve its exact advertised identifier.
+        const prefix = resource.pathname.endsWith("/")
+          ? resource.pathname
+          : resource.pathname + "/";
+        if (
+          resource.origin !== endpoint.origin ||
+          (resource.pathname !== endpoint.pathname && !endpoint.pathname.startsWith(prefix))
+        ) {
+          record(location, "mismatch", status);
+          return done({ failed: new OAuthProtocolFailed({ reason: "resource_mismatch" }) });
+        }
+        record(location, "found", status);
+        return done({ found: { metadata, location } });
+      }
+      return done({});
+    });
+
+  /**
+   * The authorization server named by the resource metadata. Without resource metadata, MCP's
+   * earlier authorization rules use the server itself, then its origin, as the authorization
+   * base; Atlassian publishes metadata only at the origin. Only missing metadata falls back:
+   * served metadata that is invalid or names another issuer never selects a different issuer.
+   */
+  const resolveIssuer = (issuerUrl: URL, fromResourceMetadata: boolean, metadataUrl?: URL) =>
+    metadataUrl === undefined && !fromResourceMetadata && issuerUrl.pathname !== "/"
+      ? discoverIssuer(issuerUrl).pipe(
+          Effect.flatMap((path) =>
+            "missing" in path
+              ? Effect.annotateCurrentSpan("oauth.discovery.fallback", "origin").pipe(
+                  Effect.andThen(discoverIssuer(new URL(issuerUrl.origin))),
+                )
+              : Effect.succeed(path),
+          ),
+        )
+      : discoverIssuer(issuerUrl, metadataUrl);
 
   const discoverResource = (endpoint: URL) =>
     Effect.gen(function* () {
@@ -1131,52 +1365,122 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         ),
         Effect.mapError(failure),
       );
-      const advertised = challenge.resourceMetadata;
-      const metadataUrl = advertised === undefined ? undefined : yield* secureUrl(advertised);
-      const document = yield* request(async (settings) => {
-        let response =
-          metadataUrl === undefined
-            ? await oauth.resourceDiscoveryRequest(endpoint, settings)
-            : await settings[oauth.customFetch](metadataUrl.href, {
-                method: "GET",
-                body: undefined,
-                headers: { accept: "application/json" },
-                redirect: "manual",
-                signal: settings.signal,
-              });
-        if (metadataUrl === undefined && response.status === 404 && endpoint.pathname !== "/") {
-          response = await settings[oauth.customFetch](
-            new URL("/.well-known/oauth-protected-resource", endpoint).href,
-            {
-              method: "GET",
-              body: undefined,
-              headers: { accept: "application/json" },
-              redirect: "manual",
-              signal: settings.signal,
-            },
-          );
-        }
-        if (metadataUrl === undefined && response.status === 404) return undefined;
-        const document: unknown = await discoveryResponse(response).json();
-        return document;
-      });
-      if (document === undefined) return { metadata: undefined, scopes: challenge.scopes };
-      const found = yield* decode(OAuthResource, document);
-      const resource = yield* secureUrl(found.resource);
-      // A resource can cover /mcp from the origin root, but cannot name a sibling
-      // service or a different host. Preserve its exact advertised identifier.
-      const prefix = resource.pathname.endsWith("/") ? resource.pathname : resource.pathname + "/";
+      const read = yield* readResourceMetadata(endpoint, challenge.resourceMetadata);
+      if (read.failed !== undefined) return yield* read.failed;
+      return { metadata: read.found?.metadata, scopes: challenge.scopes };
+    });
+
+  type OAuthMethod = Extract<ProviderAuthMethod, { type: "oauth2" }>;
+
+  /**
+   * Settings discovered from a resource whose protected-resource metadata was already read:
+   * the authorization server that metadata names, or the resource itself without metadata.
+   */
+  const fromResource = (
+    method: OAuthMethod,
+    resource: URL,
+    read: {
+      readonly metadata?: OAuthResource | undefined;
+      readonly scopes?: ReadonlyArray<string> | undefined;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const found = read.metadata;
+      const metadataUrl =
+        method.authorizationServerMetadataUrl === undefined
+          ? undefined
+          : yield* secureUrl(method.authorizationServerMetadataUrl);
+      const issuer = found === undefined ? resource.href : found.authorization_servers[0];
+      if (issuer === undefined)
+        return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
+      const issuerUrl = yield* secureUrl(issuer);
+      const { server, audienceFromScopes, document } = yield* resolveIssuer(
+        issuerUrl,
+        found !== undefined,
+        metadataUrl,
+      ).pipe(Effect.flatMap(requireIssuer));
+      // Authored scopes win. MCP challenges name the operations' required scopes; the
+      // resource metadata's scope list is the default only when the challenge omits it.
+      const scopes = new Set(method.scopes ?? read.scopes ?? resourceScopes(found) ?? []);
       if (
-        resource.origin !== endpoint.origin ||
-        (resource.pathname !== endpoint.pathname && !endpoint.pathname.startsWith(prefix))
-      ) {
-        return yield* new OAuthProtocolFailed({ reason: "resource_mismatch" });
-      }
-      return { metadata: found, scopes: challenge.scopes };
+        method.grant !== "client_credentials" &&
+        method.scopes === undefined &&
+        server.scopes_supported?.includes("offline_access")
+      )
+        scopes.add("offline_access");
+      // A declared resource, or an explicit null, always applies. A discovered one is not
+      // sent to a server that takes the audience from the scopes instead.
+      const resourceIndicator =
+        method.resource !== undefined
+          ? method.resource
+          : audienceFromScopes
+            ? undefined
+            : found?.resource;
+      const settings = {
+        server,
+        scopes: [...scopes],
+        // RFC 8414 lists what the server accepts; which one applies is the client's property.
+        // A server open to public and secret clients leaves an undeclared choice to the client.
+        ...(method.tokenEndpointAuthMethod === undefined &&
+        server.token_endpoint_auth_methods_supported?.includes("none") &&
+        server.token_endpoint_auth_methods_supported.some(
+          (m) => m === "client_secret_basic" || m === "client_secret_post",
+        )
+          ? {}
+          : {
+              tokenEndpointAuthMethod: yield* clientMethod(
+                server,
+                "entered",
+                method.tokenEndpointAuthMethod,
+              ),
+            }),
+        ...(resourceIndicator == null ? {} : { resource: resourceIndicator }),
+      };
+      return { settings, ...(document === undefined ? {} : { document }) };
+    });
+
+  /**
+   * Every endpoint account setup would call must satisfy the host's URL policy. The optional
+   * revocation endpoint is not required to connect; the transport still enforces this policy
+   * when revocation calls it.
+   */
+  const allowedEndpoints = (server: OAuthTokenServer) =>
+    Effect.forEach(
+      [
+        server.issuer,
+        server.authorization_endpoint,
+        server.token_endpoint,
+        server.registration_endpoint,
+      ].filter((address) => address !== undefined),
+      secureUrl,
+      { discard: true },
+    );
+
+  /**
+   * A browser sign-in needs an authorization endpoint, and Executor always sends PKCE with S256.
+   * A server that lists its PKCE methods without S256 is refused. One that omits the list still
+   * gets S256: Microsoft Entra ID and Sign in with Apple accept it without listing it, so
+   * refusing such a server, as MCP asks, would refuse every MCP server they protect. Account
+   * setup and import checks both apply this, so a check never confirms OAuth that setup would
+   * refuse.
+   */
+  const browserServer = (server: OAuthTokenServer) =>
+    Effect.gen(function* () {
+      yield* allowedEndpoints(server);
+      const browser = yield* decode(OAuthServer, server);
+      if (
+        browser.code_challenge_methods_supported !== undefined &&
+        !browser.code_challenge_methods_supported.includes("S256")
+      )
+        return yield* new OAuthProtocolFailed({
+          reason: "unsupported",
+          field: "code_challenge_methods_supported",
+        });
+      return browser;
     });
 
   return {
-    discover: (method: Extract<ProviderAuthMethod, { type: "oauth2" }>) =>
+    discover: (method: OAuthMethod) =>
       Effect.gen(function* () {
         const resolved = yield* Effect.gen(function* () {
           if (method.discover === undefined)
@@ -1199,73 +1503,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               ...(method.resource == null ? {} : { resource: method.resource }),
             };
           const resource = yield* secureUrl(method.discover);
-          const discoveredResource = yield* discoverResource(resource);
-          const found = discoveredResource?.metadata;
-          const metadataUrl =
-            method.authorizationServerMetadataUrl === undefined
-              ? undefined
-              : yield* secureUrl(method.authorizationServerMetadataUrl);
-          const issuer = found === undefined ? resource.href : found.authorization_servers[0];
-          if (issuer === undefined)
-            return yield* new OAuthProtocolFailed({ reason: "invalid_response" });
-          const issuerUrl = yield* secureUrl(issuer);
-          // Without protected-resource metadata, MCP's earlier authorization rules use the
-          // server's origin as the authorization base. Atlassian publishes metadata only there.
-          const { server, audienceFromScopes } = yield* metadataUrl === undefined &&
-          found === undefined &&
-          issuerUrl.pathname !== "/"
-            ? discoverIssuer(issuerUrl).pipe(
-                // Only missing metadata falls back. Served metadata that is invalid or names another
-                // issuer is a failure, never a reason to try a different issuer.
-                Effect.flatMap((path) =>
-                  "missing" in path
-                    ? Effect.annotateCurrentSpan("oauth.discovery.fallback", "origin").pipe(
-                        Effect.andThen(discoverIssuer(new URL(issuerUrl.origin))),
-                      )
-                    : Effect.succeed(path),
-                ),
-                Effect.flatMap(requireIssuer),
-              )
-            : discoverIssuer(issuerUrl, metadataUrl).pipe(Effect.flatMap(requireIssuer));
-          // Authored scopes win. MCP challenges name the operations' required scopes; the
-          // resource metadata's scope list is the default only when the challenge omits it.
-          const scopes = new Set(
-            method.scopes ?? discoveredResource?.scopes ?? found?.scopes_supported ?? [],
-          );
-          if (
-            method.grant !== "client_credentials" &&
-            method.scopes === undefined &&
-            server.scopes_supported?.includes("offline_access")
-          )
-            scopes.add("offline_access");
-          // A declared resource, or an explicit null, always applies. A discovered one is not
-          // sent to a server that takes the audience from the scopes instead.
-          const resourceIndicator =
-            method.resource !== undefined
-              ? method.resource
-              : audienceFromScopes
-                ? undefined
-                : found?.resource;
-          return {
-            server,
-            scopes: [...scopes],
-            // RFC 8414 lists what the server accepts; which one applies is the client's property.
-            // A server open to public and secret clients leaves an undeclared choice to the client.
-            ...(method.tokenEndpointAuthMethod === undefined &&
-            server.token_endpoint_auth_methods_supported?.includes("none") &&
-            server.token_endpoint_auth_methods_supported.some(
-              (m) => m === "client_secret_basic" || m === "client_secret_post",
-            )
-              ? {}
-              : {
-                  tokenEndpointAuthMethod: yield* clientMethod(
-                    server,
-                    "entered",
-                    method.tokenEndpointAuthMethod,
-                  ),
-                }),
-            ...(resourceIndicator == null ? {} : { resource: resourceIndicator }),
-          };
+          const read = yield* discoverResource(resource);
+          return (yield* fromResource(method, resource, read)).settings;
         });
         // Frozen on the attempt and grant, so renewal sends what sign-in did.
         const requestEncoding = {
@@ -1274,22 +1513,95 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             ? {}
             : { tokenRequestFormat: method.tokenRequestFormat }),
         };
-        if (method.grant === "client_credentials")
+        if (method.grant === "client_credentials") {
+          yield* allowedEndpoints(resolved.server);
           return { ...resolved, ...requestEncoding, grant: "client_credentials" as const };
+        }
         return {
           ...resolved,
           ...requestEncoding,
           grant: "authorization_code" as const,
-          server: yield* decode(OAuthServer, resolved.server),
+          server: yield* browserServer(resolved.server),
           ...(method.authorizationParams === undefined
             ? {}
             : { authorizationParams: method.authorizationParams }),
           ...(method.tokenResponse === undefined ? {} : { tokenResponse: method.tokenResponse }),
         };
       }).pipe(protocolStage("discover")),
+    /**
+     * What a resource advertises about authorization-code OAuth, for an import check. The caller
+     * has already requested the resource and passes the challenge it saw, so nothing is probed
+     * here. `originFallback` applies MCP's earlier rule for a server that rejects anonymous use
+     * but publishes no resource metadata. The rest is account setup's own discovery and checks,
+     * and `registration` is how setup on this host would obtain a client, so an import check
+     * never confirms OAuth that setup would refuse. Every lookup is returned as a signal.
+     */
+    inspect: (
+      endpoint: URL,
+      observed: {
+        readonly resourceMetadata?: string | undefined;
+        readonly originFallback: boolean;
+      },
+    ) =>
+      Effect.gen(function* () {
+        const read = yield* readResourceMetadata(endpoint, observed.resourceMetadata);
+        const signals: Array<ResourceOAuthSignal> = [...read.lookups];
+        if (read.failed !== undefined)
+          return ResourceOAuth.cases.OAuthUnusable.make({
+            reason: unusableReason(read.failed),
+            signals,
+          });
+        if (read.found === undefined && !observed.originFallback)
+          return ResourceOAuth.cases.OAuthNotAdvertised.make({ signals });
+        const issuer = read.found === undefined ? "origin" : "resource_metadata";
+        // The provider an import generates declares only `discover`, so setup sees this method.
+        const method: OAuthMethod = { type: "oauth2", discover: endpoint.href, response: {} };
+        const checked = yield* Effect.result(
+          fromResource(method, endpoint, { metadata: read.found?.metadata }).pipe(
+            Effect.flatMap(({ settings, document }) =>
+              browserServer(settings.server).pipe(Effect.map((server) => ({ server, document }))),
+            ),
+          ),
+        );
+        if (Result.isFailure(checked)) {
+          const failed = checked.failure;
+          const reason = unusableReason(failed);
+          signals.push(
+            AuthorizationServerSignal.make({
+              issuer,
+              result:
+                reason === "metadata_missing"
+                  ? "missing"
+                  : reason === "unavailable" || reason === "blocked" || reason === "unsupported"
+                    ? reason
+                    : "invalid",
+              ...(failed.status === undefined ? {} : { status: failed.status }),
+            }),
+          );
+          // Without resource metadata, a missing authorization server means no OAuth at all.
+          return reason === "metadata_missing" && read.found === undefined
+            ? ResourceOAuth.cases.OAuthNotAdvertised.make({ signals })
+            : ResourceOAuth.cases.OAuthUnusable.make({ reason, signals });
+        }
+        const { server, document } = checked.success;
+        const registration = clientRegistration(
+          server,
+          method.tokenEndpointAuthMethod,
+          options.clientMetadataUrl,
+        );
+        signals.push(
+          AuthorizationServerSignal.make({
+            issuer,
+            result: "found",
+            ...(document === undefined ? {} : { document }),
+            registration,
+          }),
+        );
+        return ResourceOAuth.cases.OAuthAdvertised.make({ registration, signals });
+      }).pipe(Effect.withSpan("oauth.inspect")),
     register: (
       server: OAuthServer,
-      redirectUri: string,
+      redirect: URL,
       scopes: readonly string[],
       configured?: OAuthClientAuth,
     ) =>
@@ -1302,7 +1614,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               metadata(server),
               {
                 client_name: options.clientName,
-                redirect_uris: [redirectUri],
+                redirect_uris: [redirect.href],
+                application_type: applicationType(redirect),
                 token_endpoint_auth_method: advertised,
                 // Request refresh tokens unless the server's metadata lists grant types without
                 // them. Singular advertises only authorization_code and rejects the request.
@@ -1563,20 +1876,17 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
 };
 
 /**
- * Confirm that a protected resource advertises authorization-code OAuth an account connection can
- * complete. Any discovery failure means OAuth is not confirmed; it never selects another method.
+ * What a protected resource advertises about authorization-code OAuth an account connection can
+ * complete, with the lookups that decided it. The caller passes the challenge it observed when it
+ * requested the resource. A discovery failure is reported, never replaced by another method.
  */
-export const discoversResourceOAuth = (
+export const discoverResourceOAuth = (
   resource: string,
-  options: Pick<OAuthOptions, "httpClient" | "urlPolicy">,
-) =>
-  makeOAuthProtocol({ ...options, clientName: "Executor" })
-    .discover({ type: "oauth2", discover: resource, response: {} })
-    .pipe(
-      Effect.map(
-        (found) =>
-          found.grant === "authorization_code" &&
-          (found.server.code_challenge_methods_supported?.includes("S256") ?? true),
-      ),
-      Effect.orElseSucceed(() => false),
-    );
+  options: Pick<OAuthOptions, "httpClient" | "urlPolicy" | "clientMetadataUrl">,
+  observed: { readonly resourceMetadata?: string | undefined; readonly originFallback: boolean },
+) => {
+  const endpoint = parseDestination(resource, options.urlPolicy);
+  return endpoint === undefined
+    ? Effect.succeed(ResourceOAuth.cases.OAuthUnusable.make({ reason: "blocked", signals: [] }))
+    : makeOAuthProtocol({ ...options, clientName: "Executor" }).inspect(endpoint, observed);
+};
