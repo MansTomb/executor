@@ -1395,6 +1395,16 @@ export const scenarios = {
       local: na("The shared SDK and account view are exercised through hosted APIs."),
     },
   },
+  mcpAccountHealth: {
+    fixtures: "actors",
+    file: "mcp-account-health.spec.ts",
+    title: "An MCP provider checks an account by connecting to its server with it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a controlled loopback MCP server through the shared runtime contract."),
+      local: na("The shared framework check and SDK are exercised through hosted APIs."),
+    },
+  },
   providerErrorsGraphql: {
     fixtures: "actors",
     file: "provider-errors.spec.ts",
@@ -2061,7 +2071,8 @@ export const scenarios = {
   mcpAuthDiscovery: {
     fixtures: "actors",
     file: "mcp-auth-discovery.spec.ts",
-    title: "MCP quick add confirms public or OAuth servers and sends others to agent setup",
+    title:
+      "MCP quick add confirms public or OAuth servers, checks OAuth accounts against the server and sends others to agent setup",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback MCP issuer."),

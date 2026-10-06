@@ -1,11 +1,11 @@
-import { Option, Predicate, Redacted, Schema } from "effect";
+import { Match, Option, Predicate, Redacted, Schema } from "effect";
 import { CacheError } from "@executor-js/app-cache/contracts";
 import { AppDatabaseError } from "@executor-js/app-data/contracts";
 import { AppStorageError, AppStorageUnavailable } from "../contracts/storage.ts";
 import { OpenapiError } from "../contracts/openapi.ts";
 import { OpenapiCompileError } from "../contracts/openapi-compile.ts";
 import type { ResolvedAccounts } from "../contracts/host.ts";
-import { McpError } from "../contracts/mcp.ts";
+import { McpCredentialsUnverified, McpError } from "../contracts/mcp.ts";
 import type { ProviderError } from "../contracts/provider-error.ts";
 import { providerError } from "./provider-error.ts";
 import { isShortenedUpstream } from "./upstream-error.ts";
@@ -53,6 +53,51 @@ const cacheMessages = {
   storage: "The app cache failed to complete the operation.",
   timeout: "The app cache did not respond in time.",
 } satisfies Record<CacheError["reason"], string>;
+
+/** What the client was doing when an MCP server failed. */
+const mcpStages = {
+  connect: "connecting",
+  transport: "connecting",
+  discover: "listing its tools",
+  schema: "reading a tool's schema",
+  call: "calling a tool",
+} satisfies Record<McpError["phase"], string>;
+
+/** Fixed text from the safe fields; server URLs, headers and responses never enter the message. */
+const mcpMessage = ({ phase, reason, status }: McpError) => {
+  const stage = mcpStages[phase];
+  return Match.value(reason).pipe(
+    Match.when("timeout", () => `The MCP server did not respond in time while ${stage}.`),
+    Match.when("unauthorized", () => `The MCP server rejected the credentials while ${stage}.`),
+    Match.when(
+      "invalid_response",
+      () =>
+        `The MCP server returned a response Executor could not use while ${stage}, such as an unreadable message or an address on another origin.`,
+    ),
+    Match.when("invalid_input", () => "The MCP server URL or connection settings are invalid."),
+    // Only a transport failure has no answer from the server; a JSON-RPC error is an answer.
+    Match.when("request", () =>
+      status !== undefined
+        ? `The MCP server answered HTTP ${status} while ${stage}.`
+        : phase === "transport"
+          ? `Executor could not reach the MCP server while ${stage}.`
+          : `The request to the MCP server failed while ${stage}.`,
+    ),
+    Match.exhaustive,
+  );
+};
+
+/** Fixed text for an `mcpHealth` check that could not show the server needs the credentials. */
+const unverifiedMessage = ({ anonymous }: McpCredentialsUnverified) =>
+  anonymous === "answered"
+    ? "This MCP server answers without credentials, so Executor can't check this account. A refused key will show up when a tool is called."
+    : `The MCP server accepted the credentials, but the same check without them failed, so Executor can't tell whether it requires them. ${
+        Schema.is(McpError)(anonymous)
+          ? mcpMessage(anonymous)
+          : anonymous.status === undefined
+            ? "The MCP server could not answer the request."
+            : `The MCP server answered HTTP ${anonymous.status}.`
+      }`;
 
 /** Account field values of at least this length are replaced wherever a message contains them. */
 const minimumSecretLength = 6;
@@ -217,8 +262,9 @@ export const describeFailure = (error: unknown) =>
 
 /**
  * Describe what an operation raised for the app's own caller. App data failures keep their
- * reason as a code, as do app cache failures; any other thrown value is the app's own error, with
- * its own code and scalar fields. Account secrets are replaced.
+ * reason as a code, as do app cache failures and OpenAPI and MCP service failures, such as an
+ * `mcpHealth` check that cannot reach its server or cannot verify the credentials; any other thrown
+ * value is the app's own error, with its own code and scalar fields. Account secrets are replaced.
  */
 export const failureDetail = (error: unknown, secrets: readonly string[]): FailureDetail => {
   if (Schema.is(CacheError)(error))
@@ -260,6 +306,20 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
           : error.reason === "invalid_input"
             ? "The input could not be encoded as a request for this API operation."
             : "The API's OpenAPI definition for this operation is invalid.",
+    };
+  if (Schema.is(McpError)(error))
+    return {
+      source: "service",
+      errorName: "McpError",
+      code: error.reason,
+      message: mcpMessage(error),
+    };
+  if (Schema.is(McpCredentialsUnverified)(error))
+    return {
+      source: "service",
+      errorName: "McpCredentialsUnverified",
+      code: error.anonymous === "answered" ? "anonymous_access" : error.anonymous.reason,
+      message: unverifiedMessage(error),
     };
   // The OpenAPI helper runs in the app and reads a definition the app chose, so its compile
   // failures are the app's: their code and message say what to change.

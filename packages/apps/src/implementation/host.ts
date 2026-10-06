@@ -398,6 +398,7 @@ function dispatch(
           request.requirement,
           context,
           invocationSignal,
+          deadline,
         ).pipe(withinDeadline);
       let running: InvocationTelemetry | undefined;
       let transactionOpen = false;
@@ -853,6 +854,7 @@ function dispatch(
  * the app. Failures are attributed to that account. HTTP status failures from `decodeJson` are
  * classified like other provider responses; anything else means the check
  * could not verify it, and carries the app's own error message with account secrets replaced.
+ * The check receives the invocation's deadline, after which the host stops waiting for it.
  */
 function checkAccount(
   slots: AccountSlots,
@@ -860,6 +862,7 @@ function checkAccount(
   requirement: string,
   context: HostContext,
   signal: AbortSignal,
+  deadline: number | undefined,
 ) {
   return Effect.gen(function* () {
     const selection = Object.hasOwn(slots, requirement) ? slots[requirement] : undefined;
@@ -879,7 +882,12 @@ function checkAccount(
     if (account === undefined || !("id" in account)) return yield* new HostAccountsInvalid();
     const result = yield* Effect.suspend(() =>
       Effect.gen(function* () {
-        return yield* health.run({ account, fetch: yield* invocationFetch(signal), signal });
+        return yield* health.run({
+          account,
+          fetch: yield* invocationFetch(signal),
+          signal,
+          ...(deadline === undefined ? {} : { deadline }),
+        });
       }),
     ).pipe(
       Effect.catchCause((cause) => {

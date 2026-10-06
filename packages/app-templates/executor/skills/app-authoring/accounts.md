@@ -147,10 +147,19 @@ if (response.status === 403 && (await response.json()).error?.code === "missing_
 ```
 
 Any error or a timeout means the check could not verify the account.
-Executor never treats that as bad credentials.
+Executor never treats that as bad credentials. The check also receives `deadline`, the time in
+epoch milliseconds when Executor stops waiting for it. A check still running then fails without a
+message, so a check that waits on its own timer should end before it to say why.
 
 Account forms run the same check on entered credentials before saving them, so the user sees
 whether they work, and the name they belong to, before connecting.
+
+For an MCP server, use `mcpHealth` from `apps/mcp` instead of a REST or GraphQL
+read: `health: (check) => mcpHealth(check, { url, headers: headers(check.account) })`.
+It takes the account, `signal` and `deadline` from the check context; see
+[integrations.md](integrations.md#check-an-mcp-account). It verifies an account
+only on a server that refuses requests without credentials. On a server that
+answers anyone, it reports that it could not verify the account.
 
 Each app checks with its own `health` function, so two apps can verify the same
 account differently. Adding or editing `health` does not change the provider's

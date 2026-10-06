@@ -323,17 +323,28 @@ export const mcpFailurePresentation = ({ phase, reason, status, upstream }: McpF
           },
           retryable: false,
         };
-      // A JSON-RPC error inside a successful response, such as arguments a tool rejects.
+      // A JSON-RPC error inside a successful response, such as arguments a tool rejects, states
+      // the server's error. Without one, only a transport failure never reached the server.
       return upstream === undefined
-        ? {
-            title: "MCP server unreachable",
-            description: `Executor could not reach the app’s MCP server while ${stage}.`,
-            recovery: {
-              action: "Try again. If this continues, check the MCP server’s address and status.",
-              instructions,
-            },
-            retryable: true,
-          }
+        ? phase === "transport"
+          ? {
+              title: "MCP server unreachable",
+              description: `Executor could not reach the app’s MCP server while ${stage}.`,
+              recovery: {
+                action: "Try again. If this continues, check the MCP server’s address and status.",
+                instructions,
+              },
+              retryable: true,
+            }
+          : {
+              title: "MCP server request failed",
+              description: `The request to the app’s MCP server failed while ${stage}.`,
+              recovery: {
+                action: "Try again. If this continues, check the MCP server’s status.",
+                instructions,
+              },
+              retryable: true,
+            }
         : {
             title: "MCP server returned an error",
             description: `The app’s MCP server returned an error while ${stage}.${answered}`,
