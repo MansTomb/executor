@@ -69,7 +69,10 @@ export const startManagedServer = (
     const npmRegistry = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
     const entry =
       target.metadata.target === "local" && Option.isSome(packagedEntry)
-        ? { command: [packagedEntry.value, "serve"], cwd: target.directory }
+        ? // Run the installed CLI from its package, as the desktop runs its backend from its
+          // install root. Product processes can outlive the server's reported exit on Windows
+          // while they terminate, and a working directory there cannot be removed.
+          { command: [packagedEntry.value, "serve"], cwd: path.dirname(packagedEntry.value) }
         : {
             command: [
               target.metadata.target === "local"

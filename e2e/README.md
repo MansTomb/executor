@@ -742,9 +742,9 @@ own environment.
 
 To verify the installed CLI artifact through the same local scenarios, set
 `EXECUTOR_E2E_LOCAL_ENTRY` to the absolute installed `bin.mjs` path and run
-`bun run e2e:local`. The harness starts that entry from its isolated data directory,
-with synthetic secrets. Pairing, dashboard loading and app deployment/call use
-real HTTP requests against the installed package.
+`bun run e2e:local`. The harness starts that entry from its installed package directory,
+with an isolated data directory and synthetic secrets. Pairing, dashboard loading and
+app deployment/call use real HTTP requests against the installed package.
 
 The first-launch key scenarios also run against an installed entry:
 
