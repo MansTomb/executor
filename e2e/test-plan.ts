@@ -758,6 +758,16 @@ export const scenarios = {
       local: na("Billing is cloud only."),
     },
   },
+  supersededReads: {
+    fixtures: "actors",
+    file: "superseded-reads.spec.ts",
+    title: "A dashboard read refreshed while in flight cancels its request",
+    targets: {
+      "self-host": na("Billing, the page whose polled read travels alone, is cloud only."),
+      cloud: scheduled,
+      local: na("Billing, the page whose polled read travels alone, is cloud only."),
+    },
+  },
   emptyStates: {
     fixtures: "actors",
     file: "empty-states.spec.ts",
