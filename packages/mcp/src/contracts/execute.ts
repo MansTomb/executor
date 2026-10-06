@@ -59,8 +59,9 @@ export const AppProfileRequired = UserFacingError.define({
 });
 
 /**
- * An app was still listing its tools when discovery stopped waiting for it, such as an app whose
- * server accepts connections and never answers.
+ * An app was still listing its tools when discovery stopped waiting for it: a large or slow app,
+ * or one whose server accepts connections and never answers. A listing that was running keeps
+ * running in the background, so a slow but healthy app loads in a later execution.
  */
 export const AppDiscoveryTimedOut = UserFacingError.define({
   tag: "AppDiscoveryTimedOut",
@@ -68,12 +69,13 @@ export const AppDiscoveryTimedOut = UserFacingError.define({
   fields: { app: Schema.String, elapsedMs: Schema.Number },
   presentation: ({ elapsedMs }) => ({
     title: "App tools did not load in time",
-    description: `This app timed out after ${elapsedMs}ms while listing its tools, so it is unavailable in this execution. Other apps are not affected.`,
+    description: `Listing this app's tools timed out after ${elapsedMs}ms in this execution, so its tools are unavailable here. A listing that was still running continues in the background, so a slow app usually loads in a later execution. Other apps are not affected.`,
     retryable: true,
     recovery: {
-      action: "Check that the app's upstream server is reachable, then run execute again.",
+      action:
+        "Run execute again shortly. If the app keeps timing out, check that its upstream server responds.",
       instructions:
-        "Tell the user this app's tools could not be listed in time; its server may be offline or overloaded. Its tools cannot be called in this execution. Other apps remain usable.",
+        "This app's tools were still loading when this execution stopped waiting for them. Retry in a new execute after a few seconds instead of treating the app as broken. If it is still unavailable after several attempts, tell the user its server may be offline or overloaded. Other apps remain usable.",
     },
   }),
 });

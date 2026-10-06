@@ -196,6 +196,34 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  // The two Cloud listing scenarios read a running listing or a remembered timeout, which live only
+  // in the isolate that ran the listing. The local Worker serves every search from one isolate; a
+  // deployed one may not.
+  mcpBackgroundListingCloud: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
+    title:
+      "Cloud finishes a slow app's tool listing after discovery stops waiting and serves it to later searches",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host keeps background work for the server's lifetime; its slow listing scenario covers the shared path",
+      ),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  mcpStoppedListingCloud: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
+    title: "Cloud remembers a stalled tool listing as timed out when its background work ends",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host keeps background work for the server's lifetime; its stalled listing scenario covers the load bound",
+      ),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   mcpRememberedListingFailure: {
     fixtures: "actors",
     file: "mcp-catalog-scale.spec.ts",

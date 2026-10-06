@@ -59,7 +59,9 @@ working. Calling a tool of an unavailable app fails with that reason.
   profile. Connect an account (below), then start a new execution.
 - `AppDiscoveryTimedOut`: the app did not list its tools in time. Discovery
   waits about 10 seconds, then stops once listings make no progress for 5
-  seconds. The app's server may be down or slow; tell the user and retry later.
+  seconds. A listing that was still running continues in the background, so
+  retry in a new `execute` after a few seconds. If the app keeps timing out,
+  tell the user its server may be down or overloaded.
 - Other reasons are JSON with `code`, `message` and often `recovery`. Follow
   `recovery.instructions`.
 
