@@ -2447,6 +2447,17 @@ export const scenarios = {
       local: na("Exercises shared OAuth registration through the hosted API."),
     },
   },
+  oauthAhrefs: {
+    fixtures: "actors",
+    file: "oauth-interop.spec.ts",
+    title:
+      "OAuth signs in to an Ahrefs-style MCP server whose token endpoint refuses a charset on the form media type",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth discovery and exchange through the hosted API."),
+    },
+  },
   oauthCallbackNewTab: {
     fixtures: "actors",
     file: "oauth-callback-new-tab.spec.ts",
