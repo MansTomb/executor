@@ -2,6 +2,7 @@ import type { ProviderError } from "./provider-error.ts";
 /** MCP protocol data uses Effect Schema; executable tool methods use Effect. */
 import { type Effect, type Redacted, Schema } from "effect";
 import type { Elicit, ElicitationFailed } from "./elicitation.ts";
+import { UpstreamError } from "./failure.ts";
 import { AccountId, HttpUrl } from "./schema.ts";
 import { JsonObject, type JsonValue } from "./schema.ts";
 import { RouterIcon } from "./router.ts";
@@ -113,7 +114,10 @@ export interface McpTool extends Omit<McpToolMetadata, "outputSchema"> {
 /** The discovered catalog keyed by remote tool name. */
 export type McpTools = Readonly<Record<string, McpTool>>;
 
-/** Safe protocol/transport failure; no raw upstream payloads or credentials. */
+/**
+ * Safe protocol/transport failure; no raw upstream payloads or credentials. `upstream` is the
+ * JSON-RPC error the server answered with, bounded and with account secrets replaced.
+ */
 export class McpError extends Schema.TaggedError<McpError>()("McpError", {
   phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
   reason: Schema.Literals([
@@ -124,6 +128,7 @@ export class McpError extends Schema.TaggedError<McpError>()("McpError", {
     "invalid_input",
   ]),
   status: Schema.optional(Schema.Number),
+  upstream: Schema.optional(UpstreamError),
 }) {}
 
 /** Public process configuration. Credentials arrive through the selected account. */

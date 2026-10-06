@@ -3520,10 +3520,30 @@ export const scenarios = {
       local: na("Hosted account selection covers the shared catalog diagnostics."),
     },
   },
+  mcpExecuteAppThrew: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title: "MCP discovery reports the error an app threw with its code and fields",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses the shared app runtime error mapping that self-host covers."),
+      local: na("Hosted self-host covers the shared catalog diagnostics."),
+    },
+  },
   mcpExecuteServerRefused: {
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",
     title: "MCP apps whose server refuses connections report the MCP failure",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The refusing MCP server is a loopback listener."),
+      local: na("Hosted self-host covers the shared app runtime error mapping."),
+    },
+  },
+  mcpExecuteCallRefused: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title: "MCP tool calls report the JSON-RPC error their server answered with",
     targets: {
       "self-host": scheduled,
       cloud: na("The refusing MCP server is a loopback listener."),

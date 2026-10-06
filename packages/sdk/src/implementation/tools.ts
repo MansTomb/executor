@@ -1,4 +1,4 @@
-import { HostEvaluationFailed, McpError, ProviderError, SkillLoadFailed } from "apps/contracts";
+import { ProviderError } from "apps/contracts";
 import { appProviderFailure } from "./provider-error.ts";
 import { grantedDefinition } from "./provider.ts";
 /** Snapshot the configured app, then execute with its selected credentials. */
@@ -31,9 +31,11 @@ import { OAuthReconnectRequired } from "../contracts/oauth.ts";
 import type { makeOAuth } from "./oauth.ts";
 import {
   AppEvaluationFailed,
-  type AppFailure,
+  appFailure,
   appFailureText,
+  evaluationFailure,
   InputInvalid,
+  operationMcpFailure,
   ToolCallFailed,
   ToolNotFound,
   ToolKindMismatch,
@@ -317,63 +319,6 @@ function invocation(
   }).pipe(Effect.mapError(() => new StorageError()));
 }
 
-/** Builds from before failure details existed send none; keep their generic reason. */
-const appFailure = ({
-  source,
-  errorName,
-  code,
-  message,
-}: {
-  readonly source?: AppFailure["source"];
-  readonly errorName?: string;
-  readonly code?: string;
-  readonly message?: string;
-}) =>
-  source === undefined || errorName === undefined || message === undefined
-    ? Option.none<AppFailure>()
-    : Option.some<AppFailure>({
-        source,
-        errorName,
-        message,
-        ...(code === undefined ? {} : { code }),
-      });
-
-/**
- * Keep a skill loader's or MCP server's safe fields, and the error the app's own factory or loader
- * raised; other evaluation failures stay generic.
- */
-export const evaluationFailure = (
-  identity: { app: AppId; deployment: DeploymentId },
-  error: unknown,
-  reason = "App evaluation failed",
-) =>
-  new AppEvaluationFailed({
-    app: identity.app,
-    deployment: identity.deployment,
-    reason,
-    ...(Schema.is(SkillLoadFailed)(error)
-      ? {
-          skills: {
-            reason: error.reason,
-            ...(error.message ? { message: error.message } : {}),
-            ...(error.status === undefined ? {} : { status: error.status }),
-          },
-        }
-      : {}),
-    ...(Schema.is(HostEvaluationFailed)(error)
-      ? Option.match(appFailure(error), { onNone: () => ({}), onSome: (failure) => ({ failure }) })
-      : {}),
-    ...(Schema.is(McpError)(error)
-      ? {
-          mcp: {
-            phase: error.phase,
-            reason: error.reason,
-            ...(error.status === undefined ? {} : { status: error.status }),
-          },
-        }
-      : {}),
-  });
-
 const runtimeFailure = (
   identity: { app: AppId; deployment: DeploymentId; tool: ToolName },
   state: InvocationSnapshot,
@@ -431,7 +376,7 @@ const runtimeFailure = (
         new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
       HostEvaluationFailed: (error) => evaluationFailure(identity, error),
       SkillLoadFailed: (error) => evaluationFailure(identity, error),
-      McpError: (error) => evaluationFailure(identity, error),
+      McpError: (error) => operationMcpFailure(identity, error),
       RuntimeBuildUnavailable: () =>
         new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
       RuntimeProtocolFailed: () =>
