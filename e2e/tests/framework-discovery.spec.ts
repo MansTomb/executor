@@ -81,8 +81,11 @@ layer(HostedLive, { excludeTestServices: true })("Framework discovery", (it) => 
         // each real MCP request and its live catalog evaluation.
         const [discovered, imported, current, found, entry, guide] = yield* Effect.all(
           [
-            execute('return await tools.search({query: "framework", limit: 20});'),
-            execute('return await tools.search({query: "context.get", limit: 1});').pipe(
+            execute(`const found = await tools.search({query: "framework", limit: 20});
+return { found, described: await tools.search.describe({ paths: found.items.map((item) => item.path) }) };`),
+            execute(
+              `return await tools.search.describe({ paths: [${JSON.stringify(`${queries}.context.get`)}] });`,
+            ).pipe(
               Effect.flatMap(
                 Schema.decodeUnknownEffect(
                   Schema.Struct({
@@ -126,21 +129,27 @@ layer(HostedLive, { excludeTestServices: true })("Framework discovery", (it) => 
           { concurrency: 6 },
         );
         yield* evidence.json("framework-tool-discovery.json", discovered);
+        // Search lists the framework tools concisely; describe returns their output types.
         const tools = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
-            items: Schema.Array(Schema.Struct({ path: Schema.String, signature: Schema.String })),
+            found: Schema.Struct({
+              items: Schema.Array(Schema.Struct({ path: Schema.String, input: Schema.String })),
+            }),
+            described: Schema.Struct({
+              items: Schema.Array(Schema.Struct({ path: Schema.String, signature: Schema.String })),
+            }),
           }),
         )(discovered);
-        const search = tools.items.find(
+        expect(
+          tools.found.items.some(
+            (item) => item.path.endsWith(".framework.describe") && item.path.includes(profile.id),
+          ),
+        ).toBe(true);
+        const search = tools.described.items.find(
           (item) => item.path.endsWith(".framework.search") && item.path.includes(profile.id),
         );
         expect(search?.signature).toContain("remaining: number");
         expect(search?.signature).toContain("digest: string");
-        expect(
-          tools.items.some(
-            (item) => item.path.endsWith(".framework.describe") && item.path.includes(profile.id),
-          ),
-        ).toBe(true);
         expect(imported.items[0]?.signature).toContain("organization: string");
         expect(imported.items[0]?.signature).toContain("slug: string");
         expect(current.organization).toBe(actors.organization.id);

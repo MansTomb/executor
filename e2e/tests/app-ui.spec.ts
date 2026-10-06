@@ -235,8 +235,13 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  // Keep the discovery assertion below MCP's output limit as signatures grow.
-                  code: 'const result = await tools.search({ query: "executor", limit: 100 }); return { items: result.items.map(({ path }) => ({ path })) };',
+                  // Every page of matches, so a tool cannot hide on a later page.
+                  code: `const items = [];
+for (let page = await tools.search({ query: "executor", limit: 100 }); ; page = await tools.search(page.next)) {
+  items.push(...page.items.map(({ path }) => ({ path })));
+  if (page.next === null) break;
+}
+return { items };`,
                 },
               },
               undefined,

@@ -51,8 +51,10 @@ Load files through the MCP `skills` tool using the returned app slug, profile, d
 
 ## Discover exact contracts
 
-Use `tools.search` inside `execute` to find callable app tools and their input
-and output signatures. Discover `framework.search` and `framework.describe`
+Use `tools.search` inside `execute` to find callable app tools. It returns their
+exact paths, one-line descriptions and input types. Read a tool's output type
+and whole description with `tools.search.describe({ paths })`. Discover
+`framework.search` and `framework.describe`
 on this Executor app to inspect library functions and methods. These queries
 return generated signatures, related types, examples and documentation links.
 Framework functions are imports or methods used in app source, not MCP tools.

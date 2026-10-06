@@ -97,8 +97,22 @@ exact signatures with `execute`:
 return await tools.search({ query: "Executor" });
 ```
 
-Search returns `items` with exact callable `path`, `description` and TypeScript
-`signature`. It also returns `remaining` and `next: { offset } | null` for paging.
+Search returns `items` with the exact callable `path`, the first line of the
+`description` and the `input` type on one line. `namespaces` lists each app and
+profile, with its accounts, once. A page holds at most `limit` items, 10 by
+default, and ends sooner at its size budget. `remaining` counts the matches
+after it; pass `next` to `tools.search` for the following page, until `next` is
+null. An item with `inputTruncated` has a longer input type than search shows.
+A tool that several profiles share is one item; `alsoAt` lists its other paths.
+
+Read the whole signature, with the output type, and the whole description before
+relying on a result's shape:
+
+```js
+return await tools.search.describe({ paths: ["<path from search>"] });
+```
+
+A path that names no tool is returned in `missing` with the closest paths.
 Hosted exposes tools generated from its OpenAPI spec under `tools.executor`.
 Discover and call `context.get({})` to read the organization approved
 for this MCP connection. Its result has `organization`, `slug` and `role`.

@@ -34,7 +34,7 @@ const Tools = Schema.Struct({
     }),
   ),
 });
-/** What one MCP execution searched and returned for the profile's MCP tool. */
+/** What one MCP execution described and returned for the profile's MCP tool. */
 const Searched = Schema.Struct({
   structuredContent: Schema.Struct({
     execution: Schema.Struct({
@@ -237,7 +237,8 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
             }
           }
           if (kind === "mcp") {
-            // The type an agent reads from tools.search must accept what the same calls return.
+            // The output type an agent reads from tools.search.describe must accept what the
+            // same calls return.
             const key = yield* body(
               Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
               yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -253,12 +254,12 @@ layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
               organization: actors.organization.id,
             });
             const expression = `tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].${tool}`;
-            const searched = yield* client.use("Search and call the MCP tool", (client, signal) =>
+            const searched = yield* client.use("Describe and call the MCP tool", (client, signal) =>
               client.callTool(
                 {
                   name: "execute",
                   arguments: {
-                    code: `const found = await tools.search({ namespace: ${JSON.stringify(app.slug)}, limit: 20 });
+                    code: `const found = await tools.search.describe({ paths: [${JSON.stringify(expression)}] });
 const results = [];
 for (const [accountId, value] of ${JSON.stringify(accounts.map((id, index) => [id, ["work", "personal"][index]]))})
   results.push(await ${expression}({ accountId, input: { value } }));
@@ -275,7 +276,7 @@ return { items: found.items, results };`,
               (item) => item.path.includes(profile.id) && item.path.endsWith(".identity"),
             )?.signature;
             if (signature === undefined)
-              return yield* Effect.die(`Missing searched MCP tool: ${JSON.stringify(items)}`);
+              return yield* Effect.die(`Missing described MCP tool: ${JSON.stringify(items)}`);
             expect(results).toHaveLength(2);
             for (const result of results)
               expect(

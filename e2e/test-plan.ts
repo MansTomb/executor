@@ -246,6 +246,16 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  mcpSearchConcise: {
+    file: "mcp-search-concise.spec.ts",
+    title:
+      "A broad MCP tool search returns concise pages within the execute output budget and describe returns full signatures",
+    targets: {
+      local: scheduled,
+      "self-host": na("Shared MCP search; covered on local"),
+      cloud: na("Shared MCP search; covered on local"),
+    },
+  },
   mcpExecuteReach: {
     fixtures: "actors",
     file: "mcp-execute-reach.spec.ts",
@@ -2388,7 +2398,7 @@ export const scenarios = {
   localAccountDescriptions: {
     file: "local-account-descriptions.spec.ts",
     title:
-      "An account description set through the account API is returned with the account, shown to agents with its tools, kept on rename and removed with null",
+      "An account description set through the account API is returned with the account, shown to agents once with its profile, kept on rename and removed with null",
     targets: {
       local: scheduled,
       "self-host": na(
