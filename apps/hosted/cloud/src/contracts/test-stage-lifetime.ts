@@ -47,7 +47,7 @@ export const canDeployTestStage = (lease: TestStageLease, now: number) => {
   return deadline === null || now + testStageDeployMilliseconds <= deadline;
 };
 /** All test stages share account quotas, so their number is fixed. */
-export const testStageLimit = 30;
+export const testStageLimit = 80;
 /** The oldest stages to remove so a new one stays within the limit. */
 export const stagesToEvict = (leases: readonly TestStageLease[], slug: string) => {
   const others = leases
