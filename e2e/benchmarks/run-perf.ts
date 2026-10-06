@@ -321,6 +321,7 @@ const loadFlags = {
   executeWorkers: Flag.Int("execute-workers").pipe(Flag.withDefault(8)),
   readWorkers: Flag.Int("read-workers").pipe(Flag.withDefault(4)),
   callWorkers: Flag.Int("call-workers").pipe(Flag.withDefault(2)),
+  scheduleWorkers: Flag.Int("schedule-workers").pipe(Flag.withDefault(0)),
   probeWorkers: Flag.Int("probe-workers").pipe(Flag.withDefault(1)),
 };
 const load = Command.make(

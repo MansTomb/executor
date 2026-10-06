@@ -44,14 +44,18 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { cloudSite } from "./infrastructure/site.ts";
 import * as Output from "alchemy/Output";
 import { AlchemyContext } from "alchemy/AlchemyContext";
-import { Config, Effect, Layer, Option, Path, Ref } from "effect";
+import { Config, Effect, Layer, Path, Ref } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudOnboarding } from "./infrastructure/onboarding.ts";
 import { cloudMcp } from "./infrastructure/mcp.ts";
 import { cloudApi } from "./implementation/api.ts";
 import { billingLive } from "./implementation/billing.ts";
-import { cloudSchedules, ScheduleCoordinatorLive } from "./infrastructure/schedules.ts";
+import {
+  cloudSchedules,
+  PlacedScheduleCoordinatorLive,
+  ScheduleCoordinatorLive,
+} from "./infrastructure/schedules.ts";
 import {
   cloudBackgroundJobs,
   selfBinding,
@@ -108,9 +112,11 @@ export default Api.make(
     const { dev } = yield* AlchemyContext;
     const path = yield* Path.Path;
     const origin = dev ? undefined : new URL(yield* cloudOrigin.pipe(Effect.orDie));
-    const placementRegion = yield* Config.NonEmptyString("CLOUD_PLACEMENT_REGION").pipe(
-      Config.option,
-    );
+    // The schedule coordinator is created beside its first caller, which must be this Worker's
+    // placed fetch handler, so a deployed API Worker cannot go out unplaced.
+    const placement = dev
+      ? undefined
+      : { region: yield* Config.NonEmptyString("CLOUD_PLACEMENT_REGION") };
     const analytics = yield* postHogBindings;
     const sentry = yield* sentryBindings;
     const site = yield* cloudSite;
@@ -131,14 +137,9 @@ export default Api.make(
       build: workerBuild("api"),
       // Auth callbacks and the dashboard share the configured canonical origin.
       ...(origin === undefined ? {} : { domain: yield* customDomain(origin) }),
-      // Opt in per deployment; the database's cloud region is a proximity hint,
-      // not a Cloudflare data center or a change to local development routing.
-      ...(dev
-        ? {}
-        : Option.match(placementRegion, {
-            onNone: () => ({}),
-            onSome: (region) => ({ placement: { region } }),
-          })),
+      // The database's cloud region is a proximity hint, not a Cloudflare data center or a
+      // change to local development routing.
+      ...(placement === undefined ? {} : { placement }),
       compatibility: {
         date: "2026-09-08",
         flags: ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],
@@ -478,7 +479,8 @@ export default Api.make(
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
-        ScheduleCoordinatorLive,
+        // The coordinator calls the retired one once, at handover.
+        PlacedScheduleCoordinatorLive.pipe(Layer.provideMerge(ScheduleCoordinatorLive)),
         cloudAuthDatabase,
         cloudTelemetry,
         Cloudflare.Workers.CronEventSourceLive,

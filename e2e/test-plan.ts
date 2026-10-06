@@ -1061,6 +1061,17 @@ export const scenarios = {
       local: na("Local runs its background jobs in its own server process."),
     },
   },
+  cloudScheduleCoordinatorPlaced: {
+    fixtures: "actors",
+    file: "cloud-database-placement.spec.ts",
+    title:
+      "Cloud cron wakes the schedule coordinator through the placed handler, and it retires the first coordinator once, keeps running scheduled runs as cloud, and is woken by the retired coordinator's minute heartbeat without cron",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host runs schedules in its own server process."),
+      local: na("Local runs schedules in its own server process."),
+    },
+  },
   cloudMcpObjectConnections: {
     fixtures: "actors",
     file: "cloud-database-placement.spec.ts",
