@@ -2392,6 +2392,29 @@ export const scenarios = {
       local: na("Hosted redirect returns to the app; local OAuth naming has its own scenario."),
     },
   },
+  connectionLinkTargetChanged: {
+    fixtures: "actors",
+    file: "connection-link-target-changed.spec.ts",
+    title:
+      "A connection link issued before its app switched from OAuth to an API key reports the change without contacting the old sign-in",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer to count registrations."),
+      local: na("Local links call the SDK without a read first; they have their own scenario."),
+    },
+  },
+  localConnectionLinkTargetChanged: {
+    file: "connection-link-target-changed.spec.ts",
+    title:
+      "A local connection page opened before its app changed provider replaces its sign-in or key form with the change",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Hosted connection routes read the request first; they have their own scenario.",
+      ),
+      cloud: na("Hosted connection routes read the request first; they have their own scenario."),
+    },
+  },
   oauthSetupErrors: {
     fixtures: "actors",
     file: "oauth-setup-errors.spec.ts",

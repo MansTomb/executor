@@ -194,7 +194,7 @@ export const HostedAccounts = HttpApiGroup.make("accounts")
     HttpApiEndpoint.get("connection", `${prefix}/connections/:connection`, {
       params: connection,
       success: HostedAccountConnection,
-      error: connectionErrors,
+      error: [...connectionErrors, AccountConnectionTargetChanged],
     }).annotate(RequiredAction, "manage"),
   )
   .add(
@@ -253,6 +253,7 @@ export const HostedOAuthCallbacks = HttpApiGroup.make("oauthCallback")
       success: HostedOAuthCallback,
       error: [
         ...connectionErrors,
+        AccountConnectionTargetChanged,
         CredentialsError,
         OAuthCompletionFailed,
         AuthenticationUnavailable,
