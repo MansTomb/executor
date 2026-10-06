@@ -48,7 +48,7 @@ export { hostedMcpBackend } from "./implementation/mcp.ts";
 
 export * from "./contracts/mcp.ts";
 export {
-  mcpAuthenticationError,
+  mcpBrowserGrantError,
   mcpConnectionStore,
   provisionHostedOAuthResources,
 } from "./implementation/mcp-oauth.ts";

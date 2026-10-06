@@ -47,8 +47,8 @@ export const makeMcpSession = Effect.fn(function* ({ executor, identity }: McpSe
       Effect.provide(identity),
       Effect.provide(HttpServer.layerServices),
     );
-    const http = authenticatedMcp((access) =>
-      dispatchHostedMcp(access, handler.http).pipe(
+    const http = authenticatedMcp((access, address) =>
+      dispatchHostedMcp(access, address, handler.http).pipe(
         Effect.provideService(CurrentUserId, access.userId),
       ),
     ).pipe(

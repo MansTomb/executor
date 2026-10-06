@@ -376,16 +376,39 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
                     : "rejected",
             });
           } else {
-            // Undeclared failures name the failed API call without its response body.
+            // Undeclared failures name the failed operation and response without its body.
             expect(failure.response).toMatchObject({ code: "ToolCallFailed", status: 502 });
             expect(failure.message).toMatch(
-              /^ToolCallFailed \(HTTP 502\): The app's API call failed: The API (responded with HTTP \d+|request failed)/,
+              /^ToolCallFailed \(HTTP 502\): The app's API call failed: GET \/failure responded with HTTP \d+ \((application\/json|text\/html)(, \d+ bytes)?\), which matches no error with a message in the API's OpenAPI document\./,
             );
             expect(failure.message).toContain(
               "Recovery: Check the API's response and the app's OpenAPI document, then retry.",
             );
           }
         }
+        // An undeclared 404 names the method and templated path, never the parameter values or body.
+        const missing = yield* client.use(
+          "Call an operation the API does not serve",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "execute",
+                arguments: {
+                  code: `return await tools[${JSON.stringify(app.slug)}].items.getItem({path:{item:${JSON.stringify(openapiSecretMarker)}}});`,
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        yield* evidence.json("openapi-undeclared-404.json", missing);
+        expect(
+          (yield* Schema.decodeUnknownEffect(Failure)(missing.structuredContent)).execution.error
+            .message,
+        ).toBe(
+          `ToolCallFailed (HTTP 502): The app's API call failed: GET /items/{item} responded with HTTP 404 (text/plain, ${openapiSecretMarker.length} bytes), which matches no error with a message in the API's OpenAPI document. Recovery: Check the API's response and the app's OpenAPI document, then retry.`,
+        );
+        expect(JSON.stringify(missing)).not.toContain(openapiSecretMarker);
         const broken = yield* body(
           App,
           yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {

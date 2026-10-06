@@ -1,4 +1,5 @@
 import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
+import { ApiError } from "@executor-js/utils/api-error";
 /** Host-owned OAuth configuration and encrypted protocol records. */
 import type { UrlPolicy } from "@executor-js/utils/url-policy";
 import { AuthMethodName } from "./provider.ts";
@@ -58,14 +59,14 @@ export const CheckOAuthSetup = Schema.Struct({
 });
 
 /** The host cannot resolve an approved OAuth client for this provider method. */
-export class OAuthClientUnavailable extends Schema.TaggedError<OAuthClientUnavailable>()(
-  "OAuthClientUnavailable",
-  { provider: ProviderId, method: AuthMethodName },
-  {
-    httpApiStatus: 409,
-    description: "OAuth client configuration is required on the trusted host.",
-  },
-) {}
+export const OAuthClientUnavailable = ApiError.define({
+  tag: "OAuthClientUnavailable",
+  status: 409,
+  fields: { provider: ProviderId, method: AuthMethodName },
+  message: ({ method }) =>
+    `The “${method}” OAuth method needs a client configured on this host before an account can connect.`,
+});
+export type OAuthClientUnavailable = typeof OAuthClientUnavailable.Type;
 
 /** Provider error codes that Executor may record. Other provider values are dropped. */
 export const OAuthProviderErrorCode = Schema.Literals([

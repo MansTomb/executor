@@ -438,6 +438,7 @@
         "@executor-js/app-source": "workspace:*",
         "@executor-js/app-templates": "workspace:*",
         "@executor-js/sdk": "workspace:*",
+        "@executor-js/utils": "workspace:*",
         "@napi-rs/keyring": "2.1.0",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "jsonc-parser": "3.3.1",
@@ -453,6 +454,7 @@
       "name": "@executor-js/app-registry",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
+        "@executor-js/utils": "workspace:*",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "fumadb-effect": "workspace:*",
       },
@@ -483,7 +485,7 @@
     },
     "packages/apps": {
       "name": "apps",
-      "version": "0.0.1-beta.28",
+      "version": "0.0.1-beta.30",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@csstools/css-tokenizer": "4.0.2",
@@ -491,6 +493,7 @@
         "@executor-js/app-cache": "workspace:*",
         "@executor-js/app-data": "workspace:*",
         "@executor-js/telemetry": "workspace:*",
+        "@executor-js/utils": "workspace:*",
         "@scalar/helpers": "0.14.0",
         "@scalar/openapi-upgrader": "0.3.1",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
@@ -619,6 +622,7 @@
         "@executor-js/authorization": "workspace:*",
         "@executor-js/mcp": "workspace:*",
         "@executor-js/sdk": "workspace:*",
+        "@executor-js/utils": "workspace:*",
         "better-auth": "1.7.5",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "kysely": "0.29.6",
@@ -672,6 +676,7 @@
       "name": "@executor-js/telemetry",
       "dependencies": {
         "@bufbuild/protobuf": "2.11.0",
+        "@executor-js/utils": "workspace:*",
         "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
         "workerd": "1.20260901.1",
       },

@@ -3,7 +3,7 @@ import {
   AuthenticationUnavailable,
   McpAuthentication,
   authOptions,
-  mcpAuthenticationError,
+  mcpBrowserGrantError,
   mcpBearerAccess,
   mcpConnectionStore,
 } from "@executor-js/hosted-server";
@@ -76,7 +76,7 @@ export const mcpAuthentication = (
             Effect.flatMap(([instance, bind]) =>
               Effect.tryPromise({
                 try: () => bind(() => instance.api.getMcpBrowserAccess({ headers, body: { id } })),
-                catch: mcpAuthenticationError,
+                catch: mcpBrowserGrantError,
               }),
             ),
           ),

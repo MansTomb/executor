@@ -262,6 +262,32 @@ export const describeFailure = (error: unknown) =>
       : `A non-Error ${error === null ? "null" : typeof error} value was thrown`;
 
 /**
+ * Name the failed operation by method and templated path, and an unmatched response by its
+ * status, media type and declared length. Response text never enters the message, which is also
+ * recorded in traces.
+ */
+const openapiFailureMessage = (error: OpenapiError) => {
+  const operation =
+    error.operation === undefined
+      ? "The API request"
+      : `${error.operation.method} ${error.operation.path}`;
+  if (error.reason === "invalid_definition")
+    return "The API's OpenAPI definition for this operation is invalid.";
+  if (error.reason === "invalid_input")
+    return error.operation === undefined
+      ? "The input could not be encoded as a request for this API operation."
+      : `The input could not be encoded as a request for ${operation}.`;
+  if (error.status === undefined) return `${operation} failed before a response arrived.`;
+  const shape = [error.contentType, error.bytes === undefined ? undefined : `${error.bytes} bytes`]
+    .filter((part) => part !== undefined)
+    .join(", ");
+  const response = `${operation} responded with HTTP ${error.status}${shape === "" ? "" : ` (${shape})`}`;
+  return error.status >= 200 && error.status < 300
+    ? `${response}, but its body could not be read within the response limits.`
+    : `${response}, which matches no error with a message in the API's OpenAPI document.`;
+};
+
+/**
  * Describe what an operation raised for the app's own caller. App data failures keep their
  * reason as a code, as do app cache failures and OpenAPI and MCP service failures, such as an
  * `mcpHealth` check that cannot reach its server or cannot verify the credentials; any other thrown
@@ -299,14 +325,7 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
       source: "service",
       errorName: "OpenapiError",
       code: error.reason,
-      message:
-        error.reason === "request"
-          ? error.status === undefined
-            ? "The API request failed before a response arrived."
-            : `The API responded with HTTP ${error.status}, which its OpenAPI document does not declare as an error with a message.`
-          : error.reason === "invalid_input"
-            ? "The input could not be encoded as a request for this API operation."
-            : "The API's OpenAPI definition for this operation is invalid.",
+      message: boundFailureMessage(openapiFailureMessage(error), secrets),
     };
   if (Schema.is(McpError)(error))
     return {

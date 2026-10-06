@@ -3,6 +3,7 @@ import {
   SourceDisplayFile,
   SourceDisplayFileQuery,
 } from "./source-display.ts";
+import { ApiError } from "@executor-js/utils/api-error";
 /** Shared app wire contracts; browser imports never load HTTP route or Git adapters. */
 import { Context, Schema } from "effect";
 import {
@@ -24,11 +25,16 @@ import { PublicationReadiness, RegistryError } from "@executor-js/app-registry/c
 export * from "./framework.ts";
 
 /** Authentication failures never expose whether another owner's app exists. */
-export class AppAccessDenied extends Schema.TaggedError<AppAccessDenied>()(
-  "AppAccessDenied",
-  { reason: Schema.Literals(["authentication", "forbidden"]) },
-  { httpApiStatus: 403 },
-) {}
+export const AppAccessDenied = ApiError.define({
+  tag: "AppAccessDenied",
+  status: 403,
+  fields: { reason: Schema.Literals(["authentication", "forbidden"]) },
+  message: ({ reason }) =>
+    reason === "authentication"
+      ? "This request is not authenticated for app management."
+      : "This caller may not perform this app operation, or cannot access this app.",
+});
+export type AppAccessDenied = typeof AppAccessDenied.Type;
 /** Expected operation failures are shared unchanged across the product transports. */
 export const appOperationErrors = [
   StorageError,

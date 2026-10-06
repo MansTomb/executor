@@ -3005,6 +3005,17 @@ export const scenarios = {
       local: na("This scenario uses hosted Better Auth and organization routes."),
     },
   },
+  appUiMcpFailures: {
+    fixtures: "actors",
+    managementProfiles: ["owner"],
+    file: "app-ui.spec.ts",
+    title: "MCP explains why an app has no URL and names the app holding a taken address",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted Better Auth and organization routes."),
+    },
+  },
   appUiDiscovery: {
     fixtures: "actors",
     managementProfiles: ["owner"],
@@ -3520,6 +3531,15 @@ export const scenarios = {
       local: na("Local uses its instance credential."),
     },
   },
+  localMcpGrantRefusals: {
+    file: "local-mcp-connections.spec.ts",
+    title: "Local MCP names the tool, runs-as target or app a narrowed connection excludes",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted grant restrictions are covered by liveGrantRestrictions."),
+      cloud: na("Hosted grant restrictions are covered by liveGrantRestrictions."),
+    },
+  },
   patMcp: {
     fixtures: "actors",
     file: "pat-mcp.spec.ts",
@@ -3548,6 +3568,18 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: scheduled,
       local: na("Local has no personal access tokens."),
+    },
+  },
+  patMcpRenamedOrganization: {
+    fixtures: "actors",
+    file: "pat-mcp.spec.ts",
+    title: "PAT MCP calls keep their organization when its slug is renamed mid-request",
+    targets: {
+      "self-host": na(
+        "Self-host permits one organization, which every parallel scenario shares; renaming it would move theirs.",
+      ),
+      cloud: scheduled,
+      local: na("Local has no organizations."),
     },
   },
   patMcpExpiry: {

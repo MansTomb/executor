@@ -1,5 +1,6 @@
 /** Durable app source lives in a host-owned revision store, independently of SQL and builds. */
 import { Schema, type Effect } from "effect";
+import { ApiError } from "@executor-js/utils/api-error";
 import { AppCodeId } from "./shared.ts";
 
 /**
@@ -65,18 +66,36 @@ export type SourceRevision = typeof SourceRevision.Type;
 export const SourceSnapshot = Schema.Struct({ revision: SourceRevision, files: SourceFiles });
 export type SourceSnapshot = typeof SourceSnapshot.Type;
 
+const sourceFailures = {
+  "not-found": "The requested app source revision does not exist.",
+  conflict:
+    "The app's source changed since it was read. Read the latest source, reapply the change, then commit against the new revision.",
+  "invalid-source":
+    "The app source is not valid: files must be UTF-8 text with supported paths and file modes.",
+  git: "Executor's Git storage could not complete this source operation. Try again.",
+  storage: "Executor could not read or write this app's source. Try again.",
+  limit: "The app source exceeds Executor's file count or total size limit.",
+  protected:
+    "The app's Git history is protected from this change, such as deleting or recreating its main branch, or an unsupported push format.",
+} as const;
 /** Safe source failures; command output and remote credentials remain inside adapters. */
-export class SourceError extends Schema.TaggedError<SourceError>()("SourceError", {
-  reason: Schema.Literals([
-    "not-found",
-    "conflict",
-    "invalid-source",
-    "git",
-    "storage",
-    "limit",
-    "protected",
-  ]),
-}) {}
+export const SourceError = ApiError.define({
+  tag: "SourceError",
+  status: 500,
+  fields: {
+    reason: Schema.Literals([
+      "not-found",
+      "conflict",
+      "invalid-source",
+      "git",
+      "storage",
+      "limit",
+      "protected",
+    ]),
+  },
+  message: ({ reason }) => sourceFailures[reason],
+});
+export type SourceError = typeof SourceError.Type;
 
 /** Transport status follows the failure reason while preserving the SourceError domain value. */
 export const sourceErrors = [

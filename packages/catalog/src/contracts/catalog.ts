@@ -1,5 +1,6 @@
 /** Catalog and onboarding projections, independent of any integration runtime. */
 import { Schema, SchemaGetter, type Effect } from "effect";
+import { ApiError } from "@executor-js/utils/api-error";
 import { TemplateErrorCode } from "@executor-js/app-templates/contracts";
 import { SourceFiles } from "@executor-js/sdk";
 import type { CustomAppInput } from "./imports.ts";
@@ -69,11 +70,12 @@ Object.defineProperty(CatalogImportFailed.prototype, "message", {
   },
 });
 /** Remote catalog availability is separate from the local app inventory. */
-export class CatalogUnavailable extends Schema.TaggedError<CatalogUnavailable>()(
-  "CatalogUnavailable",
-  {},
-  { httpApiStatus: 502 },
-) {}
+export const CatalogUnavailable = ApiError.define({
+  tag: "CatalogUnavailable",
+  status: 502,
+  message: "Executor could not read the app catalog. Try again.",
+});
+export type CatalogUnavailable = typeof CatalogUnavailable.Type;
 
 /** Published metadata, replaceable without changing the import workflow. */
 export interface CatalogSource {

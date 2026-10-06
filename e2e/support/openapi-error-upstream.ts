@@ -122,6 +122,19 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
       },
     });
     Object.assign(document.paths, {
+      // The API serves no items, so every call fails with a status the document does not declare.
+      "/items/{item}": {
+        get: {
+          operationId: "getItem",
+          parameters: [{ name: "item", in: "path", required: true, schema: { type: "string" } }],
+          responses: {
+            "200": {
+              description: "Item",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+          },
+        },
+      },
       "/wire/{id}": {
         post: {
           operationId: "wire",
@@ -167,6 +180,11 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
         }),
       ),
       HttpRouter.add("GET", "/openapi.json", HttpServerResponse.json(document)),
+      HttpRouter.add(
+        "GET",
+        "/items/*",
+        HttpServerResponse.text(openapiSecretMarker, { status: 404, contentType: "text/plain" }),
+      ),
       HttpRouter.add(
         "GET",
         "/failure",

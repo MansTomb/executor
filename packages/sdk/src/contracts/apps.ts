@@ -1,4 +1,5 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { ApiError } from "@executor-js/utils/api-error";
 import { DeclaredRequirements } from "apps/contracts";
 import { AppSlug } from "./app-slug.ts";
 export { AppSlug, appSlug } from "./app-slug.ts";
@@ -161,24 +162,31 @@ export const AppNotDeployed = UserFacingError.define({
 export type AppNotDeployed = typeof AppNotDeployed.Type;
 
 /** Adding a configured copy must not overwrite an existing app with that name. */
-export class AppNameTaken extends Schema.TaggedError<AppNameTaken>()(
-  "AppNameTaken",
-  { owner: OwnerId, name: Schema.String },
-  { httpApiStatus: 409, description: "An app already uses this name for this owner." },
-) {}
+export const AppNameTaken = ApiError.define({
+  tag: "AppNameTaken",
+  status: 409,
+  fields: { owner: OwnerId, name: Schema.String },
+  message:
+    "An app with this name already exists. Choose another name, or deploy to the existing app by its ID.",
+});
+export type AppNameTaken = typeof AppNameTaken.Type;
 
 /** Another configured app already owns this readable address for this owner. */
-export class AppSlugTaken extends Schema.TaggedError<AppSlugTaken>()(
-  "AppSlugTaken",
-  {
+export const AppSlugTaken = ApiError.define({
+  tag: "AppSlugTaken",
+  status: 409,
+  fields: {
     owner: OwnerId,
     slug: AppSlug,
+    /** The app holding the address, when the caller may see it. Products decide visibility. */
+    existing: Schema.optionalKey(Schema.Struct({ app: AppId, name: Schema.String })),
   },
-  {
-    httpApiStatus: 409,
-    description: "Another app name produces this address. Choose a different name.",
-  },
-) {}
+  message: ({ slug, existing }) =>
+    existing === undefined
+      ? `Another app already uses the address “${slug}”, which this name also produces. Choose a different name.`
+      : `The app “${existing.name}” (${existing.app}) already uses the address “${slug}”, which this name also produces. Choose a different name, or deploy to that app by its ID.`,
+});
+export type AppSlugTaken = typeof AppSlugTaken.Type;
 
 /** A saved selection does not match the app's declared provider or cardinality. */
 export const AccountSelectionInvalid = UserFacingError.define({
@@ -223,21 +231,22 @@ export const AccountRequired = UserFacingError.define({
 export type AccountRequired = typeof AccountRequired.Type;
 
 /** Stop and clean up webhook subscriptions before deleting their configured app. */
-export class AppWebhooksActive extends Schema.TaggedError<AppWebhooksActive>()(
-  "AppWebhooksActive",
-  { app: AppId },
-  { httpApiStatus: 409, description: "Remove the app's webhook subscriptions before deleting it." },
-) {}
+export const AppWebhooksActive = ApiError.define({
+  tag: "AppWebhooksActive",
+  status: 409,
+  fields: { app: AppId },
+  message: "Remove the app's webhook subscriptions before deleting it.",
+});
+export type AppWebhooksActive = typeof AppWebhooksActive.Type;
 
 /** A configured app owns active runs and cannot disappear while they execute. */
-export class AppWorkflowsActive extends Schema.TaggedError<AppWorkflowsActive>()(
-  "AppWorkflowsActive",
-  { app: AppId },
-  {
-    httpApiStatus: 409,
-    description: "Terminate the app's active workflow runs before deleting it.",
-  },
-) {}
+export const AppWorkflowsActive = ApiError.define({
+  tag: "AppWorkflowsActive",
+  status: 409,
+  fields: { app: AppId },
+  message: "Terminate the app's active workflow runs before deleting it.",
+});
+export type AppWorkflowsActive = typeof AppWorkflowsActive.Type;
 
 /** Canonical operation inputs; Promise and HTTP callers use the same validators. */
 export const AppInputs = {

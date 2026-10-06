@@ -1,4 +1,6 @@
-import { Option, Schema, SchemaAST } from "effect";
+import { Effect, Option, Schema, SchemaAST } from "effect";
+import { HttpServerResponse } from "effect/unstable/http";
+import { McpSchema } from "effect/unstable/ai";
 import { InputInvalid, mcpFailurePresentation, ToolCallFailed } from "@executor-js/sdk/core";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import {
@@ -38,7 +40,7 @@ const presentation = (error: Error): Option.Option<typeof ApiErrorResponse.Type>
               ? {
                   action: "Check the API's response and the app's OpenAPI document, then retry.",
                   instructions:
-                    "An API the app calls returned a failure its OpenAPI document does not describe, so no response body is shown. Check the API's own logs or status, and whether the document declares this error. Retry safety is not implied; inspect current state with a safe read before repeating the call.",
+                    "An API the app calls failed in a way its OpenAPI document does not describe. The message names the operation's method and templated path, and the response's status, media type and length; the response body is not shown. Check that the path and parameters match the API, the API's own logs or status, and whether the document declares this error. Retry safety is not implied; inspect current state with a safe read before repeating the call.",
                 }
               : tool.value.failure.source === "storage"
                 ? {
@@ -99,6 +101,35 @@ export const diagnostic = (error: Error): string =>
 /** The same presentation as a single readable line, for failures agents read but never parse. */
 export const diagnosticSummary = (error: Error): string =>
   Option.match(presentation(error), { onSome: summary, onNone: () => identifier(error) });
+
+/**
+ * Refuse an MCP HTTP request before protocol dispatch. Clients print the response body after
+ * their own prefix, such as "Error POSTing to endpoint:", so an empty body hides the cause. The
+ * body is a JSON-RPC error without a request ID, carrying the error's summary and presentation.
+ * Its code is -32600, as for the transport's own rejections: the MCP specification defines no
+ * code for a refused request and says new implementations should not use -32000 to -32019.
+ */
+export const refusedMcpRequest = (
+  error: UserFacingError,
+): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
+  Option.match(presentation(error), {
+    onNone: () => Effect.die(new Error(`${error.code} has no valid API presentation`)),
+    onSome: (response) =>
+      Effect.succeed(
+        HttpServerResponse.jsonUnsafe(
+          {
+            jsonrpc: "2.0",
+            id: null,
+            error: {
+              code: McpSchema.INVALID_REQUEST_ERROR_CODE,
+              message: summary(response),
+              data: response,
+            },
+          },
+          { status: response.status },
+        ),
+      ),
+  });
 
 /** CodeMode transports tool errors as messages, including inside agent try/catch.
  * Decode our safe JSON projection back into structured MCP details for uncaught failures.

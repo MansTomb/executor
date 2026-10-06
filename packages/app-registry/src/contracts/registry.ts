@@ -1,5 +1,6 @@
 /** Public app listings identify a chosen Git revision, without package versions or dependency resolution. */
 import { Schema, type Effect } from "effect";
+import { ApiError } from "@executor-js/utils/api-error";
 import { appSlug, SourceCommit, SourceFiles } from "@executor-js/sdk/core";
 
 /** The hosted Executor origin: the default public registry and the hosted sign-in host. */
@@ -67,10 +68,27 @@ export const PublicationReference = Schema.Struct({
   package: PackageName,
   commit: SourceCommit,
 });
+const registryFailures = {
+  "not-found": "The public app listing or its selected commit does not exist.",
+  forbidden: "This publisher may not use this package scope or change this public listing.",
+  conflict: "Another app already publishes this package name.",
+  changed:
+    "The public listing changed since its commit was reviewed. Review the current listing before copying it.",
+  "invalid-source": "The app source at this commit cannot be read as a public listing.",
+  "invalid-manifest":
+    "The app's package.json needs a valid package name in the publisher's scope and valid metadata.",
+  "unsupported-dependencies": "The app declares dependencies that public listings do not support.",
+  storage: "Executor could not read or write the public app catalog. Try again.",
+  network: "Executor could not reach the public app registry. Try again.",
+  status: "The public app registry returned an unexpected HTTP status.",
+  "invalid-response": "The public app registry returned a response Executor could not read.",
+  limit: "The public app registry's response exceeded Executor's size limit.",
+} as const;
 /** Safe public-catalog failures. */
-export class RegistryError extends Schema.TaggedError<RegistryError>()(
-  "RegistryError",
-  {
+export const RegistryError = ApiError.define({
+  tag: "RegistryError",
+  status: 400,
+  fields: {
     reason: Schema.Literals([
       "not-found",
       "forbidden",
@@ -88,8 +106,12 @@ export class RegistryError extends Schema.TaggedError<RegistryError>()(
     /** The remote registry's HTTP status, for a `status` failure. */
     status: Schema.optional(Schema.Int),
   },
-  { httpApiStatus: 400 },
-) {}
+  message: ({ reason, status }) =>
+    reason === "status" && status !== undefined
+      ? `The public app registry responded with HTTP ${status}.`
+      : registryFailures[reason],
+});
+export type RegistryError = typeof RegistryError.Type;
 /** Public reads require a selected commit; a changed listing never silently selects newer code. */
 export interface Registry {
   readonly origin: string;

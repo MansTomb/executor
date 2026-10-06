@@ -25,6 +25,7 @@ import { AppGitProtocol } from "./contracts/git.ts";
 import {
   AppId,
   AppSlug,
+  AppSlugTaken,
   AppNotFound,
   SourceCommit,
   SourceError,
@@ -141,6 +142,31 @@ const authoring = (id: AppId) =>
       },
     };
   });
+/**
+ * Name the app that holds a taken address, but only when the caller may see it. Hidden apps stay
+ * anonymous; the address alone was already part of the request. The conflict remains the failure
+ * when its holder cannot be read.
+ */
+const nameAddressHolder = (
+  host: ManagementHost,
+  identity: Context.Service.Shape<typeof AppIdentity>,
+  error: AppSlugTaken,
+) =>
+  Effect.gen(function* () {
+    const [holder] = yield* host.executor.apps.list({ owner: error.owner, slug: error.slug });
+    if (
+      holder === undefined ||
+      (identity.appIds !== undefined && !identity.appIds.includes(holder.id))
+    )
+      return error;
+    const access = yield* capabilities(host, holder, identity);
+    return access.visible
+      ? new AppSlugTaken({ ...error, existing: { app: holder.id, name: holder.name } })
+      : error;
+  }).pipe(
+    Effect.orElseSucceed(() => error),
+    Effect.flatMap(Effect.fail),
+  );
 /** Publication preview always checks the complete stored files, never a display listing. */
 const workspaceSource = (id: AppId) =>
   Effect.gen(function* () {
@@ -188,9 +214,10 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
         Effect.gen(function* () {
           const identity = yield* writeIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
-          return yield* host.executor.apps
-            .create({ ...payload, owner: identity.owner })
-            .pipe(Effect.flatMap((app) => projectApp(host, app, identity)));
+          return yield* host.executor.apps.create({ ...payload, owner: identity.owner }).pipe(
+            Effect.catchTag("AppSlugTaken", (error) => nameAddressHolder(host, identity, error)),
+            Effect.flatMap((app) => projectApp(host, app, identity)),
+          );
         }),
       )
       .handle("authoring", ({ params }) =>
@@ -250,7 +277,10 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
               from,
               name: payload.name,
             })
-            .pipe(Effect.flatMap((app) => projectApp(host, app, identity)));
+            .pipe(
+              Effect.catchTag("AppSlugTaken", (error) => nameAddressHolder(host, identity, error)),
+              Effect.flatMap((app) => projectApp(host, app, identity)),
+            );
         }),
       )
       .handle("git", ({ params }) =>

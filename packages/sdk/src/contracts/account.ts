@@ -1,4 +1,5 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { ApiError } from "@executor-js/utils/api-error";
 /** Saved reusable accounts. Products decide access; pending setup lives in account-connection.ts. */
 import { Schema } from "effect";
 import { StorageError, CredentialsError } from "./shared.ts";
@@ -146,11 +147,14 @@ export const AccountNotFound = UserFacingError.define({
 export type AccountNotFound = typeof AccountNotFound.Type;
 
 /** Submitted fields failed the declared method schema; values never enter this error. */
-export class AccountFieldsInvalid extends Schema.TaggedError<AccountFieldsInvalid>()(
-  "AccountFieldsInvalid",
-  { provider: ProviderId, method: AuthMethodName },
-  { httpApiStatus: 422, description: "Account fields did not match the selected secrets method." },
-) {}
+export const AccountFieldsInvalid = ApiError.define({
+  tag: "AccountFieldsInvalid",
+  status: 422,
+  fields: { provider: ProviderId, method: AuthMethodName },
+  message: ({ method }) =>
+    `The submitted account fields do not match the “${method}” method's declared fields.`,
+});
+export type AccountFieldsInvalid = typeof AccountFieldsInvalid.Type;
 
 /** Canonical decoded inputs shared by HTTP contracts and the Promise facade. */
 export const AccountInputs = {
@@ -196,24 +200,22 @@ const ownerQuery = { owner: AccountInputs.get.fields.owner };
  * from callback-supplied owner/provider IDs.
  */
 /** Keep the provider credentials until subscriptions have completed their upstream cleanup. */
-export class AccountWebhooksActive extends Schema.TaggedError<AccountWebhooksActive>()(
-  "AccountWebhooksActive",
-  { account: AccountId },
-  {
-    httpApiStatus: 409,
-    description: "Remove this account's webhook subscriptions before deleting it.",
-  },
-) {}
+export const AccountWebhooksActive = ApiError.define({
+  tag: "AccountWebhooksActive",
+  status: 409,
+  fields: { account: AccountId },
+  message: "Remove this account's webhook subscriptions before deleting it.",
+});
+export type AccountWebhooksActive = typeof AccountWebhooksActive.Type;
 
 /** Active workflows retain their selected account identities until completion or termination. */
-export class AccountWorkflowsActive extends Schema.TaggedError<AccountWorkflowsActive>()(
-  "AccountWorkflowsActive",
-  { account: AccountId },
-  {
-    httpApiStatus: 409,
-    description: "Terminate this account's active workflow runs before deleting it.",
-  },
-) {}
+export const AccountWorkflowsActive = ApiError.define({
+  tag: "AccountWorkflowsActive",
+  status: 409,
+  fields: { account: AccountId },
+  message: "Terminate this account's active workflow runs before deleting it.",
+});
+export type AccountWorkflowsActive = typeof AccountWorkflowsActive.Type;
 
 export const AccountsGroup = HttpApiGroup.make("accounts")
   .add(

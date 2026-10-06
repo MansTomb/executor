@@ -267,7 +267,9 @@ object with non-empty `action` and `instructions` strings is also returned as
 or malformed `recovery` is ignored. Other payload fields, headers, and stacks are
 not forwarded.
 Authentication and rate limits keep their existing provider-error handling.
-Unknown, malformed, oversized, or stalled error bodies use the generic failure.
+Unknown, malformed, oversized, or stalled error bodies use the generic failure. It
+names the operation's method and templated path, such as `GET /items/{item}`, and
+the response's status, media type, and declared length, but never its body.
 
 Inside an `execute` program's `catch`, CodeMode exposes only `error.message`.
 For these declared API errors it contains JSON with `code`, `status`,
