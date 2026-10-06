@@ -2290,6 +2290,17 @@ export const scenarios = {
       local: na("Local uses public docs and does not serve the marketing site."),
     },
   },
+  desktopDownloads: {
+    fixtures: "actors",
+    file: "desktop-downloads.spec.ts",
+    title:
+      "Homepage desktop downloads link to the newest published v2 release and fall back to the releases page",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host does not serve the marketing site."),
+      local: na("Local does not serve the marketing site."),
+    },
+  },
   teamCreateRoute: {
     fixtures: "actors",
     file: "team-create-route.spec.ts",
