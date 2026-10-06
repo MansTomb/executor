@@ -22,7 +22,6 @@ import {
 import { executorIntro } from "@executor-js/app-templates/executor";
 import { Context, Effect, Option, Result, Schema } from "effect";
 import { ElicitationFailed } from "@executor-js/sdk/core";
-import { McpProtocol } from "effect/unstable/ai";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { McpAuthentication, McpUnauthorized, type McpAccess } from "../contracts/mcp.ts";
 import { CurrentOrganization, OrganizationReference } from "../contracts/organization.ts";
@@ -88,12 +87,6 @@ export const makeHostedMcp = (beforeExecute?: McpOptions["beforeExecute"]) =>
             : Effect.succeed(url(address)),
         ),
     },
-    protocols: [
-      McpProtocol.v2026_07_28,
-      McpProtocol.v2025_11_25,
-      McpProtocol.v2025_06_18,
-      McpProtocol.v2025_03_26,
-    ],
   }).pipe(Effect.orDie);
 
 /** An organization-pathed MCP URL names its organization; bare /mcp leaves the choice to the token. */

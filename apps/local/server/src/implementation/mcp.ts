@@ -23,7 +23,6 @@ import {
   type ToolInvocationOptions,
 } from "@executor-js/sdk/core";
 import { Context, Effect, Redacted } from "effect";
-import { McpProtocol } from "effect/unstable/ai";
 
 /** The local bearer key authorizes the whole instance. No hosted owner or role model is imposed. */
 export const localMcpBackend = (executor: Executor) =>
@@ -97,7 +96,6 @@ export const localMcp = (
       caller: Caller,
       instructions: executorIntro,
       limits,
-      protocols: [McpProtocol.v2026_07_28, McpProtocol.v2025_11_25],
     });
     const http = Effect.gen(function* () {
       const request = yield* localRequest(config.port, config.browserOrigin);

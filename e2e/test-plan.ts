@@ -3723,6 +3723,25 @@ export const scenarios = {
       local: na("Local uses its instance credential."),
     },
   },
+  mcpProtocolVersions: {
+    fixtures: "actors",
+    file: "mcp-protocol-versions.spec.ts",
+    title: "Hosted MCP negotiates older protocol versions and explains rejected requests",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local runs the same protocol checks in localMcpProtocolVersions."),
+    },
+  },
+  localMcpProtocolVersions: {
+    file: "mcp-protocol-versions.spec.ts",
+    title: "Local MCP negotiates older protocol versions and explains rejected requests",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted products run the same protocol checks in mcpProtocolVersions."),
+      cloud: na("Hosted products run the same protocol checks in mcpProtocolVersions."),
+    },
+  },
   accountSettings: {
     fixtures: "actors",
     file: "account-settings.spec.ts",
