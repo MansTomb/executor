@@ -16,6 +16,8 @@ import DashboardLive from "./src/dashboard.ts";
 import FormatterLive from "./src/formatter.ts";
 import AppDataLive from "./src/app-data.ts";
 import ArtifactsCredentialsLive from "./src/artifacts-credentials.ts";
+import McpServerLive from "./src/mcp-server.ts";
+import { McpServer } from "./src/infrastructure/mcp-server-worker.ts";
 import AppDomainControllerLive from "./src/app-domains.ts";
 import { AppDomainController } from "./src/infrastructure/app-domain-controller-worker.ts";
 import InvocationTelemetryLive from "./src/invocation-telemetry.ts";
@@ -81,6 +83,7 @@ export default Alchemy.Stack(
       }
     }
     yield* uploadCloudSourceMaps("api", api.hash).pipe(Effect.orDie);
+    yield* uploadCloudSourceMaps("mcp-server", (yield* McpServer).hash).pipe(Effect.orDie);
     return { url: (yield* AlchemyContext).dev ? yield* developmentWeb(api.url) : api.url };
   }).pipe(
     Effect.provide(
@@ -91,6 +94,7 @@ export default Alchemy.Stack(
         FormatterLive,
         AppDataLive,
         ArtifactsCredentialsLive,
+        McpServerLive,
         AppDomainControllerLive,
         InvocationTelemetryLive,
       ),

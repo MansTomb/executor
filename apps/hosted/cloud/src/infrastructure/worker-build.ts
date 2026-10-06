@@ -3,7 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import type { WorkerProps } from "alchemy/Cloudflare";
 import { Effect, FileSystem, Path } from "effect";
 
-type WorkerName = "api" | "app-pages" | "dashboard" | "formatter" | "compiler";
+type WorkerName = "api" | "app-pages" | "mcp-server" | "dashboard" | "formatter" | "compiler";
 
 /**
  * Bytes of JavaScript each Worker may upload. Cloudflare compiles every uploaded ES module when
@@ -14,6 +14,7 @@ type WorkerName = "api" | "app-pages" | "dashboard" | "formatter" | "compiler";
 const uploadBudgets: Record<WorkerName, number> = {
   api: 5_800_000,
   "app-pages": 2_500_000,
+  "mcp-server": 3_400_000,
   dashboard: 3_900_000,
   formatter: 2_000_000,
   compiler: 1_700_000,
@@ -119,7 +120,9 @@ export const workerBuild = (worker: WorkerName): NonNullable<WorkerProps["build"
           sourcemap: "hidden",
           plugins: [
             uploadedModules(worker),
-            ...(worker === "api" || worker === "app-pages" ? [sentryArtifacts(worker)] : []),
+            ...(worker === "api" || worker === "app-pages" || worker === "mcp-server"
+              ? [sentryArtifacts(worker)]
+              : []),
           ],
         },
       };
