@@ -1425,6 +1425,16 @@ export const scenarios = {
       local: na("This scenario requires Cloudflare's compiler Worker memory limit."),
     },
   },
+  cloudCompilerUiFiles: {
+    fixtures: "actors",
+    file: "cloud-compiler.spec.ts",
+    title: "Cloud builds keep large UI files out of the server bundle",
+    targets: {
+      cloud: { status: "scheduled", runtime: "attached" },
+      "self-host": na("This scenario requires Cloudflare's compiler Worker memory limit."),
+      local: na("This scenario requires Cloudflare's compiler Worker memory limit."),
+    },
+  },
   requestTiming: {
     fixtures: "actors",
     file: "request-timing.spec.ts",
@@ -3940,7 +3950,8 @@ export const scenarios = {
   skillFolder: {
     fixtures: "actors",
     file: "skill-folder.spec.ts",
-    title: "skill folders share one loader, ignore loose files and respect explicit catalogs",
+    title:
+      "skill folders share one loader, ignore loose files and ui/, and respect explicit catalogs",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
