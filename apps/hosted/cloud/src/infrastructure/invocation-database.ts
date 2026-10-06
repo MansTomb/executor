@@ -3,11 +3,11 @@
  * the executor, hosted permission checks and Better Auth. A TLS login to PgBouncer costs about
  * 70 ms from a placed Worker, so consumers share one pool and sequential work reuses one connection.
  */
-import { PgClient } from "@effect/sql-pg";
+import type { PgClient } from "@effect/sql-pg";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Context, Effect, Layer, Option } from "effect";
 import { SqlClient, type SqlError } from "effect/unstable/sql";
-import { cloudDatabaseConnection } from "./database.ts";
+import { cloudDatabaseConnection, cloudDatabasePool } from "./database.ts";
 import { ObjectDatabase } from "./object-database.ts";
 
 export type SqlServices = PgClient.PgClient | SqlClient.SqlClient;
@@ -27,8 +27,8 @@ export class InvocationDatabase extends Context.Service<
 
 /**
  * One client per execution, closed with the event. A Durable Object lends its own held client
- * instead. PgBouncer pools in transaction mode, so no consumer may rely on session state
- * (`prepare: false`; no session `SET`, advisory locks or `LISTEN`).
+ * instead. Both come from {@link cloudDatabasePool}, so neither relies on session state, and both
+ * make a failed connection attempt once more.
  */
 export const cloudInvocationDatabase = Layer.effect(
   InvocationDatabase,
@@ -40,7 +40,7 @@ export const cloudInvocationDatabase = Layer.effect(
         if (Option.isSome(object)) return yield* object.value.sql;
         const url = yield* connection.connectionString;
         return yield* Layer.build(
-          PgClient.layer({ url, maxConnections: invocationConnectionLimit, prepare: false }),
+          cloudDatabasePool({ url, maxConnections: invocationConnectionLimit }),
         );
       }).pipe(Effect.withSpan("runtime.cloud.database.initialize")),
     );

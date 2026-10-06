@@ -2,7 +2,8 @@
  * Cloud keeps database work beside the database. Cron Triggers run wherever Cloudflare starts
  * them, so each one only asks the API Worker's own placed fetch handler to run its job. Durable
  * Objects serve many calls, so an MCP session holds its connections across calls and operations,
- * replaces one the server drops, and closes them once the session has been idle.
+ * replaces one the server drops, makes a stalled connection attempt once more, and closes them
+ * once the session has been idle.
  */
 import { expect, layer } from "@effect/vitest";
 import { Duration, Effect, Schedule, Schema } from "effect";
@@ -60,8 +61,18 @@ const Completed = Schema.Struct({
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
 
-/** Count or terminate one MCP session object's connections in the local database. */
-const objectConnections = (owner: string, terminate: boolean) =>
+/**
+ * Count or terminate one MCP session object's connections in the local database. A stall makes
+ * the next connection the object opens wait that many seconds in PostgreSQL's login.
+ */
+const objectConnections = (
+  owner: string,
+  options: {
+    readonly terminate?: boolean;
+    readonly stallNextConnect?: number;
+    readonly releaseStalls?: boolean;
+  } = {},
+) =>
   Effect.gen(function* () {
     const target = yield* Target;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -74,7 +85,11 @@ const objectConnections = (owner: string, terminate: boolean) =>
           `${target.directory}/sso-database.json`,
           "--owner",
           owner,
-          ...(terminate ? ["--terminate"] : []),
+          ...(options.terminate === true ? ["--terminate"] : []),
+          ...(options.stallNextConnect === undefined
+            ? []
+            : ["--stall-next-connect", String(options.stallNextConnect)]),
+          ...(options.releaseStalls === true ? ["--release-stalls"] : []),
         ],
         { env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" }, extendEnv: false },
       ),
@@ -279,7 +294,7 @@ return out;`,
           const owner = `mcp ${object}`;
 
           // A connection the server drops is replaced on the next use, inside the same window.
-          expect(yield* objectConnections(owner, true)).toBeGreaterThan(0);
+          expect(yield* objectConnections(owner, { terminate: true })).toBeGreaterThan(0);
           const dropped = yield* sessionSpans(
             yield* execute("Tool calls after a dropped connection"),
             6,
@@ -290,7 +305,7 @@ return out;`,
 
           // Once the session has been idle, it holds no connection; the next call opens a window.
           yield* Effect.sleep(Duration.seconds(32));
-          expect(yield* objectConnections(owner, false)).toBe(0);
+          expect(yield* objectConnections(owner)).toBe(0);
           const reopened = yield* sessionSpans(yield* execute("Tool calls after idling"), 6);
           yield* evidence.json("after-idle.json", reopened);
           expect(reopened.windows).toBe(1);
@@ -298,5 +313,97 @@ return out;`,
         }).pipe(Effect.provide(McpClient.layer)),
       ),
     { timeout: 120_000 },
+  );
+
+  it.effect(scenarios.cloudMcpObjectConnectRetry.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          mcp = yield* McpClient,
+          evidence = yield* Evidence,
+          telemetry = yield* Telemetry;
+        const key = yield* body(
+          Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+          yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+            name: "Object connect retry",
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+            .pipe(Effect.orDie),
+        );
+        // The session object's own spans for some requests, once `ready` finds them in Motel.
+        const objectSpans = (
+          traces: ReadonlyArray<string>,
+          ready: (spans: ReadonlyArray<Spans[number]["span"]>) => boolean,
+        ) =>
+          Effect.forEach(traces, (trace) => telemetry.query(trace)).pipe(
+            Effect.map((results) =>
+              results
+                .flatMap((result) =>
+                  below(result.data, (span) => span.operationName === "mcp.session.request"),
+                )
+                .map(({ span }) => span),
+            ),
+            Effect.flatMap((spans) =>
+              ready(spans)
+                ? Effect.succeed(spans)
+                : Effect.fail(new Error("The session's spans have not reached Motel")),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+          );
+
+        const opened = (yield* evidence.requests).length;
+        const client = yield* mcp.connect(key.key, "object-connect-retry", {
+          organization: actors.organization.id,
+        });
+        const object = (yield* objectSpans(
+          (yield* evidence.requests).slice(opened).map((request) => request.traceId),
+          (spans) => spans.some((span) => span.tags["executor.mcp.object_id"] !== undefined),
+        ))
+          .map((span) => span.tags["executor.mcp.object_id"])
+          .find((id) => id !== undefined);
+        if (object === undefined) return yield* Effect.die("Missing the session object's ID");
+        const owner = `mcp ${object}`;
+
+        // Drop the object's connections and hold the next one it opens in PostgreSQL's login for
+        // longer than an attempt may take. Nothing has been sent on it, so the pool tries again.
+        expect(
+          yield* objectConnections(owner, { stallNextConnect: 8, terminate: true }),
+        ).toBeGreaterThan(0);
+        yield* Effect.addFinalizer(() =>
+          objectConnections(owner, { releaseStalls: true }).pipe(Effect.orDie),
+        );
+        const seen = (yield* evidence.requests).length;
+        const listed = yield* client.use("List tools while a connection stalls", (client, signal) =>
+          client.listTools(undefined, { signal }),
+        );
+        expect(listed.tools.length).toBeGreaterThan(0);
+        const connects = (yield* objectSpans(
+          (yield* evidence.requests).slice(seen).map((request) => request.traceId),
+          (spans) =>
+            spans.some(
+              (span) =>
+                span.operationName === "sql.connect" && span.tags["db.connect.attempt"] === "2",
+            ),
+        )).filter((span) => span.operationName === "sql.connect");
+        yield* evidence.json(
+          "object-connects.json",
+          connects.map((span) => ({
+            attempt: span.tags["db.connect.attempt"],
+            retryReason: span.tags["db.connect.retry_reason"],
+            durationMs: span.durationMs,
+            status: span.status,
+          })),
+        );
+        const retried = connects.filter((span) => span.tags["db.connect.attempt"] === "2");
+        expect(retried.map((span) => span.tags["db.connect.retry_reason"])).toEqual([
+          "PgConnection: Connection timed out",
+        ]);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
   );
 });

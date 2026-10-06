@@ -1072,6 +1072,16 @@ export const scenarios = {
       local: na("Local MCP sessions use the local database."),
     },
   },
+  cloudMcpObjectConnectRetry: {
+    fixtures: "actors",
+    file: "cloud-database-placement.spec.ts",
+    title: "Cloud MCP session objects make a stalled database connection attempt once more",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host MCP sessions run in its server process with its own pool."),
+      local: na("Local MCP sessions use the local database."),
+    },
+  },
   cloudAppFrameworkPin: {
     fixtures: "actors",
     file: "app-framework-pin.spec.ts",

@@ -4,7 +4,7 @@
  * Object serves many calls in one I/O context, so reconnecting in every call, or in every MCP
  * operation, only repeats the TLS login to PgBouncer.
  */
-import { PgClient } from "@effect/sql-pg";
+import type { PgClient } from "@effect/sql-pg";
 import {
   Context,
   Duration,
@@ -18,7 +18,7 @@ import {
   Tracer,
 } from "effect";
 import type { SqlClient } from "effect/unstable/sql";
-import { cloudDatabaseConnection } from "./database.ts";
+import { cloudDatabaseConnection, cloudDatabasePool } from "./database.ts";
 
 /**
  * An object closes its connections this long after its last call ends. PgBouncer pools in
@@ -74,9 +74,10 @@ const applicationName = (owner: string) => `executor ${owner}`.slice(0, 63);
  * connections in their own fibers; each `sql.connect` is reported to the most recent call still
  * holding the window, under the span that asked for the database. Transactions reserve one of the
  * window's connections; other calls use the rest and never join the transaction. A connection
- * the server drops is replaced on its next use, by the pool itself. When the last call ends,
- * the window closes after {@link idleWindow}; the next call opens a new one. Workerd has no
- * teardown hook for evicted objects; eviction drops their sockets.
+ * the server drops is replaced on its next use, by the pool itself. Opening a connection gets a
+ * second attempt when the first fails or times out ({@link cloudDatabasePool}). When the last
+ * call ends, the window closes after {@link idleWindow}; the next call opens a new one. Workerd
+ * has no teardown hook for evicted objects; eviction drops their sockets.
  */
 export const cloudObjectDatabase = Effect.gen(function* () {
   const connection = yield* cloudDatabaseConnection;
@@ -107,11 +108,10 @@ export const cloudObjectDatabase = Effect.gen(function* () {
       const opener = yield* currentCaller;
       return yield* Effect.gen(function* () {
         const sql = yield* Layer.buildWithScope(
-          PgClient.layer({
+          cloudDatabasePool({
             url,
             maxConnections: objectConnectionLimit,
             idleTimeout: idleWindow,
-            prepare: false,
             applicationName: applicationName(owner),
           }),
           scope,
