@@ -9,13 +9,13 @@ import {
   RuntimeAppsDependencyMissing,
   runtimeAdapter,
 } from "@executor-js/sdk/core";
-import { appRuntime, assembleWorkerBundle, remoteAppRunner } from "@executor-js/sdk/workerd";
 import {
-  DatabaseFieldReserved,
-  HostRequirementsError,
-  DeclaredRequirements,
-  HostResponse,
-} from "apps/contracts";
+  appRuntime,
+  assembleWorkerBundle,
+  declarationFailed,
+  remoteAppRunner,
+} from "@executor-js/sdk/workerd";
+import { HostRequirementsError, DeclaredRequirements, HostResponse } from "apps/contracts";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Context, Effect, FiberSet, Option, Schema } from "effect";
@@ -35,11 +35,7 @@ import {
 
 /** The deployer sees the underlying failure; builds bind no accounts, so it holds no credentials. */
 const failed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
-  new RuntimeBuildFailed({
-    stage,
-    message: describeBuildCause(cause),
-    ...(Schema.is(DatabaseFieldReserved)(cause) ? { declaration: cause } : {}),
-  });
+  new RuntimeBuildFailed({ stage, message: describeBuildCause(cause) });
 /**
  * How long a deploy waits for the compiler Worker to answer. A lost compiler isolate otherwise
  * leaves the binding call open until the platform reports a lost connection, 100-230s later.
@@ -135,7 +131,7 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
               Effect.withSpan("runtime.cloud.compiler.request"),
             );
             if (!result.ok) return yield* Effect.fail(result.error);
-            const { bundle, framework, ui, protocol } = result.value;
+            const { bundle, framework, ui, protocol, sourceMap } = result.value;
             const build = BuildId.make(`bld_${crypto.randomUUID()}`);
             const requirements = yield* runner
               .declare({ ...assembleWorkerBundle(bundle, framework), protocol }, headers)
@@ -148,7 +144,9 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
                         Effect.flatMap(Effect.fail),
                       ),
                 ),
-                Effect.mapError((cause) => failed("declaration", cause)),
+                Effect.mapError((cause) =>
+                  declarationFailed(cause, { mainModule: bundle.mainModule, sourceMap, files }),
+                ),
                 Effect.withSpan("runtime.cloud.requirements"),
               );
             const stored = yield* retainCloudBuild(

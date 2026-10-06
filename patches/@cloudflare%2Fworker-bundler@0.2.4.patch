@@ -45,7 +45,7 @@ diff --git a/dist/index.js b/dist/index.js
 +++ b/dist/index.js
 @@ -81 +81 @@ function resolvePackage(specifier, files, conditions, extensions) {
 -	const legacyEntry = resolveExports.legacy(pkg, { fields: ["module", "main"] });
-+	const legacyEntry = resolveExports.legacy(pkg, { fields: conditions.includes("style") ? ["style", "module", "main"] : ["module", "main"] });
++	const legacyEntry = subpath ? void 0 : resolveExports.legacy(pkg, { fields: conditions.includes("style") ? ["style", "module", "main"] : ["module", "main"] });
 @@ -258 +258 @@ async function bundleWithEsbuild(options) {
 -						const result = resolveModule(args.path, { files });
 +						const result = resolveModule(args.path, { files, conditions: args.kind === "import-rule" ? ["style", "browser"] : ["import", "browser"] });

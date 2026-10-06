@@ -29,6 +29,8 @@ export const CompiledCloudApp = Schema.Struct({
       }),
     ),
   ),
+  /** Locates the build's declaration failures in the authored source; never retained. */
+  sourceMap: Schema.String,
 });
 
 /**

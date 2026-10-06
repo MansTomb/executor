@@ -76,7 +76,10 @@ export type AppDeploymentChanged = typeof AppDeploymentChanged.Type;
 
 /**
  * A source location. Nested, because runtimes such as Bun set their own `line` and `column`
- * properties on every Error instance.
+ * properties on every Error instance. `line` and `column` are both 1-based, and `column` counts
+ * UTF-16 code units, as editors and stack traces print them. esbuild reports 0-based columns in
+ * UTF-8 bytes and source maps 0-based columns in UTF-16 code units; they are converted where their
+ * positions become a `SourceLocation`.
  */
 export const SourceLocation = Schema.Struct({
   file: Schema.String.check(Schema.isMaxLength(1024)),

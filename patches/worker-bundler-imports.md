@@ -30,3 +30,9 @@ Recheck these options and the pinned plugin hook when updating worker-bundler.
 Live Cloud checks cover direct npm imports, importing the original manifest,
 unused declarations, a public MCP import and tool call, a WASM round trip, and a
 React browser build. Timing comparisons are in `notes/install-latency.md`.
+
+The resolver also stops falling back to a package's `main` entry for a subpath
+import. Without an `exports` field, `ajv/dist/compile/codegen` otherwise loaded
+`ajv/dist/ajv.js`, so `ajv-formats`, and with it direct imports of the MCP
+SDK client, failed while the Worker loaded. A subpath now resolves to its own
+file or directory index. 0.2.5 still has the fallback.

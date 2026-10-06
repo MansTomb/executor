@@ -2050,6 +2050,16 @@ export const scenarios = {
       local: na("Hosted deploy routes and management app; local shares the workerd build path."),
     },
   },
+  appSourceImports: {
+    fixtures: "actors",
+    file: "app-source-imports.spec.ts",
+    title: "Deploys load NodeNext .js imports from TypeScript sources and npm package subpaths",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted deploy routes; local shares the workerd build path."),
+    },
+  },
   appOperationFailureDetails: {
     fixtures: "actors",
     managementProfiles: ["owner"],

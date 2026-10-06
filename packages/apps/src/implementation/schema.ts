@@ -53,6 +53,28 @@ export const decoderOf = <T>(schema: Schema<T, boolean>): EffectSchema.Decoder<T
 export const isSchema = (value: unknown): value is Schema<unknown, boolean> =>
   typeof value === "object" && value !== null && Decoder in value;
 
+/**
+ * Source that skipped type checking can pass any value where a schema belongs, such as `string`
+ * for `string()`. Name the argument and the mistake before a native constructor reads it.
+ */
+export const schemaArgument = <S extends Schema<unknown, boolean>>(value: S, role: string): S => {
+  if (isSchema(value)) return value;
+  const received: unknown = value;
+  throw new TypeError(
+    `${role} must be a schema, such as string() or object({ ... }), but ${
+      typeof received === "function"
+        ? "it is a function. Call it, as in string()."
+        : received === undefined
+          ? "it is undefined. Check that it is defined and imported before this declaration."
+          : typeof received === "object" &&
+              received !== null &&
+              Object.getPrototypeOf(received) === Object.prototype
+            ? "it is a plain object. Wrap its fields in object({ ... })."
+            : "no apps schema constructor created it."
+    }`,
+  );
+};
+
 /** Decode within an Effect program. Invalid input is omitted from the failure. */
 export const parse = <T>(
   decoder: EffectSchema.Decoder<T>,
@@ -126,7 +148,13 @@ export const boolean = (): Schema<boolean> =>
 export const json = (): Schema<EffectSchema.Json> => wrap(EffectSchema.Json, false);
 /** Named values with a common schema. */
 export const record = <T>(value: Schema<T, boolean>): Schema<Readonly<Record<string, T>>> =>
-  wrap(EffectSchema.Record(EffectSchema.String, decoderOf(value)), false);
+  wrap(
+    EffectSchema.Record(
+      EffectSchema.String,
+      decoderOf(schemaArgument(value, "The record() value")),
+    ),
+    false,
+  );
 /** One exact JSON scalar value. */
 export function literal<const T extends string | number | boolean | null>(value: T): Schema<T>;
 export function literal(
@@ -140,12 +168,15 @@ export function literal(
 }
 /** An array whose elements use the given schema. */
 export const array = <T>(item: Schema<T, boolean>): Schema<readonly T[]> =>
-  wrap(EffectSchema.Array(decoderOf(item)), false);
+  wrap(EffectSchema.Array(decoderOf(schemaArgument(item, "The array() item"))), false);
 
 /** Parse declared fields and omit undeclared fields. */
 export function object<const F extends Fields>(fields: F): ObjectSchema<F> {
   const entries = Object.entries(fields).map(
-    ([key, field]): readonly [string, EffectSchema.Decoder<unknown>] => [key, decoderOf(field)],
+    ([key, field]): readonly [string, EffectSchema.Decoder<unknown>] => [
+      key,
+      decoderOf(schemaArgument(field, `The object() field ${JSON.stringify(key)}`)),
+    ],
   );
   // SAFETY: each key retains its own decoder and optional/default metadata.
   // Object.fromEntries erases the mapped key association represented by ObjectValue.

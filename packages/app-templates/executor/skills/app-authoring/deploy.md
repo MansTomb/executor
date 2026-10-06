@@ -78,6 +78,10 @@ npx -p typescript tsc --noEmit --strict --skipLibCheck \
 ```
 
 Add a `tsconfig.json` with JSX settings when the app has React UI files.
+Write relative imports as NodeNext requires: `import { provider } from "./provider.js"`
+loads `provider.ts`, in server and UI files alike. The build fails at an import
+that matches no deployed file. Failed builds report the source file and line
+when known.
 `node_modules` is never uploaded. Keep lockfiles out of the directory. Verify
 the running behavior as described in [SKILL.md](SKILL.md). After a deploy,
 start a new `execute` to discover the app's tools.
