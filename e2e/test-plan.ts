@@ -3056,6 +3056,17 @@ export const scenarios = {
       local: na("This scenario uses hosted deployment and app authentication."),
     },
   },
+  appQueryFailureBackoff: {
+    fixtures: "actors",
+    file: "app-query-failure.spec.ts",
+    appOrigin: true,
+    title: "a failing app query backs off, shows its failure and recovers by subscribing again",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted deployment and app authentication."),
+    },
+  },
   appStreamRevocation: {
     fixtures: "actors",
     file: "app-observability.spec.ts",
