@@ -424,7 +424,7 @@ export const makeApps = (
           const deployedApp = yield* Schema.decodeUnknownEffect(DeployedApp)(projected).pipe(
             Effect.mapError(() => new StorageError()),
           );
-          return { app: deployedApp, deployment: { ...deployment, files } };
+          return { app: deployedApp, deployment };
         }),
       );
     }).pipe(Effect.withSpan("sdk.apps.deploy"));

@@ -6,8 +6,8 @@ description: Build and deploy Executor apps with tools, storage, UI, accounts an
 # Build an Executor app
 
 An app is TypeScript source with a default `defineApp` export from `apps`.
-Its `package.json` declares the exact `apps` version it uses; new apps already
-do. App authors use ordinary async functions; Effect stays inside
+Its `package.json` declares the exact `apps` version it uses, which
+`framework.release` returns. App authors use ordinary async functions; Effect stays inside
 the framework. An app's installed name is separate from its source definition.
 
 ## Choose how to work

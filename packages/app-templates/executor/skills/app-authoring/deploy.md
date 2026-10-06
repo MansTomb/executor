@@ -1,7 +1,7 @@
 ## Local source with the CLI
 
 Use this path when you can run shell commands and `executor apps --help` works.
-If the command is missing, or it has no `skills` subcommand, install the
+If the command is missing, or it has no `framework` subcommand, install the
 current release. It needs Node.js 24.14.0 or newer:
 
 ```sh
@@ -26,20 +26,40 @@ the user to set it; do not search files for it. For hosted Executor, run
 `executor apps login --host https://v2.executor.sh` once. It signs in through
 the browser. Then pass the same `--host` to every command.
 
-Start by creating the app without `--files`. The host saves a minimal starter
-whose `package.json` pins the `apps` version it runs. Then fetch the source into
-a directory. The same fetch works for any existing app, and
+A new app is a directory with `index.ts` and a `package.json` that pins the
+exact `apps` version the host runs. `executor apps framework` prints that
+version. Create the app from both files, then deploy its first commit.
+`mkdir` and `index.ts` run first. If `executor apps framework` fails, the `&&`
+chain stops before it writes `package.json` or creates the app; install the
+current release as above and run the chain again:
+
+```sh
+mkdir hello
+cat > hello/index.ts <<'EOF'
+import { defineApp, object, query, router } from "apps";
+
+export default defineApp({ accounts: {} }, async () => ({
+  tools: router({
+    hello: query({ description: "Say hello", input: object({}) }, async () => ({ message: "Hello" })),
+  }),
+}));
+EOF
+version="$(executor apps framework | jq -er .version)" &&
+  printf '{"name":"hello","private":true,"type":"module","dependencies":{"apps":"%s"}}\n' \
+    "$version" > hello/package.json &&
+  executor apps create --name "Hello" --files ./hello    # prints the app, including its id
+executor apps source --app <app-id> | jq -r .revision.commit
+executor apps deploy --app <app-id> --commit <first-commit>
+```
+
+To work on an existing app, fetch its source into a directory.
 `executor apps list` shows app IDs:
 
 ```sh
-executor apps create --name "Hello"        # prints the app, including its id
 executor apps source --app <app-id> > /tmp/source.json
 jq -r .revision.commit /tmp/source.json    # the commit your edits are based on
 node -e 'const fs=require("fs"),p=require("path");for(const f of JSON.parse(fs.readFileSync(0)).files){const t=p.join(process.argv[1],f.path);fs.mkdirSync(p.dirname(t),{recursive:true});fs.writeFileSync(t,f.content)}' ./hello < /tmp/source.json
 ```
-
-If you already have complete source with a pinned `package.json`, use
-`executor apps create --name "Hello" --files ./hello` instead.
 
 Each iteration saves the directory as a commit and deploys it:
 
@@ -124,7 +144,10 @@ return await tools.executor.profiles["<management-profile-id>"].apps.deploy({
   path: { organization: "<approved-organization-id>" },
   body: {
     name: "Hello",
-    files: [{ path: "index.ts", content: "<contents of index.ts>" }],
+    files: [
+      { path: "index.ts", content: "<contents of index.ts>" },
+      { path: "package.json", content: "<package.json pinning the framework.release version>" },
+    ],
   },
 });
 ```
@@ -135,6 +158,33 @@ apps generate `appManagement.create`, `appManagement.source`,
 `appManagement.copy` from the serving OpenAPI contracts. Discover
 their exact signatures first. They use ordinary app IDs, with route parameters
 under `path` and request payloads under `body`.
+
+Create always takes complete files: `index.ts`, such as the `hello` app above,
+and a `package.json` that pins the exact `apps` version `framework.release`
+returns:
+
+```js
+const executor = tools.executor.profiles["<management-profile-id>"];
+const path = { organization: "<approved-organization-id>" };
+const { version } = await executor.framework.release({ path });
+const files = [
+  { path: "index.ts", content: "<contents of index.ts>" },
+  {
+    path: "package.json",
+    content: JSON.stringify({
+      name: "hello",
+      private: true,
+      type: "module",
+      dependencies: { apps: version },
+    }),
+  },
+];
+const app = await executor.appManagement.create({ path, body: { name: "Hello", files } });
+return await executor.appManagement.deploy({ path: { ...path, app: app.id }, body: { files } });
+```
+
+Local has no organization: omit `path` for `framework.release` and create, and
+pass `path: { app: app.id }` to deploy.
 
 Create the app, read its working source, and save the complete file list with
 `expected: source.revision.commit` and a commit message. Deploy the returned
@@ -202,7 +252,10 @@ return await executor.apps.deploy({
   body: {
     owner: "my-project",
     name: "Hello",
-    files: [{ path: "index.ts", content: "<contents of index.ts>" }],
+    files: [
+      { path: "index.ts", content: "<contents of index.ts>" },
+      { path: "package.json", content: "<package.json pinning the framework.release version>" },
+    ],
   },
 });
 ```
@@ -292,10 +345,11 @@ hosted product’s access rules. Discover tools again in a new execute after cha
 ## Dependencies and current boundaries
 
 Every app declares the exact `apps` version in `package.json` `dependencies`:
-`{ "dependencies": { "apps": "<version>" } }`. A deploy without it fails and names
-the version this host ships. That package supplies the server and browser
-framework, and the exact version keeps rebuilds on it across host upgrades. New
-apps created by Executor already declare the host's version; keep it when
+`{ "dependencies": { "apps": "<version>" } }`. `framework.release` returns the
+version this host runs (`executor apps framework` in the CLI); a deploy without
+it fails and names the same version. That package supplies the server and browser
+framework, and the exact version keeps rebuilds on it across host upgrades. Apps
+Executor generates, such as imported MCP apps, already declare it. Keep it when
 editing, and change it only to upgrade the app. The host retains the compiled version with each deployment. Missing
 or unsupported packages fail the build without replacing the active app.
 Installation disables lifecycle scripts. Do not depend on the Executor SDK in

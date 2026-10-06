@@ -38,10 +38,85 @@ import {
 
 type Catalog = Record<string, Record<string, Tool.Tool>>;
 
-// Equivalent JSON Schema normalization: the upstream signature renderer only
-// renders index signatures when additionalProperties is a schema, rather than true.
+/** Keywords that only document a schema; they never change which values it accepts. */
+const annotations = new Set([
+  "description",
+  "title",
+  "default",
+  "examples",
+  "deprecated",
+  "readOnly",
+  "writeOnly",
+]);
+/** Keywords that also judge `null`, so they cannot sit beside a `null` type unchanged. */
+const nullConstraints = new Set([
+  "$ref",
+  "$defs",
+  "definitions",
+  "const",
+  "enum",
+  "not",
+  "allOf",
+  "anyOf",
+  "oneOf",
+  "if",
+  "then",
+  "else",
+]);
+const isNullSchema = (schema: Tool.JsonSchema) =>
+  schema.type === "null" && Object.keys(schema).length === 1;
+
+/**
+ * Optional and nullable values arrive as `anyOf: [value, { type: "null" }]`. The signature
+ * renderer documents only a property's own keywords, so the value's pattern, bounds, format and
+ * description would be lost. `{ ...value, type: [value.type, "null"] }` accepts the same values,
+ * because each remaining keyword of the value applies only to its own type, and it renders the
+ * same TypeScript type with those constraints in its documentation.
+ */
+function documentedNullable(schema: Tool.JsonSchema): Tool.JsonSchema {
+  const { anyOf, oneOf, ...rest } = schema;
+  const members = anyOf === undefined ? oneOf : oneOf === undefined ? anyOf : undefined;
+  if (members?.length !== 2 || !members.some(isNullSchema)) return schema;
+  const value = members.find((member) => !isNullSchema(member));
+  if (
+    value === undefined ||
+    typeof value.type !== "string" ||
+    value.type === "null" ||
+    Object.keys(value).some((key) => nullConstraints.has(key)) ||
+    !Object.keys(rest).every((key) => annotations.has(key))
+  )
+    return schema;
+  // The property's own documentation describes this use of the value, so it takes precedence.
+  return { ...value, ...rest, type: [value.type, "null"] };
+}
+
+/**
+ * Effect emits a property's documentation as `allOf: [{ description }]` when the property also
+ * has constraints JSON Schema cannot express. A member holding only annotations accepts every
+ * value, so moving its keywords onto the schema accepts the same values and puts the
+ * documentation where the signature renderer reads it. Members whose keywords the schema
+ * already has stay in `allOf`.
+ */
+function documentedAllOf(schema: Tool.JsonSchema): Tool.JsonSchema {
+  const { allOf, ...rest } = schema;
+  if (allOf === undefined) return schema;
+  let merged: Tool.JsonSchema = rest;
+  const kept: Array<Tool.JsonSchema> = [];
+  for (const member of allOf) {
+    const keys = Object.keys(member);
+    if (keys.length > 0 && keys.every((key) => annotations.has(key) && !Object.hasOwn(merged, key)))
+      merged = { ...merged, ...member };
+    else kept.push(member);
+  }
+  return kept.length === 0 ? merged : { ...merged, allOf: kept };
+}
+const documented = (schema: Tool.JsonSchema) => documentedNullable(documentedAllOf(schema));
+
+// Equivalent JSON Schema normalizations: the upstream signature renderer only renders index
+// signatures when additionalProperties is a schema, rather than true, and documents only a
+// property's own keywords.
 function renderableSchema(input: Tool.JsonSchema): Tool.JsonSchema {
-  return {
+  return documented({
     ...input,
     ...(input.type === "object" && input.additionalProperties !== false
       ? {
@@ -72,7 +147,7 @@ function renderableSchema(input: Tool.JsonSchema): Tool.JsonSchema {
             Object.entries(input.$defs).map(([name, schema]) => [name, renderableSchema(schema)]),
           ),
         }),
-  };
+  });
 }
 
 // Codemode treats dots as namespace separators. Leave ordinary names readable;

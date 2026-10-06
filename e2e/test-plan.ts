@@ -3687,6 +3687,28 @@ export const scenarios = {
       cloud: na("Hosted grant restrictions are covered by liveGrantRestrictions."),
     },
   },
+  appManagementContractsHosted: {
+    fixtures: "actors",
+    file: "app-management-contracts.spec.ts",
+    title:
+      "hosted agents read the apps release, are refused create without files, deploy the documented two-file app, and get commit and deploy results as objects",
+    managementProfiles: ["owner"],
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local runs the same agent programs in its own scenario."),
+    },
+  },
+  appManagementContractsLocal: {
+    file: "app-management-contracts.spec.ts",
+    title:
+      "local agents read the apps release, are refused create without files, deploy the documented two-file app, and get commit and deploy results as objects",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted organizations run the same agent programs in their own scenario."),
+      cloud: na("Hosted organizations run the same agent programs in their own scenario."),
+    },
+  },
   patMcp: {
     fixtures: "actors",
     file: "pat-mcp.spec.ts",
@@ -4365,10 +4387,10 @@ export const scenarios = {
       cloud: na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
     },
   },
-  localAppsCliStarter: {
+  localAppsCliRelease: {
     file: "local-apps-cli.spec.ts",
     title:
-      "apps CLI starter declares the host's apps release and deploys, as does the local Executor app",
+      "apps CLI prints the host's apps release, requires --files, and deploys the documented two-file app; the local Executor app pins the same release",
     targets: {
       local: scheduled,
       "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),

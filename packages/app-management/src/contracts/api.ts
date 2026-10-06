@@ -17,6 +17,7 @@ import {
   AccountSelectionInvalid,
   DeploymentBuildFailed,
   BuildMemoryExceeded,
+  CommittedSource,
   sourceErrors,
   SourceSnapshot,
   StorageError,
@@ -90,7 +91,7 @@ import {
   AppId,
   AppName,
   DeployedApp,
-  Deployment,
+  DeploymentMetadata,
   GitCommit,
   OwnerId,
   SourceCommit,
@@ -149,7 +150,13 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
         }),
         HttpApiEndpoint.post("create", "/apps", {
           params: tenant,
-          payload: Schema.Struct({ name: AppName, files: SourceFiles }),
+          payload: Schema.Struct({
+            name: AppName,
+            files: SourceFiles.annotateKey({
+              description:
+                "The complete source: a root index.ts and a package.json whose dependencies.apps is the exact version framework.release returns.",
+            }),
+          }),
           success: App,
           error: appOperationErrors,
         }).annotate(
@@ -193,11 +200,11 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
             files: SourceFiles,
             message: Schema.NonEmptyString,
           }),
-          success: SourceSnapshot,
+          success: CommittedSource,
           error: appOperationErrors,
         }).annotate(
           OpenApi.Description,
-          "Save the complete file list as a Git commit. Omitted files are removed. expected must match the revision read before editing. A commit does not deploy.",
+          "Save the complete file list as a Git commit. Omitted files are removed. expected must match the revision read before editing. A commit does not deploy. Returns the new revision; the files are not echoed.",
         ),
         HttpApiEndpoint.post("deploy", "/apps/:app/deploy", {
           params: app,
@@ -205,11 +212,11 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
             Schema.Struct({ files: SourceFiles, commit: Schema.optional(Schema.Never) }),
             Schema.Struct({ commit: SourceCommit, files: Schema.optional(Schema.Never) }),
           ]),
-          success: Schema.Struct({ app: DeployedApp, deployment: Deployment }),
+          success: Schema.Struct({ app: DeployedApp, deployment: DeploymentMetadata }),
           error: appOperationErrors,
         }).annotate(
           OpenApi.Description,
-          "Deploy complete files or an immutable Git commit without changing the working branch. App identity, data, and compatible account selections are retained.",
+          "Deploy complete files or an immutable Git commit without changing the working branch. App identity, data, and compatible account selections are retained. Returns the app and the new deployment's metadata; the files are not echoed.",
         ),
         HttpApiEndpoint.post("copy", "/apps/copies", {
           params: tenant,

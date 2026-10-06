@@ -67,6 +67,10 @@ export type SourceRevision = typeof SourceRevision.Type;
 export const SourceSnapshot = Schema.Struct({ revision: SourceRevision, files: SourceFiles });
 export type SourceSnapshot = typeof SourceSnapshot.Type;
 
+/** A saved commit. The caller already holds the files it sent, so they are not echoed back. */
+export const CommittedSource = Schema.Struct({ revision: SourceRevision });
+export type CommittedSource = typeof CommittedSource.Type;
+
 const sourceFailures = {
   "not-found": "The requested app source revision does not exist.",
   conflict:

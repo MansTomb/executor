@@ -15,7 +15,13 @@ import {
   CredentialCheck,
 } from "./account.ts";
 import { AuthMethodInvalid, AuthMethodName, ProviderDefinition } from "./provider.ts";
-import { GitCommit, SourceCommit, sourceErrors, SourceSnapshot } from "./source.ts";
+import {
+  CommittedSource,
+  GitCommit,
+  SourceCommit,
+  sourceErrors,
+  SourceSnapshot,
+} from "./source.ts";
 import { PublicationReference, RegistryError } from "./registry.ts";
 import {
   AppDeploymentChanged,
@@ -350,9 +356,12 @@ export const AppsGroup = HttpApiGroup.make("apps")
         message: fields.message,
         owner: fields.owner,
       })),
-      success: SourceSnapshot,
+      success: CommittedSource,
       error: [StorageError, ...sourceErrors, AppNotFound],
-    }),
+    }).annotate(
+      OpenApi.Description,
+      "Save a complete file list as a commit on the working branch without deploying it. Omitted files are deleted. Returns the new revision; the files are not echoed.",
+    ),
     HttpApiEndpoint.get("history", "/v1/apps/:app/history", {
       params: appParams,
       query: ownerQuery,
@@ -385,7 +394,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
     }),
     HttpApiEndpoint.post("deploy", "/v1/apps/deploy", {
       payload: AppInputs.deploy,
-      success: Schema.Struct({ app: DeployedApp, deployment: Deployment }),
+      success: Schema.Struct({ app: DeployedApp, deployment: DeploymentMetadata }),
       error: [
         ...sourceErrors,
         StorageError,
@@ -399,7 +408,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       ],
     }).annotate(
       OpenApi.Description,
-      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful deployment activates automatically. Discover tools in the next execute call.",
+      "Deploy app source files. index.ts exports defineApp from apps. Creates a new named app, or deploys files or an existing commit by app ID. Never writes Git. The newest successful deployment activates automatically. Returns the app and the new deployment's metadata; the files are not echoed. Discover tools in the next execute call.",
     ),
   )
   .add(

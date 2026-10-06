@@ -78,7 +78,13 @@ export const FrameworkDescribeResult = Schema.Struct({
   ),
 });
 
-/** Management API group for framework lookups. Tools are `framework.search` and `framework.describe`. */
+/** The exact `apps` release this server runs. Every app declares it as `dependencies.apps`. */
+export const FrameworkRelease = Schema.Struct({ version: Schema.NonEmptyString });
+
+/**
+ * Management API group for framework lookups. Tools are `framework.release`, `framework.search`
+ * and `framework.describe`.
+ */
 export const frameworkApi = <I extends HttpApiMiddleware.AnyId, S>(
   prefix: "/api" | "/api/organizations/:organization",
   access: Context.Key<I, S>,
@@ -88,6 +94,13 @@ export const frameworkApi = <I extends HttpApiMiddleware.AnyId, S>(
   return HttpApi.make("framework").add(
     HttpApiGroup.make("framework")
       .add(
+        HttpApiEndpoint.get("release", "/framework/release", {
+          params,
+          success: FrameworkRelease,
+        }).annotate(
+          OpenApi.Description,
+          'Read the exact apps framework version this server runs. Every app\'s package.json declares it as { "dependencies": { "apps": version } }; write that file beside index.ts before appManagement.create.',
+        ),
         HttpApiEndpoint.get("search", "/framework/search", {
           params,
           query: {

@@ -87,12 +87,13 @@ export const makeAppAuthoring = (
       Effect.gen(function* () {
         const app = yield* storedApp(db, input);
         yield* initializeAppRepository(db, sources, blobs, app);
-        return yield* sources.commit({
+        const { revision } = yield* sources.commit({
           code: app.code,
           expected: input.expected,
           files: input.files,
           message: input.message,
         });
+        return { revision };
       }),
   };
 };
