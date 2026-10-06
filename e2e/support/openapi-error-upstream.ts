@@ -102,9 +102,16 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
         },
       },
     });
+    // Each pet declares its discriminator as a plain string, so only the mapping selects one.
+    const pet = (sound: string) => ({
+      type: "object",
+      properties: { petType: { type: "string" }, [sound]: { type: "boolean" } },
+      required: ["petType", sound],
+    });
     Object.assign(document, {
       components: {
         ...document.components,
+        schemas: { ...document.components.schemas, Cat: pet("meow"), Dog: pet("bark") },
         parameters: {
           WireId: {
             name: "id",
@@ -159,6 +166,35 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
           responses: {
             "200": {
               description: "Wire request",
+              content: { "application/json": { schema: { type: "object" } } },
+            },
+          },
+        },
+      },
+      "/pets": {
+        post: {
+          operationId: "adopt",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  oneOf: [
+                    { $ref: "#/components/schemas/Cat" },
+                    { $ref: "#/components/schemas/Dog" },
+                  ],
+                  // A mapping may name a schema by reference or by component name.
+                  discriminator: {
+                    propertyName: "petType",
+                    mapping: { cat: "#/components/schemas/Cat", dog: "Dog" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Adopted pet",
               content: { "application/json": { schema: { type: "object" } } },
             },
           },

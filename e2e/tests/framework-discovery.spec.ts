@@ -29,6 +29,18 @@ const Lookup = Schema.Struct({
   matches: Schema.Array(Schema.Struct({ symbol: Schema.String })),
 });
 const Document = Schema.Struct({ content: Schema.String, deployment: Schema.String });
+const Rejected = Schema.Struct({
+  execution: Schema.Struct({
+    ok: Schema.Literal(false),
+    error: Schema.Struct({
+      response: Schema.Struct({
+        code: Schema.String,
+        message: Schema.String,
+        recovery: Schema.Struct({ action: Schema.String }),
+      }),
+    }),
+  }),
+});
 
 layer(HostedLive, { excludeTestServices: true })("Framework discovery", (it) => {
   it.effect(scenarios.frameworkDiscovery.title, (context) =>
@@ -107,6 +119,57 @@ layer(HostedLive, { excludeTestServices: true })("Framework discovery", (it) => 
         expect(current.organization).toBe(actors.organization.id);
         expect(found.items.map((item) => item.symbol)).toContain(
           "AppMutation.withOptimisticUpdate",
+        );
+        // Misshaped input names the failing path, the unexpected key and the keys it accepts there,
+        // the way agents misread these signatures. A tool without inputs still accepts {}.
+        const rejected = (label: string, code: string) =>
+          client
+            .use(label, (client, signal) =>
+              client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
+            )
+            .pipe(
+              Effect.flatMap((result) =>
+                Schema.decodeUnknownEffect(Rejected)(result.structuredContent),
+              ),
+              Effect.map((rejected) => rejected.execution.error.response),
+            );
+        const misshaped = yield* Effect.all(
+          [
+            rejected(
+              "Search with the query text in place of the query object",
+              `return await ${queries}.framework.search({query: "apps/client.createAppClient"});`,
+            ),
+            rejected(
+              "Search with the query text under an undeclared key",
+              `return await ${queries}.framework.search({query: {query: "createAppClient"}});`,
+            ),
+            rejected(
+              "Read the context with an organization it does not take",
+              `return await ${queries}.context.get({path: {organization: ${JSON.stringify(actors.organization.id)}}});`,
+            ),
+          ],
+          { concurrency: 3 },
+        );
+        yield* evidence.json("framework-input-problems.json", misshaped);
+        expect(misshaped.map(({ code, message }) => ({ code, message }))).toEqual([
+          {
+            code: "InputInvalid",
+            message:
+              "Input failed validation: input.query: Expected object {text?, offset?, version?, digest?}",
+          },
+          {
+            code: "InputInvalid",
+            message:
+              'Input failed validation: input.query: Unexpected key "query". Expected object {text?, offset?, version?, digest?}',
+          },
+          {
+            code: "InputInvalid",
+            message:
+              'Input failed validation: input: Unexpected key "path". Expected object {} with no keys',
+          },
+        ]);
+        expect(misshaped[0]?.recovery.action).toBe(
+          "Change the input to the shape each problem expects, then call the tool again.",
         );
         const describe = (symbol: string) =>
           execute(

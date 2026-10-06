@@ -1124,6 +1124,16 @@ export const scenarios = {
       local: na("Exercises the hosted deployment and profile APIs."),
     },
   },
+  templateAccountsRecursiveOutput: {
+    fixtures: "actors",
+    file: "template-accounts.spec.ts",
+    title: "Account-routed MCP results are checked against recursive output schemas",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback MCP upstream fixture."),
+      local: na("Exercises the hosted deployment and profile APIs."),
+    },
+  },
   cloudDashboardRoutes: {
     file: "cloud-dashboard-routes.spec.ts",
     title: "Cloud dashboard deep links preserve API, docs, asset and not-found routing",
@@ -3630,6 +3640,16 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: na("Uses the shared app runtime error mapping that self-host covers."),
       local: na("Hosted self-host covers the shared catalog diagnostics."),
+    },
+  },
+  mcpExecuteInputShape: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title: "MCP calls with misshaped input name the keys and alternatives the input expects",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted self-host covers the shared app runtime input formatting."),
     },
   },
   mcpExecuteServerRefused: {

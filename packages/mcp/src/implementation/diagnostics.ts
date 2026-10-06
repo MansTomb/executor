@@ -56,15 +56,15 @@ const presentation = (error: Error): Option.Option<typeof ApiErrorResponse.Type>
   }
   const input = Schema.decodeUnknownOption(InputInvalid)(error);
   if (Option.isSome(input)) {
-    // Problems name input paths and expected shapes; supplied values are never included.
+    // Problems name input paths and what the schema expects there; supplied values are never included.
     return Schema.decodeUnknownOption(ApiErrorResponse)({
       code: "InputInvalid",
       status: 422,
       message: `Input failed validation: ${input.value.problems.join("; ")}`.slice(0, 4096),
       recovery: {
-        action: "Fix the listed input fields and call the tool again.",
+        action: "Change the input to the shape each problem expects, then call the tool again.",
         instructions:
-          "The tool did not run. Compare the input with the tool's signature from tools.search before retrying.",
+          "The tool did not run. Each problem names an input path and what that path expects: a type, the values the schema allows, an object's keys (? marks an optional key, ... marks other keys allowed), an unexpected key to remove, or the alternatives a union accepts. For a union, pick one alternative and set the key that tells them apart; the problems after it are for the closest alternative. Nest each field where the tool's signature from tools.search places it, then retry.",
       },
     });
   }

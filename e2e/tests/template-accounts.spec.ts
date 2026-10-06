@@ -1,6 +1,14 @@
 /** Multi-account routing is verified through skill-authored source and public profile/tool APIs. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import { Effect, Layer, Schema } from "effect";
+import {
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/unstable/http";
+import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -37,6 +45,85 @@ const Searched = Schema.Struct({
       }),
     }),
   }),
+});
+
+/** A tool call whose result did not match the tool's output schema. */
+const OutputRejected = Schema.Struct({
+  _tag: Schema.Literal("ToolCallFailed"),
+  failure: Schema.Struct({ errorName: Schema.Literal("SchemaError"), message: Schema.String }),
+});
+const TreeMessage = Schema.Struct({
+  id: Schema.optional(Schema.Union([Schema.Number, Schema.String])),
+  method: Schema.String,
+  params: Schema.optional(
+    Schema.Struct({
+      arguments: Schema.optional(Schema.Struct({ complete: Schema.optional(Schema.Boolean) })),
+    }),
+  ),
+});
+
+/**
+ * An MCP server whose `tree` tool declares a recursive output schema. A complete tree names every
+ * node; otherwise the child's own child is the only node with a name.
+ */
+const treeUpstream = Effect.gen(function* () {
+  const tool = {
+    name: "tree",
+    description: "Read a tree",
+    annotations: { readOnlyHint: true },
+    inputSchema: {
+      type: "object",
+      properties: { complete: { type: "boolean" } },
+      required: ["complete"],
+    },
+    outputSchema: {
+      $schema: "https://json-schema.org/draft/2019-09/schema",
+      $recursiveAnchor: true,
+      type: "object",
+      properties: { name: { type: "string" }, child: { $recursiveRef: "#" } },
+      required: ["name"],
+    },
+  };
+  const routes = Layer.mergeAll(
+    HttpRouter.add("GET", "/mcp", HttpServerResponse.empty({ status: 405 })),
+    HttpRouter.add(
+      "POST",
+      "/mcp",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const message = yield* request.json.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(TreeMessage)),
+        );
+        if (message.id === undefined) return HttpServerResponse.empty({ status: 202 });
+        const tree =
+          message.params?.arguments?.complete === true
+            ? { name: "root", child: { name: "leaf" } }
+            : { name: "root", child: { child: { name: "leaf" } } };
+        const result =
+          message.method === "initialize"
+            ? {
+                protocolVersion: "2025-11-25",
+                capabilities: { tools: {} },
+                serverInfo: { name: "trees", version: "1" },
+              }
+            : message.method === "tools/list"
+              ? { tools: [tool] }
+              : {
+                  content: [{ type: "text", text: JSON.stringify(tree) }],
+                  structuredContent: tree,
+                };
+        return yield* HttpServerResponse.json({ jsonrpc: "2.0", id: message.id, result });
+      }),
+    ),
+  );
+  const services = yield* Layer.build(
+    HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+    ),
+  );
+  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+  if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
+  return `http://127.0.0.1:${server.address.port}`;
 });
 
 layer(HostedLive, { excludeTestServices: true })("Template accounts", (it) => {
@@ -222,6 +309,80 @@ return { items: found.items, results };`,
           expect(stillAvailable.status, JSON.stringify(stillAvailable.body)).toBe(200);
         }
       }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.templateAccountsRecursiveOutput.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          origin = yield* treeUpstream;
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const name = `Accounts tree ${randomUUID().slice(0, 8)}`;
+        const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name,
+          files: authoredAppFiles("mcp", origin, "apiKey", name),
+        });
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        const app = yield* body(App, response),
+          path = `${prefix}/apps/${app.id}`;
+        const profile = yield* body(
+          Profile,
+          yield* api.request(actors.owner, "POST", `${path}/profiles`, {
+            accounts: { service: [] },
+            idempotencyKey: randomUUID(),
+          }),
+        );
+        const connection = yield* body(
+          Resource,
+          yield* api.request(actors.owner, "POST", `${path}/connections`, {
+            requirement: "service",
+            profile: profile.id,
+          }),
+        );
+        const account = yield* body(
+          Resource,
+          yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/connections/${connection.id}/submit`,
+            {
+              method: "apiKey",
+              label: "Tree reader",
+              fields: { token: "synthetic-tree" },
+            },
+          ),
+        );
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            yield* api.request(actors.owner, "DELETE", `${path}/profiles/${profile.id}`);
+            yield* api.request(actors.owner, "DELETE", path);
+            yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`);
+          }).pipe(Effect.orDie),
+        );
+        const call = (complete: boolean) =>
+          api.request(actors.owner, "POST", `${path}/tools/call`, {
+            profile: profile.id,
+            tool: "tree",
+            kind: "query",
+            input: { accountId: account.id, input: { complete } },
+          });
+        const complete = yield* call(true);
+        expect(complete.status, JSON.stringify(complete.body)).toBe(200);
+        expect(complete.body).toMatchObject({
+          structuredContent: { name: "root", child: { name: "leaf" } },
+        });
+        // The result schema nests the server's schema, so its recursive reference becomes a
+        // pointer to the nested root. A child without a name must still be rejected. The combined
+        // account operation checks each account's result itself, so the mismatch is its failure.
+        const incomplete = yield* call(false);
+        expect(incomplete.status, JSON.stringify(incomplete.body)).toBe(502);
+        const rejected = yield* body(OutputRejected, incomplete);
+        expect(rejected.failure.message).toContain(
+          'Missing key\n  at ["structuredContent"]["child"]["name"]',
+        );
+      }),
     ),
   );
 });
