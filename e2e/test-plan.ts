@@ -3308,7 +3308,7 @@ export const scenarios = {
   cloudBuildReuse: {
     fixtures: "actors",
     file: "cloud-build-reuse.spec.ts",
-    title: "Cold app Workers reuse a build the deploying isolate already decoded",
+    title: "Cold app Workers read their build in the runner, from the cache the deploy warmed",
     targets: {
       cloud: managedCloud,
       "self-host": na("Self-host loads retained builds without the Cloud isolate cache."),
@@ -4493,6 +4493,16 @@ export const scenarios = {
     fixtures: "actors",
     file: "hosted-schedules.spec.ts",
     title: "hosted scheduled runs require current membership and browser approval",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local does not have organization memberships."),
+    },
+  },
+  scheduledRunRedeploy: {
+    fixtures: "actors",
+    file: "scheduled-run-redeploy.spec.ts",
+    title: "a scheduled run after a redeploy executes the new build",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,

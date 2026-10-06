@@ -95,15 +95,21 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
       invoke: (invocation, capabilities) => appData.invoke(invocation, capabilities),
       declare: (bundle, headers) => appData.declare(bundle, headers),
     });
-    const load = yield* cachedRuntimeBuilds(origin, {
-      record: (build) => loadCloudBuildRecord(build).pipe(Effect.provide(RuntimeContext.phantom)),
-      framework: (identity) =>
-        loadCloudFramework(identity).pipe(Effect.provide(RuntimeContext.phantom)),
-    });
-    // Deploys warm the build caches in the same event scope and bound as the reader's writes.
+    // Cache writes run in this event scope, bounded when it closes.
     const warming = yield* FiberSet.make();
     yield* Effect.addFinalizer(() =>
       FiberSet.awaitEmpty(warming).pipe(Effect.timeoutOption("2 seconds"), Effect.asVoid),
+    );
+    // Only a runner from before AppData read builds itself calls this loader; it stays until
+    // callers stop sending it, so such a runner keeps working through a rollback.
+    const load = cachedRuntimeBuilds(
+      origin,
+      {
+        record: (build) => loadCloudBuildRecord(build).pipe(Effect.provide(RuntimeContext.phantom)),
+        framework: (identity) =>
+          loadCloudFramework(identity).pipe(Effect.provide(RuntimeContext.phantom)),
+      },
+      (write) => FiberSet.run(warming, write).pipe(Effect.asVoid),
     );
     const runtime = yield* appRuntime({
       name: "runtime.cloud",
@@ -164,9 +170,8 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
               framework,
               ui,
             ).pipe(Effect.provide(RuntimeContext.phantom));
-            // Only after R2 holds the build: the first call can then skip the R2 reads when it
-            // reaches this isolate or another isolate in this data centre. The Cache API is per
-            // data centre, so calls served from other colos still read R2 once.
+            // Only after R2 holds the build: the runner's first read of it can then skip R2 in this
+            // data centre. The Cache API is per data centre, so other colos still read R2 once.
             yield* cacheRuntimeBuild(warming, origin, build, stored);
             const assets = stored.record.ui;
             return { build, requirements, ...(assets === undefined ? {} : { ui: assets }) };
