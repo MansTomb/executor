@@ -45,7 +45,7 @@ const jobs = {
   cloud: {
     target: "cloud",
     pattern:
-      "Cloud onboarding|Cloud OAuth callbacks|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser decode and startup|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses",
+      "Cloud onboarding|Cloud OAuth callbacks|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser decode and startup|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible",
   },
   "cloud-workers": {
     target: "cloud",

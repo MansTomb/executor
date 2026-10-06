@@ -747,6 +747,17 @@ export const scenarios = {
       local: na("Billing is cloud only."),
     },
   },
+  billingPolling: {
+    fixtures: "actors",
+    file: "billing-polling.spec.ts",
+    title:
+      "Billing reconciles only while visible and polls quickly while a returned checkout settles",
+    targets: {
+      "self-host": na("Billing is cloud only."),
+      cloud: scheduled,
+      local: na("Billing is cloud only."),
+    },
+  },
   emptyStates: {
     fixtures: "actors",
     file: "empty-states.spec.ts",
