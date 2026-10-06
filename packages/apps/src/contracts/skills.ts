@@ -153,14 +153,28 @@ export interface SkillCacheOptions {
   readonly staleFor?: import("effect").Duration.Input;
 }
 /**
- * A public GitHub repository and an optional immutable commit, tag or branch. With a cache, a
- * branch or tag is resolved again when the catalog refreshes, and each commit's file list is kept.
+ * Whose access reads the repository. A public repository needs neither field. A private one takes
+ * a GitHub account and its token, sent on every request of this read. The token comes only with
+ * its account, so the catalog is cached in that account's scope and failures name the account.
  */
-export interface GitHubSkillsOptions extends SkillTransport, SkillCacheOptions {
-  readonly repo: string;
-  readonly path?: string;
-  readonly ref?: string;
-}
+export type GitHubSkillsAccount = import("./cache.ts").AccountCredential<{
+  /**
+   * The account's token or its handle, such as `account.fields.token`. Its provider declares
+   * hosts `github.com` and `raw.githubusercontent.com`, so app code never holds the value.
+   */
+  readonly token: string;
+}>;
+/**
+ * A GitHub repository and an optional immutable commit, tag or branch. With a cache, a branch or
+ * tag is resolved again when the catalog refreshes, and each commit's file list is kept.
+ */
+export type GitHubSkillsOptions = SkillTransport &
+  SkillCacheOptions &
+  GitHubSkillsAccount & {
+    readonly repo: string;
+    readonly path?: string;
+    readonly ref?: string;
+  };
 /** A published directory index, including its listed skill documents and text references. */
 export interface WellKnownSkillsOptions extends SkillTransport, SkillCacheOptions {
   readonly url: string;

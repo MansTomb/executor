@@ -4405,6 +4405,17 @@ export const scenarios = {
       ),
     },
   },
+  privateGithubSkills: {
+    fixtures: "actors",
+    file: "dynamic-skills.spec.ts",
+    title:
+      "GitHub skills read a private repository with the selected account's token, scoped to that account",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback service; Cloud app Workers reach only public addresses."),
+      local: na("Local runs apps through the same workerd runner and outbound as self-host."),
+    },
+  },
   cachedSkillsRefresh: {
     fixtures: "actors",
     file: "cached-skills.spec.ts",

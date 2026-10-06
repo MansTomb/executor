@@ -8,7 +8,7 @@ import { CredentialsError } from "./shared.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 import { ProfileId } from "./shared.ts";
-import { AppEvaluationFailed } from "./tools.ts";
+import { AppEvaluationFailed, AppProviderFailed } from "./tools.ts";
 import { AccountRequired, AccountSelectionInvalid, AppNotFound, AppNotDeployed } from "./apps.ts";
 import { AppSlug } from "./app-slug.ts";
 import { DeploymentNotFound, SourceFilePath } from "./deployment.ts";
@@ -100,6 +100,7 @@ export const AppSkillErrors = [
   AccountRequired,
   AccountSelectionInvalid,
   AppEvaluationFailed,
+  AppProviderFailed,
   AccountNotFound,
   CredentialsError,
   OAuthReconnectRequired,
