@@ -7,7 +7,7 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
 import { adopt } from "alchemy/AdoptPolicy";
 import { retain } from "alchemy/RemovalPolicy";
 import { PgClient } from "@effect/sql-pg";
-import { Config, Duration, Effect, Option, Redacted } from "effect";
+import { Config, Context, Duration, Effect, Option, Redacted, type Scope } from "effect";
 import { developmentDatabase } from "./development.ts";
 import { cloudOrigin, testStage, type TestStage } from "./stage.ts";
 import { postgresUrl, previewDatabase } from "./preview-database.ts";
@@ -194,3 +194,14 @@ export const cloudDatabasePool = (options: {
     connectTimeout: connectAttemptTimeout,
     connectRetries: 1,
   });
+
+/**
+ * Provided beside a SQL client, for a consumer that may have to give up a connection it reserved,
+ * such as one still inside a transaction it could not roll back. `scope` closes only after the
+ * client's pool has shut down, so a reservation still open in it then is closed instead of lent
+ * again. `retire` shuts the pool down as soon as no caller still uses it.
+ */
+export class ConnectionReservations extends Context.Service<
+  ConnectionReservations,
+  { readonly scope: Scope.Scope; readonly retire: Effect.Effect<void> }
+>()("executor/cloud/ConnectionReservations") {}

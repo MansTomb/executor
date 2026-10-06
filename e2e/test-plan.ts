@@ -3431,6 +3431,44 @@ export const scenarios = {
       local: na("Local has no hosted sign-in sessions."),
     },
   },
+  authCleanupAfterResponse: {
+    fixtures: "actors",
+    file: "auth-cleanup.spec.ts",
+    title:
+      "A Better Auth query left running past its response finishes on the request's connection",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host serves Better Auth from one process with its own long-lived database pool.",
+      ),
+      local: na("Local has no hosted sign-in sessions."),
+    },
+  },
+  authCleanupTimeout: {
+    fixtures: "actors",
+    file: "auth-cleanup.spec.ts",
+    title: "A Better Auth query held past the request's cleanup bound is cancelled and reported",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host serves Better Auth from one process with its own long-lived database pool.",
+      ),
+      local: na("Local has no hosted sign-in sessions."),
+    },
+  },
+  authCleanupStalled: {
+    fixtures: "actors",
+    file: "auth-cleanup.spec.ts",
+    title:
+      "A Better Auth query whose database stops answering is given up within the cleanup window",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host serves Better Auth from one process with its own long-lived database pool.",
+      ),
+      local: na("Local has no hosted sign-in sessions."),
+    },
+  },
   clientRejectionReporting: {
     fixtures: "actors",
     file: "client-rejection-reporting.spec.ts",

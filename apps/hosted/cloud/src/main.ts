@@ -64,6 +64,7 @@ import {
 import { cloudEgress } from "./infrastructure/executor.ts";
 import { cloudProduct } from "./infrastructure/product.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
+import { EventCleanup, sqlCancellation } from "./infrastructure/event-cleanup.ts";
 import {
   cloudObservability,
   cloudTelemetry,
@@ -215,15 +216,12 @@ export default Api.make(
     // Jobs are queued by triggers on users, teams and members. Only auth and dashboard API
     // writes change those rows, so only their requests start the jobs at once. MCP, telemetry
     // and the other routes skip the extra connection and query. Cron recovers any lost dispatch.
-    // The bound stays inside the 30 seconds Cloudflare allows after the response.
-    const startJobs = dispatchWith(installTeam).pipe(
-      lifetime.background,
-      Effect.timeoutOption("25 seconds"),
-      Effect.asVoid,
-    );
+    const startJobs = dispatchWith(installTeam).pipe(lifetime.background);
+    const cleanup = yield* EventCleanup;
     // The event scope closes through waitUntil after a complete response is sent, so it waits
     // for the jobs and exports their telemetry. A streamed body closes that scope at EOF instead;
-    // the jobs then detach so they cannot hold EOF.
+    // the jobs then detach so they cannot hold EOF. Either way they end by the event's cleanup
+    // deadline, after the Better Auth work the request left running, and before the export.
     const dispatchAfterWrites = <E, R>(
       handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
     ) =>
@@ -231,10 +229,13 @@ export default Api.make(
         const request = yield* HttpServerRequest.HttpServerRequest;
         if (["GET", "HEAD", "OPTIONS"].includes(request.method)) return yield* handler;
         const execution = yield* Cloudflare.WorkerExecutionContext;
+        const jobs = (yield* cleanup.deadline)
+          .within(startJobs, { reserve: sqlCancellation })
+          .pipe(Effect.asVoid);
         const streamed = yield* Ref.make(false);
         yield* Effect.addFinalizer(() =>
           Ref.get(streamed).pipe(
-            Effect.flatMap((detach) => (detach ? execution.waitUntil(startJobs) : startJobs)),
+            Effect.flatMap((detach) => (detach ? execution.waitUntil(jobs) : jobs)),
           ),
         );
         return yield* handler.pipe(

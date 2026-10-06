@@ -3,14 +3,11 @@
  * the executor, hosted permission checks and Better Auth. A TLS login to PgBouncer costs about
  * 70 ms from a placed Worker, so consumers share one pool and sequential work reuses one connection.
  */
-import type { PgClient } from "@effect/sql-pg";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Context, Effect, Layer, Option } from "effect";
+import { Context, Effect, Layer, Option, Scope } from "effect";
 import { SqlClient, type SqlError } from "effect/unstable/sql";
-import { cloudDatabaseConnection, cloudDatabasePool } from "./database.ts";
-import { ObjectDatabase } from "./object-database.ts";
-
-export type SqlServices = PgClient.PgClient | SqlClient.SqlClient;
+import { ConnectionReservations, cloudDatabaseConnection, cloudDatabasePool } from "./database.ts";
+import { ObjectDatabase, type SqlServices } from "./object-database.ts";
 
 /**
  * Connections one Worker event may hold. The pool opens them on demand and reuses an idle one,
@@ -39,9 +36,15 @@ export const cloudInvocationDatabase = Layer.effect(
         const object = yield* Effect.serviceOption(ObjectDatabase);
         if (Option.isSome(object)) return yield* object.value.sql;
         const url = yield* connection.connectionString;
-        return yield* Layer.build(
+        // Forked before the pool, so it closes after the pool has shut down with the event.
+        const reservations = yield* Scope.fork(yield* Effect.scope, "sequential");
+        const sql = yield* Layer.build(
           cloudDatabasePool({ url, maxConnections: invocationConnectionLimit }),
         );
+        return Context.add(sql, ConnectionReservations, {
+          scope: reservations,
+          retire: Effect.void,
+        });
       }).pipe(Effect.withSpan("runtime.cloud.database.initialize")),
     );
   }),

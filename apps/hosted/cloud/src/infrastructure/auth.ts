@@ -30,7 +30,7 @@ import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
 import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
 import { RuntimeContext } from "alchemy";
 import { Context, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import type { SendAuthEmail } from "../contracts/email.ts";
 import { cloudSecrets } from "./secrets.ts";
 import { AuthDatabase, appSessionsPerCall, boundAuthAdapter } from "./auth-database.ts";
@@ -240,7 +240,14 @@ export const cloudAuth = (send: SendAuthEmail) =>
       const response = yield* Effect.promise((signal) =>
         callbacks.run({ context, signal }, () => bind(() => instance.handler(web))),
       );
-      return HttpServerResponse.fromWeb(response);
+      if (response.body === null) return HttpServerResponse.fromWeb(response);
+      // Better Auth answers with complete JSON. Sent as a stream, its last byte would wait for
+      // the request's cleanup, including Better Auth queries the request left running.
+      const body = new Uint8Array(yield* Effect.promise(() => response.arrayBuffer()));
+      return HttpServerResponse.setBody(
+        HttpServerResponse.fromWeb(response),
+        HttpBody.uint8Array(body, response.headers.get("content-type") ?? undefined),
+      );
     });
     const handler = observation
       .observe(requestHandler)

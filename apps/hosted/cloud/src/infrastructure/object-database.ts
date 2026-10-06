@@ -18,7 +18,7 @@ import {
   Tracer,
 } from "effect";
 import type { SqlClient } from "effect/unstable/sql";
-import { cloudDatabaseConnection, cloudDatabasePool } from "./database.ts";
+import { ConnectionReservations, cloudDatabaseConnection, cloudDatabasePool } from "./database.ts";
 
 /**
  * An object closes its connections this long after its last call ends. PgBouncer pools in
@@ -33,7 +33,8 @@ const idleWindow = Duration.seconds(30);
  */
 export const objectConnectionLimit = 4;
 
-type SqlServices = PgClient.PgClient | SqlClient.SqlClient;
+/** A database client and what its consumers need beside it. */
+export type SqlServices = PgClient.PgClient | SqlClient.SqlClient | ConnectionReservations;
 
 /** A call holding the object's connections: where the connections it opens are reported. */
 interface Caller {
@@ -76,7 +77,11 @@ const applicationName = (owner: string) => `executor ${owner}`.slice(0, 63);
  * window's connections; other calls use the rest and never join the transaction. A connection
  * the server drops is replaced on its next use, by the pool itself. Opening a connection gets a
  * second attempt when the first fails or times out ({@link cloudDatabasePool}). When the last
- * call ends, the window closes after {@link idleWindow}; the next call opens a new one. Workerd
+ * call ends, the window closes after {@link idleWindow}; the next call opens a new one. A caller
+ * that gives up a connection retires the window instead: later calls open a new one, and the
+ * retired window closes as soon as its last call ends, closing that connection with it. A call
+ * that never ends therefore keeps its retired window open, and the object's windows together can
+ * then hold more than {@link objectConnectionLimit} connections; nothing exercises that yet. Workerd
  * has no teardown hook for evicted objects; eviction drops their sockets.
  */
 export const cloudObjectDatabase = Effect.gen(function* () {
@@ -102,9 +107,20 @@ export const cloudObjectDatabase = Effect.gen(function* () {
       } satisfies Caller;
     });
 
+    // Later calls open a new window; this one closes once its current callers are done.
+    const retire = (retiring: ActiveWindow) =>
+      lock.withPermits(1)(
+        Effect.suspend(() => {
+          if (window === retiring) window = undefined;
+          return retiring.leases === 0 ? Scope.close(retiring.scope, Exit.void) : Effect.void;
+        }),
+      );
+
     const open = Effect.gen(function* () {
       const url = yield* connection.connectionString;
       const scope = yield* Scope.fork(root, "sequential");
+      // Forked before the pool, so it closes after the pool has shut down.
+      const reservations = yield* Scope.fork(scope, "sequential");
       const opener = yield* currentCaller;
       return yield* Effect.gen(function* () {
         const sql = yield* Layer.buildWithScope(
@@ -119,7 +135,16 @@ export const cloudObjectDatabase = Effect.gen(function* () {
           // Building opens no connection: the pool connects on first use.
           Effect.orDie,
         );
-        return { sql, scope, leases: 0, idle: undefined } satisfies ActiveWindow;
+        const opened: ActiveWindow = {
+          sql: Context.add(sql, ConnectionReservations, {
+            scope: reservations,
+            retire: Effect.suspend(() => retire(opened)),
+          }),
+          scope,
+          leases: 0,
+          idle: undefined,
+        };
+        return opened;
       }).pipe(
         Effect.withTracer(callerTracer(opener)),
         Effect.onError((cause) => Scope.close(scope, Exit.failCause(cause))),
@@ -138,7 +163,9 @@ export const cloudObjectDatabase = Effect.gen(function* () {
         Effect.gen(function* () {
           callers.splice(callers.lastIndexOf(caller), 1);
           leased.leases -= 1;
-          if (leased.leases > 0 || window !== leased) return;
+          if (leased.leases > 0) return;
+          // A retired window closes once its last caller is done.
+          if (window !== leased) return yield* Scope.close(leased.scope, Exit.void);
           leased.idle = yield* Effect.sleep(idleWindow).pipe(
             Effect.andThen(lock.withPermits(1)(close(leased))),
             Effect.forkIn(root),

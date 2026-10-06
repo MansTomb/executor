@@ -57,6 +57,8 @@ const jobs = {
     pattern:
       "app Workers stay loaded across credential rotation|workflow runs reuse the app Worker|warm app calls load no build|Cold app Workers reuse a build",
   },
+  // These hold row locks in the shared Cloud database, which would stall other scenarios' SQL.
+  "cloud-locks": { target: "cloud", pattern: "A Better Auth query" },
 } as const satisfies Record<string, { target: typeof Target.Type; pattern: string }>;
 
 const plan = scenariosForSuite("all", "managed");
