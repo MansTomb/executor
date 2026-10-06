@@ -1,4 +1,5 @@
 import { ProviderError } from "./provider-error.ts";
+import type { NetworkRefused } from "./network.ts";
 /** MCP protocol data uses Effect Schema; executable tool methods use Effect. */
 import { type Effect, type Redacted, Schema } from "effect";
 import type { Elicit, ElicitationFailed } from "./elicitation.ts";
@@ -140,7 +141,7 @@ export interface McpTool extends Omit<McpToolMetadata, "outputSchema"> {
   readonly run: (
     context: McpToolContext,
     input: JsonValue,
-  ) => Effect.Effect<McpToolResult, McpError | ProviderError | ElicitationFailed>;
+  ) => Effect.Effect<McpToolResult, McpError | ProviderError | NetworkRefused | ElicitationFailed>;
 }
 /** The discovered catalog keyed by remote tool name. */
 export type McpTools = Readonly<Record<string, McpTool>>;

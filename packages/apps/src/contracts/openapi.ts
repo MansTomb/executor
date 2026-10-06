@@ -1,4 +1,5 @@
 import type { ProviderError } from "./provider-error.ts";
+import type { NetworkRefused } from "./network.ts";
 /** Credential-free OpenAPI request declarations and validation schemas retained with app source. */
 import { Schema, type Effect } from "effect";
 import { AccountId, HttpUrl, JsonObject } from "./schema.ts";
@@ -145,7 +146,7 @@ export interface OpenapiTool {
   readonly run: (
     context: unknown,
     input: Schema.Json,
-  ) => Effect.Effect<unknown, OpenapiError | OpenapiResponseError | ProviderError>;
+  ) => Effect.Effect<unknown, OpenapiError | OpenapiResponseError | ProviderError | NetworkRefused>;
 }
 /** Executable operations keyed by their generated names. */
 export type OpenapiTools = Readonly<Record<string, OpenapiTool>>;

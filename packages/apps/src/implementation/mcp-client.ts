@@ -1,4 +1,5 @@
 import type { ProviderError } from "../contracts/provider-error.ts";
+import type { NetworkRefused } from "../contracts/network.ts";
 /** Shared MCP pagination, wire parsing and calls. Transport owns connection lifetime. */
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type {
@@ -72,13 +73,13 @@ export interface WithMcpClient {
   <A, E>(
     mode: "discover" | "call",
     use: (client: Client) => Effect.Effect<A, E>,
-  ): Effect.Effect<A, E | McpError | ProviderError>;
+  ): Effect.Effect<A, E | McpError | ProviderError | NetworkRefused>;
 }
 /** Shared client operations never cache catalogs or account credentials. */
 export function mcpClient(
   withClient: WithMcpClient,
   timeoutMs: number,
-  failure: (phase: McpError["phase"], error: unknown) => McpError | ProviderError,
+  failure: (phase: McpError["phase"], error: unknown) => McpError | ProviderError | NetworkRefused,
 ) {
   /**
    * Follow the complete live catalog, rejecting duplicate tools and cursor loops. The server's

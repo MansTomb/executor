@@ -51,8 +51,10 @@ export default defineApp(requirements, { tools: router({ listProjects }) });
 Declare `hosts` so app code never holds the secret values. Each unmarked string
 field then reaches the app as an opaque handle. Executor's network replaces a
 handle with the real value only on requests to a declared host, in the URL,
-headers, Basic credentials, and JSON, form or text bodies up to 1 MiB. A request
-that sends a handle anywhere else fails with status 421. Values the service
+headers, Basic credentials, and JSON, form or text bodies up to 1 MiB. Executor
+refuses a request that sends a handle anywhere else: `ctx.fetch` rejects with
+`NetworkRefused`, naming the host and the provider's allowed hosts, and the
+global `fetch` receives status 421 with the same details. Values the service
 echoes back reach the app as handles.
 
 ```ts

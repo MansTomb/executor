@@ -14,11 +14,8 @@ import {
 import { makeWorkflowContext, workflowSafe } from "./workflow-context.ts";
 /** Framework-owned dispatch. Each inspect/call binds accounts and evaluates afresh. */
 import { Cause, Clock, Effect, Match, Option, Redacted, Schema } from "effect";
-import {
-  captureTelemetry,
-  invocationFetch,
-  type InvocationTelemetry,
-} from "@executor-js/telemetry";
+import { captureTelemetry, type InvocationTelemetry } from "@executor-js/telemetry";
+import { appInvocationFetch } from "./network.ts";
 import type { AccountSlots, BoundContext } from "../contracts/app.ts";
 import {
   DeclaredProvider,
@@ -478,7 +475,7 @@ function dispatch(
         )),
         workflows: workflowReads,
         signal: invocationSignal,
-        fetch: yield* invocationFetch(fetching.signal),
+        fetch: yield* appInvocationFetch(fetching.signal),
         elicit: makeElicit(delivery, invocationSignal),
       };
       const definition = yield* evaluationSafe(native.evaluate(bound), secrets).pipe(
@@ -572,7 +569,7 @@ function dispatch(
                     signal,
                   ),
                   files,
-                  fetch: yield* invocationFetch(signal),
+                  fetch: yield* appInvocationFetch(signal),
                   signal,
                   runId: execution.runId,
                   stepId,
@@ -752,7 +749,7 @@ function dispatch(
           transactionOpen = db !== undefined;
           const output = yield* Effect.gen(function* () {
             running = yield* captureTelemetry;
-            const fetch = yield* invocationFetch(fetching.signal);
+            const fetch = yield* appInvocationFetch(fetching.signal);
             return yield* tool.run(
               {
                 ...bound,
@@ -884,7 +881,7 @@ function checkAccount(
       Effect.gen(function* () {
         return yield* health.run({
           account,
-          fetch: yield* invocationFetch(signal),
+          fetch: yield* appInvocationFetch(signal),
           signal,
           ...(deadline === undefined ? {} : { deadline }),
         });

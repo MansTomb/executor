@@ -47,6 +47,8 @@ import {
   type McpHealthOptions,
 } from "../contracts/mcp.ts";
 import { adaptMcpTools } from "./mcp-tools.ts";
+import { NetworkRefused } from "../contracts/network.ts";
+import { failOnNetworkRefusal } from "./network.ts";
 import { answeredError, mcpClient, mcpJsonSchemaValidator } from "./mcp-client.ts";
 
 /**
@@ -64,8 +66,16 @@ const unreadable = (error: unknown) =>
  * A JSON-RPC error the server answered with, kept as `upstream`, or a closed connection, is
  * `request` without a status.
  */
-const failure = (phase: McpError["phase"], error: unknown): McpError | ProviderError => {
-  if (Schema.is(ProviderError)(error) || Schema.is(McpError)(error)) return error;
+const failure = (
+  phase: McpError["phase"],
+  error: unknown,
+): McpError | ProviderError | NetworkRefused => {
+  if (
+    Schema.is(ProviderError)(error) ||
+    Schema.is(McpError)(error) ||
+    Schema.is(NetworkRefused)(error)
+  )
+    return error;
   const code =
     error instanceof UnauthorizedError
       ? 401
@@ -132,7 +142,7 @@ const transportFetch =
   (
     connection: McpConnection,
     telemetry: Effect.Success<typeof captureTelemetry>,
-    rejected: Deferred.Deferred<never, ProviderError>,
+    rejected: Deferred.Deferred<never, ProviderError | NetworkRefused>,
     answered: Ref.Ref<ErrorResponse | undefined>,
   ): FetchLike =>
   (url, init) =>
@@ -159,6 +169,10 @@ const transportFetch =
         });
         const client = yield* HttpClient.HttpClient;
         const response = yield* client.execute(request);
+        // Executor's network refused the request; its reason names the host or credential at fault.
+        yield* failOnNetworkRefusal(response).pipe(
+          Effect.tapError((refused) => Deferred.fail(rejected, refused)),
+        );
         if (response.status < 400)
           return new Response(
             [204, 205, 304].includes(response.status)
@@ -242,7 +256,7 @@ function withClient<A, E>(
     Effect.scoped(
       Effect.gen(function* () {
         const telemetry = yield* captureTelemetry;
-        const rejected = yield* Deferred.make<never, ProviderError>();
+        const rejected = yield* Deferred.make<never, ProviderError | NetworkRefused>();
         const answered = yield* Ref.make<ErrorResponse | undefined>(undefined);
         const pending = new Set<Promise<void>>();
         const { client, transport } = yield* Effect.acquireRelease(
@@ -422,10 +436,13 @@ export const mcpHealthEffect = (check: McpHealthCheck, options: McpHealthOptions
       Effect.flatMap((anonymous) => anonymous.check),
       Effect.matchEffect({
         onSuccess: () => Effect.fail(new McpCredentialsUnverified({ anonymous: "answered" })),
-        onFailure: (error) =>
-          refusesCredentials(error)
-            ? Effect.void
-            : Effect.fail(new McpCredentialsUnverified({ anonymous: error })),
+        // Executor's network refused the attempt, so the server never answered it.
+        onFailure: (error): Effect.Effect<void, McpCredentialsUnverified | NetworkRefused> =>
+          Schema.is(NetworkRefused)(error)
+            ? Effect.fail(error)
+            : refusesCredentials(error)
+              ? Effect.void
+              : Effect.fail(new McpCredentialsUnverified({ anonymous: error })),
       }),
       Effect.withSpan("provider.mcp.anonymous"),
     );

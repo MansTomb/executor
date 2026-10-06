@@ -33,13 +33,13 @@ export const mcpRouter = (options: McpCatalogOptions, kinds: OperationKinds = {}
  * It connects with those headers, initializes, and reads the first page of tools, then does the
  * same without any headers. No tool runs. The check passes only when the server accepts the account
  * and refuses the attempt without credentials. A refused account throws `ProviderError`, as HTTP
- * helpers do. An unreachable or unusable server throws `McpError`. A server that also answers
- * without credentials, or whose answer to that attempt is not a refusal, throws
- * `McpCredentialsUnverified`. Either error means the check could not verify the account, and the
- * account form explains why. Send credentials only in `headers`; the attempt without them uses the
- * same `url`. The check context's `signal` cancels both attempts, and they share one budget that
- * ends early enough before its `deadline` to report a server that did not answer in time.
- * `timeoutMs` can only shorten that budget.
+ * helpers do. An unreachable or unusable server throws `McpError`, and a request Executor's network
+ * refuses throws `NetworkRefused`. A server that also answers without credentials, or whose answer
+ * to that attempt is not a refusal, throws `McpCredentialsUnverified`. Each of these errors means
+ * the check could not verify the account, and the account form explains why. Send credentials only
+ * in `headers`; the attempt without them uses the same `url`. The check context's `signal` cancels
+ * both attempts, and they share one budget that ends early enough before its `deadline` to report a
+ * server that did not answer in time. `timeoutMs` can only shorten that budget.
  */
 export const mcpHealth = <Auth extends AuthMethods>(
   check: AccountCheckContext<Auth>,

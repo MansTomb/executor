@@ -1657,6 +1657,31 @@ export const scenarios = {
       local: na("Local runs apps through the same workerd runner and outbound as self-host."),
     },
   },
+  appFetchPrivateRefused: {
+    fixtures: "actors",
+    file: "app-fetch-errors.spec.ts",
+    title:
+      "an app's fetch to a private address fails as Executor's refusal and never reaches the address",
+    serverEnvironment: { EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false" },
+    targets: {
+      "self-host": scheduled,
+      // The local test Worker lets apps reach the scenarios' loopback fixtures.
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local lets app code reach private addresses by design."),
+    },
+  },
+  appFetchUnsupportedOption: {
+    fixtures: "actors",
+    file: "app-fetch-errors.spec.ts",
+    title: "ctx.fetch names a RequestInit option the app runtime does not implement",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "Hosted app routes; local runs the same framework fetch in the same workerd runner.",
+      ),
+    },
+  },
   credentialHostsRefusedData: {
     fixtures: "actors",
     file: "credential-hosts.spec.ts",

@@ -4,6 +4,7 @@ import { AppDatabaseError } from "@executor-js/app-data/contracts";
 import { AppStorageError, AppStorageUnavailable } from "../contracts/storage.ts";
 import { OpenapiError } from "../contracts/openapi.ts";
 import { OpenapiCompileError } from "../contracts/openapi-compile.ts";
+import { FetchOptionUnsupported, NetworkRefused } from "../contracts/network.ts";
 import type { ResolvedAccounts } from "../contracts/host.ts";
 import { McpCredentialsUnverified, McpError } from "../contracts/mcp.ts";
 import type { ProviderError } from "../contracts/provider-error.ts";
@@ -328,6 +329,22 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
       source: "app",
       errorName: "OpenapiCompileError",
       code: error.code,
+      message: boundFailureMessage(error.message, secrets),
+    };
+  // Executor's own refusal of the app's request, and a fetch option the app runtime rejects.
+  // Their messages name hosts, providers and options, never credentials.
+  if (Schema.is(NetworkRefused)(error))
+    return {
+      source: "app",
+      errorName: "NetworkRefused",
+      code: error.refusal.reason,
+      message: boundFailureMessage(error.message, secrets),
+    };
+  if (Schema.is(FetchOptionUnsupported)(error))
+    return {
+      source: "app",
+      errorName: "FetchOptionUnsupported",
+      code: error.option,
       message: boundFailureMessage(error.message, secrets),
     };
   if (error instanceof Error) {

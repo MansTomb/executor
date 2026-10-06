@@ -911,6 +911,8 @@ it.live("released image serves management tools at a tailnet origin with private
       const containerPort = 8080;
       const hostname = "nexus.example.ts.net";
       const origin = `http://${hostname}:${containerPort}`;
+      // A public-looking name for the same private address, which no name check catches.
+      const disguised = "intranet.example.com";
       const port = yield* Effect.scoped(
         Effect.gen(function* () {
           for (let candidate = 4431; candidate <= 4439; candidate++) {
@@ -958,6 +960,8 @@ it.live("released image serves management tools at a tailnet origin with private
             address,
             "--add-host",
             `${hostname}:${address}`,
+            "--add-host",
+            `${disguised}:${address}`,
             "--publish",
             `127.0.0.1:${port}:${containerPort}`,
             // EXECUTOR_APPS_ALLOW_PRIVATE_FETCH stays unset: the default is under test.
@@ -1166,8 +1170,8 @@ http.createServer((request, response) => {
               content: `import { defineApp, query, object, string, router } from "apps";
 export default defineApp({ accounts: {} }, async () => ({
   tools: router({
-    probe: query({ input: object({ url: string() }) }, async (_ctx, input) => {
-      try { return "reached:" + (await fetch(input.url)).status; }
+    probe: query({ input: object({ url: string() }) }, async (ctx, input) => {
+      try { return "reached:" + (await ctx.fetch(input.url)).status; }
       catch (error) { return "refused:" + (error instanceof Error ? error.message : String(error)); }
     }),
   })
@@ -1276,7 +1280,17 @@ export default defineApp({ accounts: {} }, async () => ({
       // The same listener on its private address is not the dashboard origin.
       const refused = yield* probe(`http://${address}:${containerPort}/health`);
       expect(refused.ok).toBe(true);
-      expect(refused.value, "private app fetch stays off by default").toMatch(/^refused:/);
+      // Executor refuses the address by name, before the public-only network would.
+      expect(refused.value, "private app fetch stays off by default").toMatch(
+        /^refused:Executor refused a request to 100\.64\.[\d.]+:\d+: apps on this instance can reach only public addresses/,
+      );
+      // A public name passes Executor's check, and the public-only network refuses its address.
+      const resolved = yield* probe(`http://${disguised}:${containerPort}/health`);
+      expect(resolved.ok).toBe(true);
+      expect(resolved.value, "the network refuses a public name's private address").toMatch(
+        /^refused:/,
+      );
+      expect(resolved.value).not.toMatch(/^refused:Executor refused/);
       expect(yield* probe(`${origin}/health`), "authored apps reach the dashboard origin").toEqual({
         ok: true,
         value: "reached:200",
