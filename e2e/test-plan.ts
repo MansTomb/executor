@@ -4510,6 +4510,21 @@ export const scenarios = {
       ),
     },
   },
+  legacyConnectionFailure: {
+    legacyStorage: true,
+    file: "legacy-connection-failure.spec.ts",
+    title:
+      "a connection whose recorded sign-in failure uses a retired reason stays readable and can sign in again",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Both hosts read connections through the same SDK; Local reaches the stored row without organization fixtures.",
+      ),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
   hostedSchedules: {
     fixtures: "actors",
     file: "hosted-schedules.spec.ts",

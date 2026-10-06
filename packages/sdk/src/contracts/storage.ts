@@ -62,6 +62,19 @@ export const StoredApp = Schema.Struct({
 /** Parsed configured app storage record, without derived requirements. */
 export type StoredApp = typeof StoredApp.Type;
 
+/**
+ * The `accountConnections.state` column. `failure` holds an `AccountConnectionFailure` encoded in
+ * the error vocabulary of the release that recorded it. Readers decode it apart from the status:
+ * a failure whose reason, stage or code a later release removed is left out, never breaking the
+ * connection. See notes/oauth.md, "Failure reasons".
+ */
+export const StoredConnectionState = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("pending"), failure: Schema.optional(Schema.Json) }),
+  Schema.Struct({ status: Schema.Literal("cancelled") }),
+  Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
+]);
+export type StoredConnectionState = typeof StoredConnectionState.Type;
+
 /** Frozen target intent. Single selections are compared at completion; collections merge with current IDs. */
 export const StoredConnectionTarget = Schema.Struct({
   ...AccountConnectionDestination.fields,

@@ -27,6 +27,8 @@ import {
   requireOpen,
   finishConnection,
   lockConnection,
+  recordSignInFailure,
+  startSignIn,
 } from "./connection-state.ts";
 import { requireTargetProvider } from "./connection-target.ts";
 import { Account } from "../contracts/account.ts";
@@ -112,6 +114,16 @@ const causeOf = (
   ...(error.providerError === undefined ? {} : { providerError: error.providerError }),
   ...(error.field === undefined ? {} : { field: error.field }),
 });
+
+/** The service's own error, for the person connecting; renewal failures do not carry it. */
+const serviceErrorOf = (error: OAuthProtocolFailed) =>
+  error.serviceError === undefined ? {} : { serviceError: error.serviceError };
+
+/** The time a rate-limited service named in Retry-After. Only `rate_limited` failures carry it. */
+const retryAfterOf = (reason: string, error: OAuthProtocolFailed) =>
+  reason === "rate_limited" && error.retryAfter !== undefined
+    ? { retryAfter: error.retryAfter }
+    : {};
 
 /**
  * RFC 6749 §5.1 gives a token's lifetime in seconds from issue. oauth4webapi rejects negative
@@ -199,9 +211,10 @@ const reconnectRequired = (
   );
 
 /**
- * Classify a failed request by who must act. A 2xx response that failed validation is an
- * Executor compatibility problem; a 3xx or 4xx, or an RFC 6749 error body with any status,
- * is the service refusing the request.
+ * Classify a failed request by who must act. A 429 is the service limiting requests: Executor
+ * reached it, so it is not an outage. A 2xx response that failed validation is an Executor
+ * compatibility problem; a 3xx or 4xx, or an RFC 6749 error body with any status, is the service
+ * refusing the request.
  */
 const outcome = (error: OAuthProtocolFailed) =>
   error.reason === "destination_blocked"
@@ -210,14 +223,15 @@ const outcome = (error: OAuthProtocolFailed) =>
       ? error.reason === "request"
         ? "unavailable"
         : "unanswered"
-      : error.status === 429 ||
-          error.status >= 500 ||
-          error.providerError === "server_error" ||
-          error.providerError === "temporarily_unavailable"
-        ? "unavailable"
-        : error.status >= 300 || error.code === "OAUTH_RESPONSE_BODY_ERROR"
-          ? "rejected"
-          : "incompatible";
+      : error.status === 429
+        ? "limited"
+        : error.status >= 500 ||
+            error.providerError === "server_error" ||
+            error.providerError === "temporarily_unavailable"
+          ? "unavailable"
+          : error.status >= 300 || error.code === "OAUTH_RESPONSE_BODY_ERROR"
+            ? "rejected"
+            : "incompatible";
 
 /**
  * Classify a failed renewal. Only RFC 6749 §5.2's `invalid_grant` says this account's grant has
@@ -230,7 +244,8 @@ const outcome = (error: OAuthProtocolFailed) =>
  *   once it is fixed. The account reports `client_rejected` and renews again on its next use.
  * - Other codes, including ones outside RFC 6749 that some services return with HTTP 200, such as
  *   Slack's `internal_error`, report `renewal_rejected` and renew again on the next use.
- * - An outage, timeout, 429, 5xx, `server_error` or `temporarily_unavailable` is temporary.
+ * - An outage, timeout, 5xx, `server_error` or `temporarily_unavailable` is temporary, and so is a
+ *   429, which reports `rate_limited`.
  * - A response Executor cannot use, including a malformed 2xx or a 4xx without an error body, is
  *   a compatibility problem.
  *
@@ -245,6 +260,7 @@ const renewalOutcome = (error: OAuthProtocolFailed): "reconnect" | OAuthRenewalF
     : Match.value(outcome(error)).pipe(
         Match.when("blocked", () => "reconnect" as const),
         Match.when("unavailable", () => "service_unavailable" as const),
+        Match.when("limited", () => "rate_limited" as const),
         Match.when("rejected", () =>
           error.reason === "invalid_grant"
             ? ("reconnect" as const)
@@ -261,63 +277,76 @@ const renewalOutcome = (error: OAuthProtocolFailed): "reconnect" | OAuthRenewalF
       );
 
 const registrationFailed = (error: OAuthProtocolFailed, callbackUrl: typeof HttpUrl.Type) => {
-  const cause = causeOf("register", error);
-  return new OAuthSetupFailed({
-    cause,
-    callbackUrl,
-    reason: Match.value(outcome(error)).pipe(
-      Match.when("blocked", () => "discovery_blocked" as const),
-      Match.when("unavailable", () => "service_unavailable" as const),
-      Match.when("rejected", () =>
-        error.providerError === "invalid_redirect_uri"
-          ? ("client_not_approved" as const)
-          : error.providerError === "invalid_client_metadata"
-            ? ("client_metadata_rejected" as const)
-            : // RFC 7591 section 3: the endpoint requires an initial access token, which Executor
-              // never holds. The service only accepts clients registered by hand.
-              error.status === 401 || error.status === 403
-              ? ("client_registration_required" as const)
-              : ("registration_rejected" as const),
-      ),
-      // Checks after a successful response, such as a changed auth method, carry no status.
-      Match.whenOr("incompatible", "unanswered", () => "incompatible_response" as const),
-      Match.exhaustive,
+  const reason = Match.value(outcome(error)).pipe(
+    Match.when("blocked", () => "discovery_blocked" as const),
+    Match.when("unavailable", () => "service_unavailable" as const),
+    Match.when("limited", () => "rate_limited" as const),
+    Match.when("rejected", () =>
+      error.providerError === "invalid_redirect_uri"
+        ? ("client_not_approved" as const)
+        : error.providerError === "invalid_client_metadata"
+          ? ("client_metadata_rejected" as const)
+          : // RFC 7591 section 3: the endpoint requires an initial access token, which Executor
+            // never holds. The service only accepts clients registered by hand.
+            error.status === 401 || error.status === 403
+            ? ("client_registration_required" as const)
+            : ("registration_rejected" as const),
     ),
+    // Checks after a successful response, such as a changed auth method, carry no status.
+    Match.whenOr("incompatible", "unanswered", () => "incompatible_response" as const),
+    Match.exhaustive,
+  );
+  return new OAuthSetupFailed({
+    cause: causeOf("register", error),
+    ...serviceErrorOf(error),
+    ...retryAfterOf(reason, error),
+    callbackUrl,
+    reason,
   });
 };
 
-const clientCredentialsFailed = (error: OAuthProtocolFailed) =>
-  new OAuthSetupFailed({
+const clientCredentialsFailed = (error: OAuthProtocolFailed) => {
+  const reason =
+    error.reason === "invalid_client" || error.reason === "unsupported"
+      ? error.reason
+      : Match.value(outcome(error)).pipe(
+          Match.when("unavailable", () => "service_unavailable" as const),
+          Match.when("limited", () => "rate_limited" as const),
+          Match.when("incompatible", () => "incompatible_response" as const),
+          Match.whenOr("blocked", "rejected", "unanswered", () => "token_exchange" as const),
+          Match.exhaustive,
+        );
+  return new OAuthSetupFailed({
     cause: causeOf("clientCredentials", error),
-    reason:
-      error.reason === "invalid_client" || error.reason === "unsupported"
-        ? error.reason
-        : Match.value(outcome(error)).pipe(
-            Match.when("unavailable", () => "service_unavailable" as const),
-            Match.when("incompatible", () => "incompatible_response" as const),
-            Match.whenOr("blocked", "rejected", "unanswered", () => "token_exchange" as const),
-            Match.exhaustive,
-          ),
+    ...serviceErrorOf(error),
+    ...retryAfterOf(reason, error),
+    reason,
   });
+};
 
 /** A failed token exchange. Callback validation runs first, so every failure here reached the token endpoint or failed before sending. */
-const exchangeFailed = (error: OAuthProtocolFailed) =>
-  new OAuthCompletionFailed({
+const exchangeFailed = (error: OAuthProtocolFailed) => {
+  const reason =
+    error.reason === "invalid_client" || error.reason === "unsupported"
+      ? error.reason
+      : error.reason === "invalid_grant"
+        ? "authorization_code_rejected"
+        : Match.value(outcome(error)).pipe(
+            Match.when("blocked", () => "destination_blocked" as const),
+            Match.when("unavailable", () => "service_unavailable" as const),
+            Match.when("limited", () => "rate_limited" as const),
+            Match.when("rejected", () => "exchange_failed" as const),
+            // A 2xx that failed validation, or a request the library refused to build.
+            Match.whenOr("incompatible", "unanswered", () => "incompatible_response" as const),
+            Match.exhaustive,
+          );
+  return new OAuthCompletionFailed({
     cause: causeOf("exchange", error),
-    reason:
-      error.reason === "invalid_client" || error.reason === "unsupported"
-        ? error.reason
-        : error.reason === "invalid_grant"
-          ? "authorization_code_rejected"
-          : Match.value(outcome(error)).pipe(
-              Match.when("blocked", () => "destination_blocked" as const),
-              Match.when("unavailable", () => "service_unavailable" as const),
-              Match.when("rejected", () => "exchange_failed" as const),
-              // A 2xx that failed validation, or a request the library refused to build.
-              Match.whenOr("incompatible", "unanswered", () => "incompatible_response" as const),
-              Match.exhaustive,
-            ),
+    ...serviceErrorOf(error),
+    ...retryAfterOf(reason, error),
+    reason,
   });
+};
 
 /**
  * A client entered with a secret uses Basic, which RFC 6749 section 2.3.1 requires servers to
@@ -339,6 +368,7 @@ const secretMethod = (supported: readonly string[] | undefined) =>
 const callbackFailed = (error: OAuthProtocolFailed) =>
   new OAuthCompletionFailed({
     cause: causeOf("authorize", error),
+    ...serviceErrorOf(error),
     reason:
       error.field === "issuer"
         ? "issuer_mismatch"
@@ -418,27 +448,30 @@ export const makeOAuth = (
       )
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
       const discovered = yield* protocol.discover(method).pipe(
-        Effect.mapError(
-          (error) =>
-            new OAuthSetupFailed({
-              cause: causeOf("discover", error),
-              reason: Match.value(error.reason).pipe(
-                Match.when("request", () => "service_unavailable" as const),
-                Match.when("metadata_missing", () => "discovery_missing" as const),
-                Match.when("destination_blocked", () => "discovery_blocked" as const),
-                Match.when("resource_mismatch", () => "resource_mismatch" as const),
-                Match.when("unsupported", () => "unsupported" as const),
-                Match.whenOr(
-                  "invalid_response",
-                  "invalid_client",
-                  "invalid_grant",
-                  "subject_changed",
-                  () => "discovery_invalid" as const,
-                ),
-                Match.exhaustive,
-              ),
-            }),
-        ),
+        Effect.mapError((error) => {
+          const reason = Match.value(error.reason).pipe(
+            Match.when("request", () =>
+              error.status === 429 ? ("rate_limited" as const) : ("service_unavailable" as const),
+            ),
+            Match.when("metadata_missing", () => "discovery_missing" as const),
+            Match.when("destination_blocked", () => "discovery_blocked" as const),
+            Match.when("resource_mismatch", () => "resource_mismatch" as const),
+            Match.when("unsupported", () => "unsupported" as const),
+            Match.whenOr(
+              "invalid_response",
+              "invalid_client",
+              "invalid_grant",
+              "subject_changed",
+              () => "discovery_invalid" as const,
+            ),
+            Match.exhaustive,
+          );
+          return new OAuthSetupFailed({
+            cause: causeOf("discover", error),
+            ...retryAfterOf(reason, error),
+            reason,
+          });
+        }),
       );
       // The optional revocation endpoint is not required to connect; the transport still
       // enforces this policy when revocation calls it.
@@ -750,16 +783,11 @@ export const makeOAuth = (
       const expiresAt = new Date(Math.min(now + 10 * 60_000, pending.expiresAt.getTime()));
       yield* transaction(db, (tx) =>
         Effect.gen(function* () {
-          yield* requireOpen(input, yield* lockConnection(tx, input, crypto));
+          const current = yield* requireOpen(input, yield* lockConnection(tx, input, crypto));
           yield* query(() =>
             tx.create("oauthAttempts", { id, encrypted, expiresAt, status: "pending" }),
           );
-          yield* query(() =>
-            tx.updateMany("accountConnections", {
-              where: (b) => b("id", "=", input.connection),
-              set: { oauthAttempt: id },
-            }),
-          );
+          yield* startSignIn(tx, current, id);
         }),
       );
       return {
@@ -800,6 +828,13 @@ export const makeOAuth = (
           ...(label === undefined ? {} : { label }),
         },
         existing,
+      ).pipe(
+        // Agents reading the request learn what the person connecting was shown.
+        Effect.tapError((error) =>
+          Schema.is(OAuthSetupFailed)(error)
+            ? recordSignInFailure(db, crypto, input, connection.oauthAttempt, error)
+            : Effect.void,
+        ),
       );
     }).pipe(Effect.withSpan("oauth.startOAuth"));
 
@@ -917,6 +952,32 @@ export const makeOAuth = (
         db.findFirst("oauthAttempts", { where: (b) => b("id", "=", id) }),
       );
       if (claimed?.status !== claim) return yield* failed("sign_in_used");
+      // This completion owns the sign-in now, so whatever ends it is the request's latest outcome.
+      return yield* exchangeClaimed(protocol, input, callback, id, attempt).pipe(
+        Effect.tapError((error) =>
+          Schema.is(OAuthCompletionFailed)(error)
+            ? recordSignInFailure(db, crypto, input, id, error)
+            : Effect.void,
+        ),
+      );
+    }).pipe(
+      Effect.tapError((error) =>
+        Schema.is(OAuthCompletionFailed)(error)
+          ? Effect.annotateCurrentSpan("oauth.completion.reason", error.reason)
+          : Effect.void,
+      ),
+      Effect.withSpan("oauth.completeOAuth"),
+    );
+
+  /** Validate the authorization response this completion claimed, exchange its code and save. */
+  const exchangeClaimed = (
+    protocol: ReturnType<typeof makeOAuthProtocol>,
+    input: typeof CompleteConnectionOAuth.Type,
+    callback: URL,
+    id: OAuthAttemptId,
+    attempt: OAuthAttempt,
+  ) =>
+    Effect.gen(function* () {
       if (attempt.reconnect) yield* reconnectTarget(db, attempt);
       const parameters = yield* protocol
         .callback(attempt, callback)
@@ -944,6 +1005,7 @@ export const makeOAuth = (
                   ? "registered_client_incompatible"
                   : "registered_client_rejected",
                 ...(error.cause === undefined ? {} : { cause: error.cause }),
+                ...(error.serviceError === undefined ? {} : { serviceError: error.serviceError }),
               });
             }),
         ),
@@ -1064,14 +1126,7 @@ export const makeOAuth = (
           return saved;
         }),
       );
-    }).pipe(
-      Effect.tapError((error) =>
-        Schema.is(OAuthCompletionFailed)(error)
-          ? Effect.annotateCurrentSpan("oauth.completion.reason", error.reason)
-          : Effect.void,
-      ),
-      Effect.withSpan("oauth.completeOAuth"),
-    );
+    });
 
   /**
    * Resolve the account's current credentials. With `rejected`, the service has refused those
@@ -1149,11 +1204,15 @@ export const makeOAuth = (
         const settle = Effect.gen(function* () {
           const result = yield* renewal.pipe(
             Effect.annotateSpans("oauth.provider.id", account.provider),
-            Effect.mapError((error) => ({
-              outcome: renewalOutcome(error),
-              cause: causeOf(stage, error),
-              identityChanged: error.reason === "subject_changed",
-            })),
+            Effect.mapError((error) => {
+              const outcome = renewalOutcome(error);
+              return {
+                outcome,
+                cause: causeOf(stage, error),
+                identityChanged: error.reason === "subject_changed",
+                retry: retryAfterOf(outcome, error),
+              };
+            }),
             Effect.flatMap((tokens) =>
               project(grant.response, { ...grant.fields, ...tokens }).pipe(
                 // The service issued tokens, but not in the shape the provider declares.
@@ -1161,6 +1220,7 @@ export const makeOAuth = (
                   outcome: "incompatible_response" as const,
                   cause: { stage } satisfies OAuthFailureCause,
                   identityChanged: false,
+                  retry: {},
                 })),
                 Effect.map((fields) => ({ tokens, fields })),
               ),
@@ -1168,7 +1228,7 @@ export const makeOAuth = (
             Effect.result,
           );
           if (result._tag === "Failure") {
-            const { outcome, cause, identityChanged } = result.failure;
+            const { outcome, cause, identityChanged, retry } = result.failure;
             yield* Effect.annotateCurrentSpan("oauth.renewal.outcome", outcome);
             const released = `ready_${yield* nextId}`;
             // Only the process holding the claim may settle it. Otherwise another process has
@@ -1223,7 +1283,12 @@ export const makeOAuth = (
               );
               return Redacted.make(grant.fields);
             }
-            return yield* new OAuthRenewalFailed({ account: account.id, reason: outcome, cause });
+            return yield* new OAuthRenewalFailed({
+              account: account.id,
+              reason: outcome,
+              cause,
+              ...retry,
+            });
           }
           const { fields, tokens } = result.success;
           const updatedAt = new Date(yield* Clock.currentTimeMillis);

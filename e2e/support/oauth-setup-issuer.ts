@@ -24,6 +24,11 @@ export type IssuedTokens = {
   readonly id_token?: string;
 };
 export type TokenShape = (tokens: IssuedTokens, refreshing: boolean) => object;
+/** A token request as the service received it, for an error page that repeats it. */
+export type ReceivedTokenRequest = {
+  readonly body: string;
+  readonly authorization: string | undefined;
+};
 
 /** A JSON-RPC request or notification to the served MCP server. */
 const McpMessage = Schema.Struct({
@@ -43,10 +48,25 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let serveMcp = false;
   let expiresAt = 0;
   // 401 models RFC 7591 registration that requires an initial access token Executor lacks.
-  let registrationStatus: 200 | 201 | 400 | 401 = 201;
+  // 429 answers with a rate limiter's HTML page.
+  let registrationStatus: 200 | 201 | 400 | 401 | 429 = 201;
+  /** The Retry-After header of rate-limited discovery and registration answers; unset omits it. */
+  let retryAfter: string | undefined;
+  /** A rate limiter's page, as an edge proxy in front of the service sends it. */
+  const rateLimited = () =>
+    HttpServerResponse.text(
+      "<html><head><title>429 Too Many Requests</title></head><body><center><h1>429 Too Many Requests</h1></center><hr><center>synthetic-edge</center></body></html>",
+      {
+        status: 429,
+        contentType: "text/html; charset=utf-8",
+        headers: retryAfter === undefined ? {} : { "retry-after": retryAfter },
+      },
+    );
   let malformedRegistration = false;
   let registrationError: "invalid_client_metadata" | "invalid_redirect_uri" | "invalid_request" =
     "invalid_client_metadata";
+  /** The `error_description` a refused registration sends; undefined omits it. */
+  let registrationErrorDescription: string | undefined = "PRIVATE_PROVIDER_ERROR";
   let omitSecretExpiry = false;
   /** Vercel registers a public client whatever method the request names, as RFC 7591 allows. */
   let issuePublicClients = false;
@@ -99,8 +119,20 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let browserReturn: string | undefined;
   // Opt-in error and token variants. Defaults keep the standard behaviour above.
   // "reset" drops the connection without a response, as a failing proxy or network would.
+  // An HTML `page` is built from the request, as error pages that repeat it are. Either answer
+  // can carry a Retry-After header.
   let tokenError:
-    | { readonly status: number; readonly body: object; readonly challenge?: string }
+    | {
+        readonly status: number;
+        readonly body: object;
+        readonly challenge?: string;
+        readonly retryAfter?: string;
+      }
+    | {
+        readonly status: number;
+        readonly page: (request: ReceivedTokenRequest) => string;
+        readonly retryAfter?: string;
+      }
     | "reset"
     | undefined;
   /**
@@ -151,6 +183,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let discovery:
     | "available"
     | "unavailable"
+    | "rate-limited"
     | "missing"
     | "no-oauth"
     | "invalid-json"
@@ -299,7 +332,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         const contentType = request.headers["content-type"]?.split(";")[0]?.trim();
-        const input = tokenRequestParameters(contentType, yield* request.text);
+        const text = yield* request.text;
+        const input = tokenRequestParameters(contentType, text);
         const refreshing = input.get("grant_type") === "refresh_token";
         if (refreshing && hold === "refresh-unprocessed") {
           // The service never processes this request; its caller is gone once it is released.
@@ -316,13 +350,26 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           source.socket.destroy();
           return HttpServerResponse.empty({ status: 500 });
         }
+        const errorHeaders =
+          tokenError === undefined || tokenError.retryAfter === undefined
+            ? {}
+            : { "retry-after": tokenError.retryAfter };
+        if (tokenError !== undefined && "page" in tokenError)
+          return HttpServerResponse.text(
+            tokenError.page({ body: text, authorization: request.headers.authorization }),
+            {
+              status: tokenError.status,
+              contentType: "text/html; charset=utf-8",
+              headers: errorHeaders,
+            },
+          );
         if (tokenError !== undefined)
           return yield* HttpServerResponse.json(tokenError.body, {
             status: tokenError.status,
             headers:
               tokenError.challenge === undefined
-                ? {}
-                : { "www-authenticate": tokenError.challenge },
+                ? errorHeaders
+                : { ...errorHeaders, "www-authenticate": tokenError.challenge },
           });
         const code = input.get("code"),
           verifier = input.get("code_verifier"),
@@ -560,6 +607,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         discoveries++;
         discoveryRequests.push("/.well-known/oauth-authorization-server");
         if (discovery === "unavailable") return HttpServerResponse.empty({ status: 503 });
+        if (discovery === "rate-limited") return rateLimited();
         if (discovery === "missing" || discovery === "no-oauth")
           return HttpServerResponse.empty({ status: 404 });
         if (discovery === "invalid-json")
@@ -654,17 +702,19 @@ export const oauthSetupIssuer = Effect.gen(function* () {
           ),
         );
         lastRegistration = { scope: input.scope ?? "", method: input.token_endpoint_auth_method };
+        const description =
+          registrationErrorDescription === undefined
+            ? {}
+            : { error_description: registrationErrorDescription };
+        if (registrationStatus === 429) return rateLimited();
         if (registrationStatus === 401)
           return yield* HttpServerResponse.json(
-            { error: "invalid_client", error_description: "PRIVATE_PROVIDER_ERROR" },
+            { error: "invalid_client", ...description },
             { status: 401 },
           );
         if (registrationStatus === 400)
           return yield* HttpServerResponse.json(
-            {
-              error: registrationError,
-              error_description: "PRIVATE_PROVIDER_ERROR",
-            },
+            { error: registrationError, ...description },
             { status: 400 },
           );
         const issued = registeredClient ?? {
@@ -725,6 +775,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly registrationStatus?: typeof registrationStatus;
       readonly malformedRegistration?: boolean;
       readonly registrationError?: typeof registrationError;
+      /** The `error_description` of a refused registration; null omits it. */
+      readonly registrationErrorDescription?: string | null;
+      /** The Retry-After header of rate-limited discovery and registration; null omits it. */
+      readonly retryAfter?: string | null;
       readonly omitSecretExpiry?: boolean;
       /** Register every client as public, replacing the requested token endpoint method. */
       readonly issuePublicClients?: boolean;
@@ -761,8 +815,9 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly callbackIssuer?: string | null;
       readonly browserReturn?: string | null;
       /**
-       * Answer every token request with this body, status and optional challenge, or drop the
-       * connection with "reset"; null restores tokens.
+       * Answer every token request with this JSON body, status and optional challenge, or an HTML
+       * page built from the request, either with an optional Retry-After, or drop the connection
+       * with "reset"; null restores tokens.
        */
       readonly tokenError?: typeof tokenError | null;
       /** Reshape token responses like a real service; null restores the standard shape. */
@@ -807,6 +862,13 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.malformedRegistration !== undefined)
           malformedRegistration = input.malformedRegistration;
         if (input.registrationError !== undefined) registrationError = input.registrationError;
+        if (input.registrationErrorDescription !== undefined)
+          registrationErrorDescription =
+            input.registrationErrorDescription === null
+              ? undefined
+              : input.registrationErrorDescription;
+        if (input.retryAfter !== undefined)
+          retryAfter = input.retryAfter === null ? undefined : input.retryAfter;
         if (input.omitSecretExpiry !== undefined) omitSecretExpiry = input.omitSecretExpiry;
         if (input.issuePublicClients !== undefined) issuePublicClients = input.issuePublicClients;
         if (input.registration !== undefined) registration = input.registration;

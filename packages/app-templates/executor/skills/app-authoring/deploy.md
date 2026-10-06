@@ -183,7 +183,8 @@ return await executor.accounts.connect({
 
 Give the returned `url` to the user. It opens Executor's signed-in browser form;
 credentials and OAuth are completed there. Check progress with
-`accounts.connection`, passing `path.organization` and `path.connection`.
+`accounts.connection`, passing `path.organization` and `path.connection`; a
+failed sign-in leaves its error in `state.failure`.
 Members can read inventory; administrators can deploy, connect, and run app tools.
 The server rechecks the caller's grant and current membership on every API call.
 The management app's caller credential is never saved as a shared account.

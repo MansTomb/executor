@@ -319,6 +319,7 @@ const connection = await executor.accountConnections.get({
   path: { connection: "<connection-id>" },
 });
 return connection.state; // { status: "completed", account } means setup finished.
+// A pending state with `failure` holds the error the user saw, including the service's own error.
 ```
 
 Completing a targeted request saves the account and selects it for the named profile in
