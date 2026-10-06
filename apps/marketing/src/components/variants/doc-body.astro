@@ -1,11 +1,11 @@
 ---
-// Start with a useful tool, then reveal the software an agent can build around it.
+// Lead with what an app can be, then build one up step by step.
 import { release, platforms, desktopAssetSuffix, desktopDownloads } from "../../../../../scripts/releases/config.ts";
 import Testimonials from "./testimonials.astro";
 import IntroSteps from "./intro-steps.astro";
 import { heroHeadlines, heroVariants, type HeroVariant } from "../../content/hero-experiment";
 import CopyPrompt from "./copy-prompt.astro";
-import { introductionItems, homepageStory, appDefinition } from "../../content/site-copy";
+import { introductionItems, homepageStory } from "../../content/site-copy";
 import AppStartingPoints from "../app-starting-points.astro";
 import CustomTool from "../custom-tool.astro";
 import { DailyBriefDemo } from "../daily-brief-demo";
@@ -51,6 +51,11 @@ const { variant = heroVariants[0] } = Astro.props;
       </p>
     </header>
 
+    <section id="apps" aria-labelledby="apps-title" class="doc__hero-app scroll-mt-14 min-[1024px]:scroll-mt-0 mt-[2.5rem] max-[719.98px]:mt-[2rem]">
+      <h2 id="apps-title" class="sr-only">{homepageStory.apps.title}</h2>
+      <AppPieces client:load />
+    </section>
+
   <section id="connect" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
     <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.start.title}</h2>
     <p>{homepageStory.start.body}</p>
@@ -67,12 +72,6 @@ const { variant = heroVariants[0] } = Astro.props;
     <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.automate.title}</h2>
     <p>{homepageStory.automate.body}</p>
     <div class="doc__fig--wide max-w-225"><DailyBriefDemo client:visible /></div>
-  </section>
-
-  <section id="apps" class="doc__section scroll-mt-14 min-[1024px]:scroll-mt-0 min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">
-    <h2 class="doc__h text-[22px] font-semibold tracking-[-0.015em] text-ink mb-[1rem] max-[719.98px]:text-[20px]">{homepageStory.apps.title}</h2>
-    <p>{appDefinition}</p>
-    <AppPieces client:visible />
   </section>
 
   <section id="agents" class="doc__section min-[1024px]:[&_>_:not(.doc\_\_fig--wide):not(.testi)]:max-w-180 border-t border-t-rule mt-[3.25rem] pt-[2.25rem] [&_>_p]:text-[16px] [&_>_p]:leading-[1.65] [&_>_p]:[color:var(--color-ink-2)] [&_>_p]:[text-wrap:pretty] [&_>_p_+_p]:mt-[1rem] [&_a]:text-ink [&_a]:underline [&_a]:underline-offset-[3px] [&_a]:[text-decoration-color:var(--color-rule-strong)] [&_a:hover]:[text-decoration-color:var(--color-ink)] max-[719.98px]:mt-[2.5rem] max-[719.98px]:pt-[1.75rem]">

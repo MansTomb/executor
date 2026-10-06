@@ -49,11 +49,28 @@ export const introduction = `Your ${listItems(
   introductionItems.filter((item) => !("comingSoon" in item)).map((item) => item.label),
 )}, all in one place.`;
 
-/** Introduce personal software through a familiar starting point and a growing app. */
+/** Capabilities an app can include, with tools first. */
+export const appParts = [
+  { title: "Tools", body: "Call anything, it's just JavaScript." },
+  { title: "Skills", body: "Give your agent instructions it can use again." },
+  { title: "Apps", body: "A page for people, beside the tools for agents." },
+  { title: "Storage", body: "Keep data and state between runs." },
+  { title: "Triggers", body: "Run on a schedule or respond to webhooks." },
+  { title: "Workflows", body: "Durable work across multiple steps." },
+] as const;
+
+/**
+ * The homepage leads with what an app can be, then shows one growing step by
+ * step.
+ */
 export const homepageStory = {
+  apps: {
+    title: "What's an Executor app?",
+    body: "A tool your agent can call. An automation that runs on its own. An interface you can use. They can all be parts of the same app, built around what you need.",
+  },
   start: {
     title: "Start with something useful.",
-    body: "Bring a tool you already use, give your agent a skill, or ask it to build something you wish existed. Start small. You can change it as you go.",
+    body: "Bring a tool you already use, give your agent a skill, or ask it to build something you wish existed. Most apps start as one small piece.",
   },
   build: {
     title: "Ask for what you actually need.",
@@ -66,24 +83,10 @@ export const homepageStory = {
     body: "Give that tool a schedule. Keep a history of what it finds. Add a page you can open. Executor runs the app, even after the conversation ends.",
     prompt: "Run this every weekday at 9. Save the results and build me a page to read them.",
   },
-  apps: {
-    title: "That's an Executor app.",
-    body: "A tool your agent can call. An automation that runs on its own. An interface you can use. They can all be parts of the same app, built around what you need.",
-  },
 } as const;
 
 /** Plain definition shared by the illustrated section and Markdown overview. */
 export const appDefinition = homepageStory.apps.body;
-
-/** Capabilities an app can include, with tools first. */
-export const appParts = [
-  { title: "Tools", body: "Call anything, it's just JavaScript." },
-  { title: "Skills", body: "Give your agent instructions it can use again." },
-  { title: "UI", body: "A page for your app, at its own URL." },
-  { title: "Storage", body: "Keep data and state between runs." },
-  { title: "Triggers", body: "Run on a schedule or respond to webhooks." },
-  { title: "Workflows", body: "Durable work across multiple steps." },
-] as const;
 
 /** Cache-Control for the Markdown endpoints. Short, so copy edits land fast. */
 export const MARKDOWN_CACHE_CONTROL = "public, max-age=300";
