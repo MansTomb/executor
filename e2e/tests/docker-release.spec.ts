@@ -1138,11 +1138,26 @@ http.createServer((request, response) => {
           },
         ],
       });
+      // Each failure states its cause in a message Executor derives from the reason.
       const failures = {
-        "@fixture/moved": { reason: "status", status: 302 },
-        "@fixture/down": { reason: "status", status: 503 },
-        "@fixture/garbled": { reason: "invalid-response" },
-        "@fixture/missing": { reason: "not-found" },
+        "@fixture/moved": {
+          reason: "status",
+          status: 302,
+          message: "The public app registry responded with HTTP 302.",
+        },
+        "@fixture/down": {
+          reason: "status",
+          status: 503,
+          message: "The public app registry responded with HTTP 503.",
+        },
+        "@fixture/garbled": {
+          reason: "invalid-response",
+          message: "The public app registry returned a response Executor could not read.",
+        },
+        "@fixture/missing": {
+          reason: "not-found",
+          message: "The public app listing or its selected commit does not exist.",
+        },
       };
       for (const [name, failure] of Object.entries(failures))
         expect(yield* catalog(name), name).toEqual({
@@ -1158,7 +1173,11 @@ http.createServer((request, response) => {
       yield* run(["kill", appRegistry]);
       expect(yield* catalog("@fixture/example"), "an unreachable registry").toEqual({
         status: 400,
-        body: { _tag: "RegistryError", reason: "network" },
+        body: {
+          _tag: "RegistryError",
+          reason: "network",
+          message: "Executor could not reach the public app registry. Try again.",
+        },
       });
       const deployed = yield* request(
         `${prefix}/apps/deploy`,
@@ -1307,7 +1326,8 @@ type Probe = Effect.Effect<{ readonly isolate: string; readonly calls: number },
  * workerd binding. A positive value bounds the app Workers kept loaded, an unset value applies the
  * default of 32 and an invalid value stops the server before it starts. Each probe app reports an
  * identifier from its module state, so a Worker that was unloaded and loaded again reports a new
- * identifier and no earlier calls.
+ * identifier and no earlier calls. The limit also counts the built-in Executor app's Worker, so
+ * the probes start only after its background setup has finished.
  */
 it.live(
   "released image keeps at most EXECUTOR_APP_WORKERS app Workers loaded",
@@ -1441,6 +1461,36 @@ it.live(
               yield* request("/api/auth/organization/list", undefined, cookie),
             );
             const prefix = `/api/organizations/${organization.id}`;
+            // Setup installs the built-in Executor app and the owner's profile of it in the
+            // background. That profile's setup loads the app's Worker, which under a low limit
+            // unloads an idle probe Worker, so it must finish before the probes are deployed.
+            const executorProfiles = yield* request(`${prefix}/inventory`, undefined, cookie).pipe(
+              Effect.flatMap((response) =>
+                json(
+                  Schema.Struct({
+                    apps: Schema.Array(Schema.Struct({ id: Schema.String, slug: Schema.String })),
+                    profiles: Schema.Array(
+                      Schema.Struct({ app: Schema.String, status: Schema.String }),
+                    ),
+                  }),
+                  response,
+                ),
+              ),
+              Effect.flatMap(({ apps, profiles }) => {
+                const executor = apps.find((app) => app.slug === "executor");
+                const setup =
+                  executor === undefined
+                    ? []
+                    : profiles.filter((profile) => profile.app === executor.id);
+                return setup.length === 0 || setup.some((profile) => profile.status === "pending")
+                  ? Effect.fail(new Error("Executor app setup has not finished"))
+                  : Effect.succeed(setup);
+              }),
+              Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
+            );
+            // A profile that is not ready retries its setup later and loads the Worker again.
+            for (const profile of executorProfiles)
+              expect(profile.status, "the built-in Executor app is set up").toBe("ready");
             const probes: Array<Probe> = [];
             for (let index = 0; index < apps; index++) {
               const deployed = yield* request(
