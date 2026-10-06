@@ -836,6 +836,7 @@
     "workerd",
   ],
   "patchedDependencies": {
+    "@better-auth/api-key@1.7.5": "patches/@better-auth%2Fapi-key@1.7.5.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.79": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.79.patch",
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
     "effect@https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d": "patches/effect@c7d1ffff.patch",

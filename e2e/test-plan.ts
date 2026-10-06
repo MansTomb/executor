@@ -3773,6 +3773,20 @@ export const scenarios = {
       local: na("Local uses its instance key."),
     },
   },
+  apiKeyStorageOutage: {
+    fixtures: "actors",
+    file: "api-key-storage-outage.spec.ts",
+    title: "A database failure while verifying an API key answers 503 on MCP and the API, not 401",
+    targets: {
+      cloud: managedCloud,
+      "self-host": {
+        status: "not-run",
+        reason:
+          "Self-host verifies keys the same way, but its database runs inside the product's Worker, where the runner cannot fail its writes.",
+      },
+      local: na("Local uses its instance key."),
+    },
+  },
   organizationApiKeys: {
     fixtures: "actors",
     file: "organization-api-keys.spec.ts",

@@ -168,7 +168,8 @@
     "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
     "pg-cloudflare@1.4.0": "patches/pg-cloudflare@1.4.0.patch",
     "@better-auth/passkey@1.7.5": "patches/@better-auth%2Fpasskey@1.7.5.patch",
-    "@electric-sql/pglite@0.5.8": "patches/@electric-sql%2Fpglite@0.5.8.patch"
+    "@electric-sql/pglite@0.5.8": "patches/@electric-sql%2Fpglite@0.5.8.patch",
+    "@better-auth/api-key@1.7.5": "patches/@better-auth%2Fapi-key@1.7.5.patch"
   },
   "trustedDependencies": [
     "dugite",
