@@ -2803,6 +2803,19 @@ export const scenarios = {
       ),
     },
   },
+  serverRenderedAccess: {
+    fixtures: "actors",
+    file: "server-rendered-access.spec.ts",
+    title:
+      "An organization page's server render sends its page data only after access succeeds, whatever its reads returned",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "The access check fixture is mounted by the self-host test entry point; the registry and organization boundary are shared with Cloud.",
+      ),
+      local: na("Local has no organization access check."),
+    },
+  },
   serverRenderedSkills: {
     fixtures: "actors",
     file: "server-rendered-skills.spec.ts",
