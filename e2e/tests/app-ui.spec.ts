@@ -1,6 +1,7 @@
 /** The private app protocol is checked through each real hosted product and its browser runtime. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -15,7 +16,8 @@ import {
 } from "../support/app-open-timeline.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { password } from "../support/actors.ts";
-import { App } from "../support/contracts.ts";
+import { App, SpanQuery } from "../support/contracts.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 
 import { McpOAuth } from "../support/mcp-oauth.ts";
@@ -23,6 +25,9 @@ import { McpClient } from "../support/mcp-client.ts";
 import { managementApp } from "../support/management-app.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { appsManifest } from "../support/apps-release.ts";
+
+type Span = (typeof SpanQuery.Type)["data"][number]["span"];
+type ServerSpan = { readonly traceId: string; readonly spanId: string };
 
 const files = [
   {
@@ -282,6 +287,141 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );
+  it.effect(scenarios.appUiFileProbes.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { url } = yield* appFixture;
+        const http = yield* HttpClient.HttpClient;
+        const known = new URL(url);
+        const missingApp = new URL(url);
+        missingApp.hostname = `missing-app.${known.hostname.split(".").slice(1).join(".")}`;
+        const missingOrganization = new URL(url);
+        missingOrganization.hostname = `${known.hostname.split(".")[0]}.missing-organization.${known.hostname.split(".").slice(2).join(".")}`;
+        const telemetry = yield* Telemetry;
+        const evidence = yield* Evidence;
+        /** The response names the server span it ran under, so its delivered spans can be read back. */
+        const send = (request: HttpClientRequest.HttpClientRequest, accept: string) =>
+          request.pipe(
+            HttpClientRequest.setHeader("accept", accept),
+            http.execute,
+            Effect.flatMap((response) =>
+              Effect.map(response.text, (body) => {
+                const timing = response.headers["server-timing"] ?? "";
+                const server = {
+                  traceId: timing.match(/executor-trace;desc="([a-f0-9]{32})"/)?.[1] ?? "",
+                  spanId: timing.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1] ?? "",
+                };
+                expect(server.traceId, "The response names its server trace").not.toBe("");
+                expect(server.spanId, "The response names its server span").not.toBe("");
+                return { server, outcome: { status: response.status, body } };
+              }),
+            ),
+            Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+          );
+        const read = (origin: URL, path: string, accept: string) =>
+          send(HttpClientRequest.get(new URL(path, origin).href), accept).pipe(
+            Effect.map(({ outcome }) => outcome),
+          );
+        const probes: Array<{ path: string; server: ServerSpan }> = [];
+        /** A cookie-less fetch, whose trace must show no database work. */
+        const fetchAnonymously = (origin: URL, path: string, method: "GET" | "HEAD" = "GET") =>
+          send(
+            (method === "GET" ? HttpClientRequest.get : HttpClientRequest.head)(
+              new URL(path, origin).href,
+            ),
+            "*/*",
+          ).pipe(
+            Effect.tap(({ server }) =>
+              Effect.sync(() => probes.push({ path: `${method} ${path}`, server })),
+            ),
+            Effect.map(({ outcome }) => outcome),
+          );
+        const probe = yield* fetchAnonymously(known, "/.env");
+        expect(probe).toEqual({ status: 403, body: "App unavailable." });
+        expect(yield* fetchAnonymously(known, "/%2eenv")).toEqual(probe);
+        expect(yield* fetchAnonymously(known, "/")).toEqual(probe);
+        expect(yield* fetchAnonymously(missingApp, "/.env")).toEqual(probe);
+        expect(yield* fetchAnonymously(missingApp, "/admin")).toEqual(probe);
+        expect(yield* fetchAnonymously(missingOrganization, "/.env")).toEqual(probe);
+        expect((yield* read(missingOrganization, "/", "text/html")).status).toBe(403);
+        expect((yield* fetchAnonymously(known, "/index.html", "HEAD")).status).toBe(403);
+        const document = yield* read(known, "/report.json", "text/html");
+        expect(document.status).toBe(302);
+        const page = yield* fetchAnonymously(known, "/inbox/read");
+        expect(page).toEqual(probe);
+        // The signed-out navigation looks up the organization and app. It is sent after the
+        // probes, so its delivered spans show that the collector received this run's traces.
+        const navigation = yield* send(
+          HttpClientRequest.get(new URL("/", known).href),
+          "text/html",
+        );
+        expect(navigation.outcome.status).toBe(302);
+
+        const databaseWork = new Set([
+          "sdk.apps.list",
+          "auth.sql.timing",
+          "sql.connect",
+          "sql.execute",
+        ]);
+        /** The request's server span and every span delivered beneath it. */
+        const served = (server: ServerSpan, complete: (spans: ReadonlyArray<Span>) => boolean) =>
+          telemetry.query(server.traceId).pipe(
+            Effect.map((result) => {
+              const spans = result.data.map((row) => row.span);
+              const root = spans.find(
+                (span) =>
+                  span.spanId === server.spanId && span.operationName.startsWith("http.server "),
+              );
+              const byId = new Map(spans.map((span) => [span.spanId, span]));
+              const under = (span: Span) => {
+                const visited = new Set<string>();
+                let parent = span.parentSpanId;
+                while (parent !== null && !visited.has(parent)) {
+                  if (parent === server.spanId) return true;
+                  visited.add(parent);
+                  parent = byId.get(parent)?.parentSpanId ?? null;
+                }
+                return false;
+              };
+              return root === undefined ? [] : [root, ...spans.filter(under)];
+            }),
+            Effect.filterOrFail(
+              (spans) => spans.length > 0 && complete(spans),
+              (spans) =>
+                new Error(
+                  `The server spans of trace ${server.traceId} have not reached the collector: ${spans.map((span) => span.operationName).join(", ")}`,
+                ),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+          );
+        const control = yield* served(navigation.server, (spans) =>
+          ["sdk.apps.list", "sql.execute"].every((name) =>
+            spans.some((span) => span.operationName === name),
+          ),
+        );
+        for (const [index, { path, server }] of probes.entries()) {
+          const spans = yield* served(server, () => true);
+          yield* evidence.json(`anonymous-fetch-${index}.json`, {
+            path,
+            spans: spans.map((span) => span.operationName),
+          });
+          expect(
+            spans
+              .filter(
+                (span) =>
+                  databaseWork.has(span.operationName) || span.operationName.startsWith("FumaDB."),
+              )
+              .map((span) => span.operationName),
+            `${path} is refused before any organization, app or SQL work`,
+          ).toEqual([]);
+        }
+        yield* evidence.json("signed-out-navigation.json", {
+          spans: control.map((span) => span.operationName),
+        });
+      }),
+    ),
+  );
   it.effect(scenarios.appUiSignedOutOpen.title, (context) =>
     withHostedCase(
       context,
@@ -417,7 +557,7 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
           (yield* browser.use("Unsigned protected assets stay private", (page) =>
             page.context().request.get(`${url}/mark.svg`),
           )).status(),
-        ).toBe(401);
+        ).toBe(403);
         expect(
           (yield* browser.use("App origin has no management routes", (page) =>
             page.context().request.get(`${url}/api/auth/get-session`),
@@ -570,6 +710,34 @@ layer(HostedLive, { excludeTestServices: true })("Private app pages", (it) => {
             }),
         );
         expect(session).toEqual({ httpOnly: true, domain: new URL(url).hostname });
+        const publicFile = yield* browser.use("Signed-in app serves its root public file", (page) =>
+          page.context().request.get(`${url}/mark.svg`),
+        );
+        expect(publicFile.status()).toBe(200);
+        expect(
+          yield* browser.use("Signed-in public file keeps its contents", () => publicFile.text()),
+        ).toContain('<circle cx="12"');
+        expect(
+          (yield* browser.use(
+            "Signed-in index file serves the document without HTML Accept",
+            (page) =>
+              page.context().request.get(`${url}/index.html`, { headers: { accept: "*/*" } }),
+          )).status(),
+        ).toBe(200);
+        const dottedStatus = yield* browser.use(
+          "Signed-in dotted navigation keeps the missing-file response",
+          (page) =>
+            page
+              .context()
+              .newPage()
+              .then((tab) =>
+                tab
+                  .goto(`${url}/report.json`)
+                  .then((response) => response?.status())
+                  .finally(() => tab.close()),
+              ),
+        );
+        expect(dottedStatus).toBe(404);
         expect(
           (yield* browser.use("Missing assets remain 404", (page) =>
             page.context().request.get(`${url}/missing.js`),

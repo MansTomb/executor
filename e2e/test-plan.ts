@@ -2886,6 +2886,17 @@ export const scenarios = {
       local: na("This scenario uses hosted Better Auth and organization routes."),
     },
   },
+  appUiFileProbes: {
+    fixtures: "actors",
+    file: "app-ui.spec.ts",
+    appOrigin: true,
+    title: "private app fetches are refused while document navigations reach sign-in",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app domains."),
+    },
+  },
   appUi: {
     fixtures: "actors",
     file: "app-ui.spec.ts",
