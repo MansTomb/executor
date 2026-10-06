@@ -4001,7 +4001,8 @@ export const scenarios = {
   },
   localAppsCli: {
     file: "local-apps-cli.spec.ts",
-    title: "apps CLI explains sign-in, reads host skills, and creates from a directory",
+    title:
+      "apps CLI explains sign-in, reads host skills, creates from a directory and commits the current directory",
     targets: {
       local: scheduled,
       "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
