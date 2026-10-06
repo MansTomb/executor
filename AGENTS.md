@@ -116,11 +116,16 @@ invitation-roles.spec.ts
 ````
 
 Spec files the PR adds or changes are always included. Write `none` for a change
-no scenario exercises, such as documentation. Write `all` for cross-cutting changes:
-the e2e harness (`e2e/sdk`, `e2e/support`, `e2e/setup.ts`), the toolchain, lockfile or
-workflows, shared runtime, storage or auth, or anything whose callers you cannot
-enumerate. A description without the block runs the full suite. An unknown file name
-fails the `select` job. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
+no scenario exercises, such as documentation. A description without the block, or an
+unknown file name, fails the `select` job.
+
+Select specific files by default. A selection finishes in about five minutes; the full
+suite takes about fifteen and holds the runners other PRs wait for. Reserve `all` for
+changes that every scenario runs through: the e2e harness (`e2e/sdk`, `e2e/support`,
+`e2e/setup.ts`), the toolchain, the lockfile or the workflows. Write the reason after
+it, such as `all: changes the lockfile`; `all` without a reason fails the `select` job.
+A change to shared code such as the runtime, storage, auth or the MCP server is not
+by itself a reason: list the spec files for the features whose behavior it changes. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
 into each job's scenario list; the run summary shows it.
 
 In a stack, write `skip` in each lower layer's block, such as a code PR under its
@@ -135,7 +140,9 @@ layers: each merge deploys production.
 
 Choose from the actual callers of the changed code. Search `e2e/tests/` for the
 routes, tools and UI the change touches, and include every file that exercises them
-on any target. Too narrow a selection only defers the failure to `main`. The `select`
+on any target. A tests PR on top of a stack gets its own new or changed spec files
+for free; add the existing files that cover the code layers below it. `main` runs the
+full suite after merge, so a missed scenario is still caught there. The `select`
 job reads the live description, so after editing it, rerun the whole workflow
 (`gh run rerun <run-id>`), not only failed jobs.
 
