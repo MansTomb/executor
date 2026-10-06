@@ -1,7 +1,7 @@
 /** Node/desktop/Docker adapter. Each configured app owns a durable SQLite file. */
 import * as Sqlite from "@effect/sql-sqlite-node/SqliteClient";
 import { Effect, FileSystem, Path, ScopedCache } from "effect";
-import * as Reactivity from "effect/unstable/reactivity/Reactivity";
+import * as Reactivity from "effect/reactivity/Reactivity";
 import type { ReactiveStore } from "@executor-js/reactivity";
 import {
   AppDatabaseError,
@@ -31,7 +31,7 @@ export const filesystemAppDatabases = (options: {
           const filename = yield* fingerprint(options.crypto, app);
           return yield* Sqlite.make({
             filename: path.join(options.directory, `${filename}.sqlite`),
-          });
+          }).pipe(Effect.mapError(() => new AppDatabaseError({ reason: "storage" })));
         }).pipe(Effect.provide(Reactivity.layer)),
     });
     const run = <A, E>(

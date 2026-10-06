@@ -1,11 +1,6 @@
 /** Local composition owns persistent files and its optional bundled collector. */
 import { Config, Effect, Layer, Logger, Path } from "effect";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientError,
-  HttpClientRequest,
-} from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { CurrentTelemetryClient } from "./transport.ts";
 import { telemetryConfig } from "./config.ts";
 import { startCollector } from "./collector.ts";

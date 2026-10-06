@@ -1,7 +1,7 @@
 /** Native workerd SQLite capability; used only by the generated data facet, never browser bundles. */
 import * as Sqlite from "@effect/sql-sqlite-do/SqliteClient";
 import { Effect, Semaphore } from "effect";
-import { SqlClient } from "effect/unstable/sql/SqlClient";
+import { SqlClient } from "effect/sql/SqlClient";
 import { makeSqliteDatabase } from "@executor-js/app-data";
 import type { AppStorage } from "./contracts/storage.ts";
 

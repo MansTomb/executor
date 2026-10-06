@@ -3,7 +3,7 @@ import { dashboardDocument, type DashboardServer } from "@executor-js/dashboard-
 import type { DocumentApi } from "@executor-js/dashboard-start/document-api";
 import { hostedDocumentContext } from "@executor-js/hosted-server/document";
 import { Effect } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { DashboardRenderer } from "../contracts/dashboard.ts";
 import type { CloudEntryPage } from "../contracts/entry.ts";
 import {

@@ -5,9 +5,9 @@ import type { DashboardApi } from "@executor-js/local-server/contracts";
 import type { AccountConnectApi } from "@executor-js/local-server/account-connections";
 import type { AccountId } from "@executor-js/sdk";
 import { Cause, Match, Option, type Schema } from "effect";
-import type { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
-import type { HttpClientError } from "effect/unstable/http";
-import type { Sse } from "effect/unstable/encoding";
+import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import type { HttpClientError } from "effect/http";
+import type { Sse } from "effect/encoding";
 import type { LiveConnectionLost } from "./api.ts";
 import type { ToolCatalogChanged } from "@executor-js/local-server/contracts";
 

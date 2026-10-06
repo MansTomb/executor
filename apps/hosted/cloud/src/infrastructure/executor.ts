@@ -8,7 +8,7 @@ import { createExecutor, StorageError, makeExecutorStorage } from "@executor-js/
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, FiberSet, Option } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { cachedDeploymentSources } from "../implementation/deployment-source-cache.ts";
 import { cloudAppSources } from "./source.ts";
 import { isolateDeclarations } from "./isolate-memory.ts";

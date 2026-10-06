@@ -4,7 +4,7 @@ import type { Provider, AppId, AccountFieldsInput, ProviderId } from "@executor-
 import type { DashboardOverview } from "@executor-js/local-server/contracts";
 import { DashboardClient, appAtom, overviewAtom, toolsAtom } from "./api.ts";
 import { Effect, Option } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledge, invalidate } from "@executor-js/ui/contracts/mutations";
 import { accountAtom, accountCredentialsChanged } from "./accounts.ts";
 import { selectedIds } from "@executor-js/ui/contracts/dashboard";

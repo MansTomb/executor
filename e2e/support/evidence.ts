@@ -1,6 +1,6 @@
 /** Per-test evidence is a scoped service, including errors, exported spans and browser artifacts. */
 import { Cause, Clock, Context, Effect, Exit, FileSystem, Layer, Path, Ref, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import type { TestContext } from "vitest";
 import { createHash } from "node:crypto";
 import { EvidenceEntries } from "../report-model.ts";

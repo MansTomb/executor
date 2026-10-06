@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 import { staticDocument } from "./homepage.ts";
 

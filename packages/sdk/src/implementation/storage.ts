@@ -1,6 +1,6 @@
 /** Runtime storage and the explicit, transactional migration boundary. */
 import { Effect, Option } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { sqlAdapter } from "fumadb-effect/sql";
 import type { Provider as SqlProvider } from "fumadb-effect";
 import { makeReactiveStore } from "@executor-js/reactivity";

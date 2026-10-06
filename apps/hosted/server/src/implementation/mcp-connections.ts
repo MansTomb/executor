@@ -13,7 +13,7 @@ import { mcpResource } from "@executor-js/mcp-auth";
 import type { RunTarget } from "@executor-js/authorization";
 import type { App, Executor, OwnerId } from "@executor-js/sdk/core";
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";

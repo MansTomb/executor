@@ -10,7 +10,7 @@ import {
 } from "@executor-js/hosted-server";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, type Layer } from "effect";
-import { HttpServer, HttpServerRequest } from "effect/unstable/http";
+import { HttpServer, HttpServerRequest } from "effect/http";
 import { cloudSentry } from "../implementation/error-reporting.ts";
 import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
 import { cloudAnalytics } from "../implementation/product-analytics.ts";

@@ -1,7 +1,7 @@
 import { authorizeTarget } from "./authorization.ts";
 /** Product authority is checked for every read; profile and account checks precede factory evaluation. */
 import { Effect } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import type { AppSkillInputs } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";

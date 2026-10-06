@@ -13,7 +13,7 @@ import {
 import { mcpResource } from "@executor-js/mcp-auth";
 import type { Executor } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { DashboardApi } from "../contracts/dashboard.ts";
 import { AuthStorageError } from "../contracts/auth.ts";
 import type { LocalMcpOAuth } from "./mcp-oauth.ts";

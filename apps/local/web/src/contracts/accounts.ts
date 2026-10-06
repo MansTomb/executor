@@ -9,7 +9,7 @@ import type {
 } from "@executor-js/sdk";
 import { DashboardAccountDetail } from "@executor-js/local-server/contracts";
 import { Effect, Option } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
 import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
 import type { AccountMetadataUpdate } from "@executor-js/ui/dashboard/account-description";

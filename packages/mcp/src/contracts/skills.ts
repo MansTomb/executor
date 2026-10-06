@@ -12,7 +12,7 @@ import {
   SkillRevision,
 } from "@executor-js/sdk/core";
 import { Schema } from "effect";
-import { Tool as McpTool } from "effect/unstable/ai";
+import { Tool as McpTool } from "effect/ai";
 import { UnavailableApp } from "./execute.ts";
 
 const absent = Schema.optionalKey(Schema.Never);

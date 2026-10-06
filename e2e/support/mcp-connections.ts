@@ -1,7 +1,7 @@
 /** Scoped connection fixtures through public product routes and the standard OAuth endpoints. */
 import { expect } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { createHash, randomBytes } from "node:crypto";
 import { Api, body, type Session } from "./api.ts";
 import { Evidence } from "./evidence.ts";

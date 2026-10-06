@@ -16,7 +16,7 @@ import {
   Scope,
   Tracer,
 } from "effect";
-import { SqlClient, SqlError } from "effect/unstable/sql";
+import { SqlClient, SqlError } from "effect/sql";
 import {
   CompiledQuery,
   DeleteQueryNode,

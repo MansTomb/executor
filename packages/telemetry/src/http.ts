@@ -5,7 +5,7 @@ import {
   HttpIncomingMessage,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { forwardTelemetry } from "./relay.ts";
 import { recordResponseReady } from "./measurements.ts";
 export { isRequestRejection, recordRequestRejections } from "./request-rejection.ts";

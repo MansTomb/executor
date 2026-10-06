@@ -23,8 +23,8 @@ import {
   StorageError,
 } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import { ApiAuthentication, Authentication, CurrentPrincipal } from "../contracts/auth.ts";
 import {

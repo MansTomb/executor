@@ -1,8 +1,8 @@
 /** GitHub lifecycle discovery and live verification; Alchemy owns provisioning and comments. */
 import { Config, Console, Effect, FileSystem, Schema } from "effect";
-import { Argument, Command } from "effect/unstable/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Argument, Command } from "effect/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import {
   PreviewCommit,
   PreviewNumber,

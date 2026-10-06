@@ -1,6 +1,6 @@
 /** Effect HTTP adapter with independent cookie jars, bounded requests, and safe evidence. */
 import { Cause, Clock, Context, Effect, Layer, Redacted, Ref, Schema } from "effect";
-import { Cookies, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Cookies, HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Evidence } from "./evidence.ts";
 import { Target, type Response } from "./platform.ts";

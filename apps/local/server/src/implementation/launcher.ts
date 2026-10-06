@@ -1,8 +1,8 @@
 /** Local launcher behavior. Runtime process APIs are supplied only at entry points. */
 import { Console, Effect, Redacted } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { HttpApiClient } from "effect/http-api";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { LocalAuthApi } from "../contracts/auth.ts";
 import { localConfiguration } from "./bootstrap.ts";
 import { StartupFailed, type LaunchMode } from "../contracts/startup.ts";

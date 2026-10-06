@@ -1,7 +1,7 @@
 import type { SelectedAccounts } from "@executor-js/sdk";
 import { ProfileStatus } from "@executor-js/ui/dashboard/profile-status";
 import { profileMutations } from "../../contracts/profiles.ts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Failure } from "../components/common.tsx";
 import { useAtomValue } from "@effect/atom-react";
 import {

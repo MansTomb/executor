@@ -2,8 +2,8 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
-import { FetchHttpClient } from "effect/unstable/http";
+import { Command, Flag } from "effect/cli";
+import { FetchHttpClient } from "effect/http";
 import { runDeployedSuite } from "./sdk/deployed-suite.ts";
 const command = Command.make(
   "e2e-deployed",

@@ -5,7 +5,7 @@ import { runDataSteps } from "./data-steps.ts";
 import { frameworkPinCatchUpRelease, frameworkPinRelease } from "../contracts/framework-pin.ts";
 import { frameworkPinStep, type FrameworkPinHost } from "./framework-pin.ts";
 import { buildFrameworkOnceStep, type BuildFrameworkHost } from "./build-framework-once.ts";
-import type { SqlClient } from "effect/unstable/sql";
+import type { SqlClient } from "effect/sql";
 import type { DataStep } from "../contracts/data-steps.ts";
 
 /** The host services every step together reads and writes through. */

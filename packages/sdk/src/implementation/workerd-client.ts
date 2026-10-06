@@ -1,7 +1,7 @@
 /** Portable app protocol. Runtime adapters own processes, sockets and storage bindings. */
 import { RpcTarget, type RpcStub } from "capnweb";
 import { Cause, Effect, Redacted, Schema, Stream } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   DeclaredRequirements,
   WorkflowFailure,

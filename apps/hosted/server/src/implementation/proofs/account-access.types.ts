@@ -1,7 +1,7 @@
 /** Compile-only checks: an account use case runs only on a target declared for its action. */
 import { AccountId, type OwnerId } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
-import { HttpApiEndpoint } from "effect/unstable/httpapi";
+import { HttpApiEndpoint } from "effect/http-api";
 import {
   AccountTargets,
   requireAccount,

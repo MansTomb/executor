@@ -1,6 +1,6 @@
 import type { AccountSubmission } from "@executor-js/ui/contracts/credentials";
 import type { DashboardError } from "../../contracts/errors.ts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit, Cause, Result } from "effect";
 import { useState, type ReactNode } from "react";

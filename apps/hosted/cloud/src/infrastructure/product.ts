@@ -27,7 +27,7 @@ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { RuntimeContext } from "alchemy";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { Context, Effect, Layer } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { cloudBuildAsset } from "../implementation/build-storage.ts";
 import { cachedBuildAssets } from "../implementation/asset-cache.ts";
 import { AppDomainDatabase } from "../implementation/app-domain-records.ts";

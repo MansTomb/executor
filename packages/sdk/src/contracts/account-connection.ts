@@ -3,7 +3,7 @@ import { ProfileId } from "./shared.ts";
 import { ProfileErrors } from "./profiles.ts";
 /** Pending account setup shared by browser forms, OAuth, and other SDK consumers. */
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { Account, AccountNotFound, AccountFieldsInput, AccountFieldsInvalid } from "./account.ts";
 import { AppNotFound, AccountSelectionInvalid } from "./apps.ts";
 import { AuthMethodName, AuthMethodInvalid, Provider, ProviderNotFound } from "./provider.ts";

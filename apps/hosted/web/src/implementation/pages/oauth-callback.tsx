@@ -1,4 +1,4 @@
-import { AtomRegistry } from "effect/unstable/reactivity";
+import { AtomRegistry } from "effect/reactivity";
 import { RegistryContext } from "@effect/atom-react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Effect, Exit, Option, Redacted, Schema, Cause } from "effect";

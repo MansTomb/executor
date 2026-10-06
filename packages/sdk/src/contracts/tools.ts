@@ -29,7 +29,7 @@ import {
   type ElicitationHandler,
 } from "apps/contracts";
 import { StorageError, CredentialsError, RequestInvalid } from "./shared.ts";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import {
   AccountId,
   AppId,

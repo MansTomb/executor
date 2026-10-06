@@ -10,7 +10,7 @@ import {
   Schedule,
   Schema,
 } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Key } from "@kitlangton/terminal-control";
 import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";

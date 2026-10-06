@@ -13,7 +13,7 @@ import { makeLocalMcpOAuth } from "./mcp-oauth.ts";
 import { localMcpConnectionHandlers } from "./mcp-connections.ts";
 import { localAppManagement } from "./app-management.ts";
 import { runStartupDataSteps } from "@executor-js/app-management/data-steps";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 
 /** Local host composition. The SDK owns operations; this package owns local resources and access. */
 import {
@@ -45,11 +45,11 @@ import {
   Schedule,
   Scope,
 } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 import { safeHttpClient } from "@executor-js/utils/safe-fetch";
 import type { HostEgress } from "@executor-js/utils/url-policy";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import type { LocalServerOptions } from "../contracts/server.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 import { openStorage } from "./storage.ts";

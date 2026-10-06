@@ -1,13 +1,8 @@
 /** Mutable publication fixture outside the real Executor server and isolated app runtime. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, FileSystem, Layer, Ref, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 
 type FileFailure = "oversized" | "encoding" | "redirect";

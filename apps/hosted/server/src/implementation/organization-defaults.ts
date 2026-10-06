@@ -12,7 +12,7 @@ import {
   type Executor,
 } from "@executor-js/sdk/core";
 import { Effect, Redacted, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import {
   OrganizationDefaults,
   OrganizationDefaultsPending,

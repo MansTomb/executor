@@ -13,7 +13,7 @@ import {
 } from "apps/contracts";
 import { Account } from "./account.ts";
 export { OAuthClientAuth } from "apps/contracts";
-import type { HttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
 import { AccountId, HttpUrl, JsonObject, OwnerId, ProviderId } from "./shared.ts";
 
 /** A sign-in URL and its expiry. No account exists until completion succeeds. */

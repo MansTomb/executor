@@ -97,7 +97,7 @@ import {
   HttpApiGroup,
   HttpApiMiddleware,
   HttpApiSchema,
-} from "effect/unstable/httpapi";
+} from "effect/http-api";
 
 /** Same callback path as Executor local, cloud and self-host; the host supplies its origin. */
 export const OAuthCallbackPath = "/api/oauth/callback";

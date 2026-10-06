@@ -1,6 +1,7 @@
 /** Remote skill readers return complete portable bundles, never installed host files. */
-import { Effect, Encoding, Ref, Schema, Stream } from "effect";
-import { FetchHttpClient, HttpBody, HttpClient } from "effect/unstable/http";
+import { Effect, Ref, Schema, Stream } from "effect";
+import { Base64 } from "effect/encoding";
+import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
 import { skillFromFiles } from "./skill-files.ts";
 import { wrap } from "./schema.ts";
 import { accountProviderError, httpProviderError } from "./provider-error.ts";
@@ -232,7 +233,7 @@ const githubRequests = (remote: Remote, repo: string, token: string | undefined)
         ...gitRequestHeaders,
         ...(token === undefined
           ? {}
-          : { Authorization: `Basic ${Encoding.encodeBase64(`x-access-token:${token}`)}` }),
+          : { Authorization: `Basic ${Base64.encode(`x-access-token:${token}`)}` }),
       },
       refused: refused(githubHosts[0]),
     });

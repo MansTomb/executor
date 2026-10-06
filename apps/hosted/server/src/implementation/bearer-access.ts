@@ -27,7 +27,7 @@ import {
 } from "@executor-js/mcp-auth";
 import { ConnectionPolicy, connectionGrantPolicy } from "@executor-js/mcp-auth/connections";
 import { Clock, Effect, Option, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { ApiKeyId, ApiKeyMetadata } from "../contracts/api-keys.ts";
 import {
   OrganizationId,

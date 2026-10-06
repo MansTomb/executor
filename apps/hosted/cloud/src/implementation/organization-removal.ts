@@ -6,8 +6,8 @@ import {
   OrganizationTombstones,
 } from "@executor-js/hosted-server";
 import { Effect, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpServerResponse } from "effect/http";
 import { OrganizationRemovalStart } from "../infrastructure/organization-removal-workflow.ts";
 import { ExecutorCloudApi } from "../contracts/api.ts";
 

@@ -11,7 +11,7 @@ import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
 import { Config, Clock, Effect, Exit, Layer, Schema, Semaphore } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { HostedExecutor, ScheduledAuthority, ScheduleWakeup } from "@executor-js/hosted-server";
 import { defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
 import { cloudProduct } from "./product.ts";

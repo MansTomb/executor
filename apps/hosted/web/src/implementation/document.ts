@@ -4,7 +4,7 @@ import type { DocumentApi } from "@executor-js/dashboard-start/document-api";
 import type { HostedDocumentContext } from "@executor-js/hosted-server/browser/contracts";
 import { redirect } from "@tanstack/react-router";
 import { lastOrganizationAtom, sessionInitialValues } from "../contracts/auth.ts";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { Option, Schema } from "effect";
 import { OrganizationSummary } from "../contracts/organization.ts";
 

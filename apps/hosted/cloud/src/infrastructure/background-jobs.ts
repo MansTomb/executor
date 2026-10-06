@@ -9,7 +9,7 @@ import { Random, RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { Fetcher } from "@cloudflare/workers-types";
 import { Effect, Exit, Redacted, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { timingSafeEqual } from "node:crypto";
 import { previewLifetime } from "./test-stage-expiry.ts";
 

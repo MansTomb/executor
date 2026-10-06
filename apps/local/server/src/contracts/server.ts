@@ -3,12 +3,7 @@ import type { HostPipeline } from "@executor-js/dashboard-start/in-process";
 import type { Effect, Layer } from "effect";
 import type { LocalAuth } from "../implementation/auth.ts";
 import type { ServerConfig } from "./config.ts";
-import type {
-  HttpPlatform,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import type { HttpPlatform, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /** Wrap an HTTP handler while preserving its errors and required services. */
 export type LocalHttpMiddleware = <E, R>(

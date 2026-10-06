@@ -6,13 +6,8 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Exit, FileSystem, Layer, Option, Path, References, Schema } from "effect";
-import { CliError, Command, Flag } from "effect/unstable/cli";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientRequest,
-  HttpClientResponse,
-} from "effect/unstable/http";
+import { CliError, Command, Flag } from "effect/cli";
+import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import {
   AgentMailUnavailable,
   agentAddress,

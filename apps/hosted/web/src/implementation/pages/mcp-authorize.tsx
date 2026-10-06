@@ -4,7 +4,7 @@ import { reportBrowserUsage } from "../../contracts/product-analytics.ts";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import { Cause, Exit } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { grantTarget } from "@executor-js/mcp-auth/grants";
 import {
   McpConsentLayout,

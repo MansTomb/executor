@@ -13,7 +13,7 @@ import {
   Schedule,
   Stream,
 } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";

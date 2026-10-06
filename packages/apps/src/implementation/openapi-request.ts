@@ -4,13 +4,14 @@ import { NetworkRefused } from "../contracts/network.ts";
 import { failOnNetworkRefusal } from "./network.ts";
 import { ProviderError } from "../contracts/provider-error.ts";
 /** Swagger constructs requests; Effect owns HTTP policy and bounded results. */
-import { Effect, Encoding, Option, Schema, Stream } from "effect";
+import { Effect, Option, Schema, Stream } from "effect";
+import { Base64 } from "effect/encoding";
 import {
   FetchHttpClient,
   HttpClient,
   HttpClientRequest,
   type HttpClientResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import {
   OpenapiResponseError,
   ApiErrorRecovery,
@@ -419,8 +420,7 @@ export function createRequest(config: {
           data.set(chunk, offset);
           offset += chunk.length;
         }
-        if (!isOpenapiTextMedia(contentType))
-          return { base64: Encoding.encodeBase64(data), contentType };
+        if (!isOpenapiTextMedia(contentType)) return { base64: Base64.encode(data), contentType };
         const text = new TextDecoder().decode(data);
         return contentType.includes("json") && !isOpenapiJsonSequence(contentType)
           ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(text).pipe(

@@ -1,6 +1,6 @@
 /** Bounded OTLP return channel for credential-free app isolates. The parent owns export. */
 import { Effect, FiberSet, Option, Redacted, Schema, Semaphore, Tracer } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { CurrentTelemetryConfig } from "./config.ts";
 import { telemetryLayer } from "./layer.ts";
 import { telemetryHttpClient } from "./transport.ts";

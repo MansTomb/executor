@@ -1,5 +1,6 @@
 /** Authenticated, opaque continuation tokens tied to one installation, schema and query plan. */
-import { Effect, Encoding, Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { Base64Url } from "effect/encoding";
 import { AppDatabaseError, defaultDatabaseRuntimeLimits } from "../contracts/database.ts";
 
 const Payload = Schema.Struct({
@@ -11,7 +12,7 @@ const Payload = Schema.Struct({
 export const fingerprint = (crypto: Crypto, value: string) =>
   Effect.tryPromise({
     try: async () =>
-      Encoding.encodeBase64Url(
+      Base64Url.encode(
         new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))),
       ),
     catch: () => new AppDatabaseError({ reason: "storage" }),
@@ -34,7 +35,7 @@ export const cursorCodec = (crypto: Crypto, bytes: Uint8Array) =>
           try: async () => {
             const nonce = crypto.getRandomValues(new Uint8Array(12));
             const plaintext = new TextEncoder().encode(
-              JSON.stringify({ version: 1, query, key: Encoding.encodeBase64Url(position) }),
+              JSON.stringify({ version: 1, query, key: Base64Url.encode(position) }),
             );
             const ciphertext = new Uint8Array(
               await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, key, plaintext),
@@ -42,7 +43,7 @@ export const cursorCodec = (crypto: Crypto, bytes: Uint8Array) =>
             const token = new Uint8Array(nonce.length + ciphertext.length);
             token.set(nonce);
             token.set(ciphertext, nonce.length);
-            return Encoding.encodeBase64Url(token);
+            return Base64Url.encode(token);
           },
           catch: () => new AppDatabaseError({ reason: "cursor" }),
         }),
@@ -50,7 +51,7 @@ export const cursorCodec = (crypto: Crypto, bytes: Uint8Array) =>
         Effect.gen(function* () {
           if (token.length > defaultDatabaseRuntimeLimits.maxCursorChars)
             return yield* new AppDatabaseError({ reason: "cursor" });
-          const encoded = yield* Effect.fromResult(Encoding.decodeBase64Url(token));
+          const encoded = yield* Effect.fromResult(Base64Url.decode(token));
           if (encoded.length < 28) return yield* new AppDatabaseError({ reason: "cursor" });
           const plain = yield* Effect.tryPromise(() =>
             crypto.subtle.decrypt(
@@ -63,7 +64,7 @@ export const cursorCodec = (crypto: Crypto, bytes: Uint8Array) =>
             new TextDecoder().decode(plain),
           );
           if (payload.query !== query) return yield* new AppDatabaseError({ reason: "cursor" });
-          return yield* Effect.fromResult(Encoding.decodeBase64Url(payload.key));
+          return yield* Effect.fromResult(Base64Url.decode(payload.key));
         }).pipe(Effect.mapError(() => new AppDatabaseError({ reason: "cursor" }))),
     };
   });

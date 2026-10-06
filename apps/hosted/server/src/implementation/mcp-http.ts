@@ -22,7 +22,7 @@ import {
 import { executorIntro } from "@executor-js/app-templates/executor";
 import { Context, Effect, Option, Result, Schema } from "effect";
 import { ElicitationFailed } from "@executor-js/sdk/core";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { McpAuthentication, McpUnauthorized, type McpAccess } from "../contracts/mcp.ts";
 import { CurrentOrganization, OrganizationReference } from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";

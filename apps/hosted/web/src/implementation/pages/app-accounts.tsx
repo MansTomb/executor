@@ -30,7 +30,7 @@ import type { AccountConnectionId } from "@executor-js/sdk";
 import type { HostedError } from "../../contracts/errors.ts";
 import { accountSelectionAtom, profileMutations } from "../../contracts/profiles.ts";
 import { accountUsageAtom, disconnectAccountAtom } from "../../contracts/accounts.ts";
-import { AtomRegistry } from "effect/unstable/reactivity";
+import { AtomRegistry } from "effect/reactivity";
 
 /** A new profile starts with every multiple-account slot bound to no accounts. */
 function emptySelection(app: App): SelectedAccounts {

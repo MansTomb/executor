@@ -1,7 +1,7 @@
 /** The private app protocol is checked through each real hosted product and its browser runtime. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";

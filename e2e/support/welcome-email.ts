@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Context, Effect, FileSystem, Layer, Ref, Schedule, Schema } from "effect";
-import { Cookies, FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Cookies, FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 class WelcomeTestFailed extends Schema.TaggedError<WelcomeTestFailed>()("WelcomeTestFailed", {
   operation: Schema.String,

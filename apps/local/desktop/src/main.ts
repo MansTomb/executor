@@ -38,7 +38,7 @@ import { makeResetAction } from "./implementation/reset.ts";
 import { makePortAction, readSettings, type PortSource } from "./implementation/settings.ts";
 import { makeExportDiagnosticsAction } from "./implementation/diagnostics.ts";
 import { makeRotateKeyAction, rotateAfterStop } from "./implementation/rotation.ts";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 
 const root = app.isPackaged
   ? resolve(process.resourcesPath, "runtime")

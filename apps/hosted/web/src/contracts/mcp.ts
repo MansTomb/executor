@@ -4,7 +4,7 @@ import { HostedClient } from "./api.ts";
 import { hydratedResult, requestKey } from "@executor-js/ui/contracts/http";
 import { BrowserAtoms } from "./telemetry.ts";
 import { Effect, Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { authCallOptions, mcpAuthorization, type AuthCallOptions } from "./auth.ts";
 
 /** Safe OAuth setup errors shown to the person granting access. */

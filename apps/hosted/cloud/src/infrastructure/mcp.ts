@@ -3,7 +3,7 @@ import { traceHeaders } from "@executor-js/telemetry";
 import { authenticatedMcp, browserMcpRequest, mcpSessionKey } from "@executor-js/hosted-server";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect } from "effect";
-import { HttpServerRequest } from "effect/unstable/http";
+import { HttpServerRequest } from "effect/http";
 import { forwardMcpRequest } from "../implementation/mcp-forward.ts";
 import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
 import type { McpSessionObject } from "./mcp-session.ts";

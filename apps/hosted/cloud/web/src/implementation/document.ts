@@ -2,7 +2,7 @@ import { hostedServerValues } from "@executor-js/hosted-web/document";
 import { entryOrganizationsAtom } from "@executor-js/hosted-web/contracts/organization";
 import { getGlobalStartContext } from "@tanstack/react-start";
 import { Option, Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { OnboardingReady } from "../../../src/contracts/onboarding.ts";
 import type { CloudDocumentContext } from "../contracts/document.ts";
 import { entryTeamAtom } from "../contracts/onboarding.ts";

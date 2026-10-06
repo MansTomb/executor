@@ -10,7 +10,7 @@ import {
   type BrowserApprovals,
 } from "@executor-js/mcp/browser";
 import { Effect, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 

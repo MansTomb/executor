@@ -4,7 +4,7 @@ import type { Page } from "playwright";
 import { createHash, randomBytes } from "node:crypto";
 import { expect } from "@effect/vitest";
 import { Context, Deferred, Effect, Layer, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { Api, body } from "./api.ts";
 import { Actors } from "./actors.ts";
 import { Browser } from "./browser.ts";

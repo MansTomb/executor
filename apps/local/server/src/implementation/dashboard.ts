@@ -20,8 +20,8 @@ import {
   type Executor,
 } from "@executor-js/sdk/core";
 import { Effect, Layer, Redacted, Result, Stream } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpServerResponse } from "effect/http";
+import { HttpApiBuilder } from "effect/http-api";
 import { localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
 import { createCatalog, type CatalogSource } from "@executor-js/catalog";
 import type { HostEgress } from "@executor-js/utils/url-policy";

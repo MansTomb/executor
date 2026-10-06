@@ -1,7 +1,7 @@
 import { browserReturnTo, type BrowserSession } from "@executor-js/hosted-server/browser/contracts";
 import type { AuthenticationUnavailable } from "@executor-js/hosted-server";
 import { Effect, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { CloudEntry, CloudEntryPage } from "../contracts/entry.ts";
 import { Onboarding, OnboardingInvitation, OnboardingReady } from "../contracts/onboarding.ts";
 import { passkeyEnrollmentCookie } from "../contracts/passkey-enrollment.ts";

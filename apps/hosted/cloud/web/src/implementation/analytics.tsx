@@ -4,7 +4,7 @@ import posthog from "posthog-js";
 import { BrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
 import { useAtomValue } from "@effect/atom-react";
 import { sessionAtom } from "@executor-js/hosted-web/contracts/auth";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Schema, Option } from "effect";
 import { useEffect } from "react";
 import type { SupportLink } from "@executor-js/ui/dashboard/support-dialog";

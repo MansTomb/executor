@@ -4,12 +4,7 @@ import { Profile } from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 import { CatalogEntry, CatalogUnavailable } from "@executor-js/catalog/contracts";
 import { Context, Effect, Schema } from "effect";
-import {
-  HttpApiEndpoint,
-  HttpApiGroup,
-  HttpApiMiddleware,
-  HttpApiSchema,
-} from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSchema } from "effect/http-api";
 import { Account, AccountHealth, App, OwnerId, HttpUrl, StorageError } from "@executor-js/sdk/core";
 import {
   OrganizationIconUrl,

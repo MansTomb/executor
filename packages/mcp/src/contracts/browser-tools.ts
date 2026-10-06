@@ -1,7 +1,7 @@
 /** Browser mode collects decisions through the authenticated browser, never through MCP arguments. */
 import { Schema } from "effect";
-import { HttpServerRequest } from "effect/unstable/http";
-import { Tool as McpTool } from "effect/unstable/ai";
+import { HttpServerRequest } from "effect/http";
+import { Tool as McpTool } from "effect/ai";
 import { ToolPending } from "@executor-js/sdk/core";
 import { ExecuteInput, ExecutionOutcome, ExecutionRejected } from "./execute.ts";
 import { ElicitationResponseInvalid, InteractionId, ToolInputPending } from "./interactions.ts";

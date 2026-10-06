@@ -10,7 +10,7 @@ import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { CopyButton } from "./code.tsx";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { UnexpectedError, type UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ErrorNotice } from "./error-notice.tsx";
 import { useQuery } from "./context.tsx";

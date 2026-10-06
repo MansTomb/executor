@@ -3,7 +3,7 @@ import { ApiError } from "@executor-js/utils/api-error";
 /** Local browser pairing and the private desktop bootstrap protocol. */
 import { Schema, type Effect } from "effect";
 import { AppId } from "@executor-js/sdk";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 /** Ephemeral proof of local possession, redacted immediately at ingress. */
 export const BootstrapToken = Schema.RedactedFromValue(

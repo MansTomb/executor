@@ -1,7 +1,7 @@
 /** Drive real sign-ins against a loopback issuer that answers with standard and nonstandard errors. */
 import { expect, layer } from "@effect/vitest";
 import { Clock, DateTime, Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";

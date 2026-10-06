@@ -5,7 +5,8 @@ import { AppSkills, ProviderError } from "apps/contracts";
 import { AppEvaluationFailed, evaluationFailure } from "../contracts/tools.ts";
 import { AppNotDeployed } from "../contracts/apps.ts";
 /** Skill reads project one authorized runtime catalog, or a retained pre-capability folder. */
-import { Crypto, Effect, Encoding, Schema } from "effect";
+import { Crypto, Effect, Schema } from "effect";
+import { Hex } from "effect/encoding";
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { AppSkillInputs, AppSkillNotFound, SkillRevisionChanged } from "../contracts/skills.ts";
 import { RequestInvalid, StorageError } from "../contracts/shared.ts";
@@ -33,7 +34,7 @@ const Reusable = Schema.Union([
 /** Sorted catalog digest; equal content has equal revisions. */
 const catalogRevision = (crypto: Crypto.Crypto, skills: typeof AppSkills.Type) =>
   crypto.digest("SHA-256", new TextEncoder().encode(JSON.stringify(skills))).pipe(
-    Effect.map(Encoding.encodeHex),
+    Effect.map(Hex.encode),
     Effect.mapError(() => new StorageError()),
   );
 const sorted = (skills: typeof AppSkills.Type) =>

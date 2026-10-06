@@ -5,7 +5,7 @@
  */
 import ts from "typescript-5";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const Manifest = Schema.fromJsonString(
   Schema.Struct({

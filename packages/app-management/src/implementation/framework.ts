@@ -1,7 +1,7 @@
 /** Framework lookups over the reference this server ships. No app evaluation or account is involved. */
 import { Effect, Layer, Schema } from "effect";
-import type { HttpApiMiddleware } from "effect/unstable/httpapi";
-import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
+import type { HttpApiMiddleware } from "effect/http-api";
+import { HttpApi, HttpApiBuilder } from "effect/http-api";
 import { appsVersion } from "@executor-js/app-templates";
 import {
   FrameworkDocumentation,

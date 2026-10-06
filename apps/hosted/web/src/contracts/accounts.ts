@@ -7,7 +7,7 @@ import { protectedQuery } from "./protected-query.ts";
 import type { Account, AccountFieldsInput, AccountId, AppId, ProviderId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { Data, Effect, Option } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledge, upsert, invalidate } from "@executor-js/ui/contracts/mutations";
 import type { AccountToName } from "@executor-js/ui/dashboard/name-account";
 import type { AccountMetadataUpdate } from "@executor-js/ui/dashboard/account-description";

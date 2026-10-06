@@ -6,7 +6,7 @@ export { AppSlug, appSlug } from "./app-slug.ts";
 /** Apps own deployed code and declared requirements. Profiles hold account selections. */
 import { Schema } from "effect";
 import { StorageError } from "./shared.ts";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AccountId, AppCodeId, AppId, DeploymentId, OwnerId, ProviderId } from "./shared.ts";
 import {
   AccountFieldsInput,

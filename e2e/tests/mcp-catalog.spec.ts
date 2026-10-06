@@ -9,7 +9,7 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";

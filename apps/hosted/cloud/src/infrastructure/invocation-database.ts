@@ -5,7 +5,7 @@
  */
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Context, Effect, Layer, Option, Scope } from "effect";
-import { SqlClient, type SqlError } from "effect/unstable/sql";
+import { SqlClient, type SqlError } from "effect/sql";
 import { ConnectionReservations, cloudDatabaseConnection, cloudDatabasePool } from "./database.ts";
 import { ObjectDatabase, type SqlServices } from "./object-database.ts";
 

@@ -1,6 +1,6 @@
 import { apiKey, defaultKeyHasher } from "@better-auth/api-key";
 import { generateRandomString } from "better-auth/crypto";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { StorageError } from "@executor-js/sdk/core";
 import type { GenericEndpointContext } from "@better-auth/core";
 import { fullAuthority } from "@executor-js/authorization";

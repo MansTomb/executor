@@ -26,7 +26,7 @@ import {
   type Json,
 } from "@executor-js/sdk";
 import { OrganizationReference } from "@executor-js/hosted-server/organization";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { Cause, Data, Effect, Option, Schema, type Redacted } from "effect";
 import { HostedClient } from "./api.ts";
 import {

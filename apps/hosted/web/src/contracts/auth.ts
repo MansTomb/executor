@@ -10,9 +10,9 @@ import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 import { createAuthClient } from "better-auth/client";
 import { organizationClient } from "better-auth/client/plugins";
 import { Effect, Option, Schema } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import { dashboardAuthClientOptions } from "@executor-js/ui/contracts/http";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { acknowledgedQuery } from "@executor-js/ui/contracts/mutations";
 
 /**

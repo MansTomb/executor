@@ -2,7 +2,7 @@ import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ProfileErrors } from "@executor-js/sdk/core";
 /** Local browser handoff. These grants authorize one SDK connection, never a dashboard session. */
 import { Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import {
   AccountConnection,
   AccountConnectionId,

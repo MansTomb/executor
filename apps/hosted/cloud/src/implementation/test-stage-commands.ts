@@ -1,8 +1,8 @@
 /** Deploy isolated previews with explicit database, retention and background policies. */
 import { createHash } from "node:crypto";
 import { Clock, Config, Console, Effect, FileSystem, Option, Path, Result, Schema } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Argument, Command, Flag } from "effect/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { TestStageSlug, testStagePrefix } from "../infrastructure/stage.ts";
 import {
   canDeployTestStage,

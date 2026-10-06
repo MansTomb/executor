@@ -10,7 +10,7 @@ import { AppManagementHost } from "@executor-js/app-management";
 import { hostDataSteps, runDataSteps } from "@executor-js/app-management/data-steps";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { Clock, Config, Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { cloudBlobs } from "./blobs.ts";
 
 /** A tick stops starting items after this long, then resumes from its cursor on the next tick. */

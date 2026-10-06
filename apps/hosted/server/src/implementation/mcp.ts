@@ -4,7 +4,7 @@ import {
   observeProductOperation,
   traceProductRead,
 } from "../contracts/product-analytics.ts";
-import { McpSchema } from "effect/unstable/ai";
+import { McpSchema } from "effect/ai";
 import { authorizeTool, authorizeApp } from "./authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";

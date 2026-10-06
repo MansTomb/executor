@@ -1,5 +1,5 @@
 import { Config, Context, Effect, FileSystem, Layer, Redacted, Schedule, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Target } from "./platform.ts";
 

@@ -5,7 +5,7 @@
  */
 import { Cause, Config, Effect, Exit, Option, Queue, Schema, Semaphore } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 /** Feedback text: at least one non-whitespace character and at most 10,000 characters. */
 export const FeedbackMessage = Schema.String.check(

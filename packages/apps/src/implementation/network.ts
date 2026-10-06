@@ -1,6 +1,6 @@
 /** Typed refusals and option checks for the fetch app code receives from the framework. */
 import { Effect, Schema } from "effect";
-import type { HttpClientResponse } from "effect/unstable/http";
+import type { HttpClientResponse } from "effect/http";
 import { invocationFetch } from "@executor-js/telemetry";
 import {
   FetchOptionUnsupported,

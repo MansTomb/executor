@@ -1,7 +1,7 @@
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Effect, FileSystem, Layer, Path, Schedule, Schema } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import type { ElectronApplication, Page } from "playwright";
 import { randomBytes, randomUUID } from "node:crypto";
 import { driver } from "../support/platform.ts";

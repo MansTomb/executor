@@ -1,8 +1,8 @@
 import { registryErrorMessage } from "@executor-js/ui/contracts/registry-error";
 import type { HostedApi } from "@executor-js/hosted-server/contracts";
 import { Cause, Match, Option, type Schema } from "effect";
-import type { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
-import type { HttpClientError } from "effect/unstable/http";
+import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import type { HttpClientError } from "effect/http";
 
 type Groups = (typeof HostedApi.groups)[keyof typeof HostedApi.groups];
 /** The hosted API owns its error algebra, including membership and authentication failures. */

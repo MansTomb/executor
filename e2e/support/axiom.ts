@@ -1,6 +1,6 @@
 /** Read delivered Cloud traces through Axiom's public query API; never log credentials or raw failures. */
 import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { SpanQuery } from "./contracts.ts";
 
 const Tabular = Schema.Struct({

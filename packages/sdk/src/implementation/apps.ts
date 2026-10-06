@@ -4,7 +4,7 @@ import { AppWebhooksActive } from "../contracts/apps.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 /** Durable configured apps and immutable deployments, sharing one execution path. */
 import { Clock, type Crypto, Effect, Schema, Struct } from "effect";
-import { SqlError } from "effect/unstable/sql";
+import { SqlError } from "effect/sql";
 import {
   App,
   DeployedApp,

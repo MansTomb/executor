@@ -21,7 +21,7 @@ import { cloudOrigin } from "./infrastructure/stage.ts";
 import { loadCloudBuildRecord, loadCloudFramework } from "./implementation/build-storage.ts";
 import { cachedRuntimeBuilds } from "./implementation/runtime-build-cache.ts";
 import { appCredentialOutbound, appOutboundBindings } from "./infrastructure/app-outbound.ts";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerResponse } from "effect/http";
 import {
   cloudObservability,
   cloudTelemetry,

@@ -37,7 +37,7 @@ import { workerdHostHandler } from "@executor-js/sdk/workerd";
 import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/core";
 import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 
 /** Native resources supplied at the self-host composition boundary. */
 export interface SelfHostPlatform {

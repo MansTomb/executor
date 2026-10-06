@@ -13,7 +13,7 @@ import {
 import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
 import { Context, type Effect, Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { Principal } from "./auth.ts";
 import {
   OrganizationForbidden,

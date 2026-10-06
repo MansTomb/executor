@@ -1,6 +1,6 @@
 /** Compose the public MCP surface from its area contracts. */
 import type { Effect } from "effect";
-import { Toolkit } from "effect/unstable/ai";
+import { Toolkit } from "effect/ai";
 import type { BrowserDelivery } from "./browser.ts";
 import { BrowserExecuteTool, BrowserResumeTool } from "./browser-tools.ts";
 import type { McpBackend } from "./backend.ts";

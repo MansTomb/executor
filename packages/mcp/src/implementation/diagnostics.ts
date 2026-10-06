@@ -1,6 +1,6 @@
 import { Effect, Option, Schema, SchemaAST } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
-import { McpSchema } from "effect/unstable/ai";
+import { HttpServerResponse } from "effect/http";
+import { McpSchema } from "effect/ai";
 import { InputInvalid, mcpFailurePresentation, ToolCallFailed } from "@executor-js/sdk/core";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import {

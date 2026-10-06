@@ -4,13 +4,13 @@ import {
   Clock,
   Deferred,
   Effect,
-  Encoding,
   Exit,
   Fiber,
   Option,
   Schema,
   type Crypto,
 } from "effect";
+import { Hex } from "effect/encoding";
 import {
   declarationFreshness,
   declarationLimits,
@@ -101,7 +101,7 @@ export const makeDeclarations = (options: {
 }) => {
   const digest = (bytes: Uint8Array) =>
     options.crypto.digest("SHA-256", bytes).pipe(
-      Effect.map(Encoding.encodeHex),
+      Effect.map(Hex.encode),
       Effect.mapError(() => new StorageError()),
     );
   const key = (command: string, state: InvocationSnapshot) =>

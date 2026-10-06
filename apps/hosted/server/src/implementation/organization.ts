@@ -24,12 +24,12 @@ import { requireOrganizationAdmin } from "./access.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import { APIError } from "better-auth/api";
 import { ErrorReporter, Effect, Layer, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import type { OwnerId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   ApiAuthentication,
   Authentication,

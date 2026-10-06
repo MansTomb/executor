@@ -1,7 +1,7 @@
 /** Drive the real `executor apps` CLI against the managed local server. */
 import { expect, layer } from "@effect/vitest";
 import { Config, Effect, FileSystem, Option, Path, Redacted, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { scenarios } from "../test-plan.ts";
 import { Api } from "../support/api.ts";
 import { TestLive, withCase } from "../support/case.ts";

@@ -20,9 +20,9 @@ import {
   deleteOrganizationRecords,
 } from "@executor-js/hosted-server";
 import { Effect, Layer, Option, Redacted } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { AuthDatabase } from "./contracts/database.ts";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /** Initialize auth before listening; the database owns persistent users and sessions. */
 export const selfHostAuth = Effect.gen(function* () {

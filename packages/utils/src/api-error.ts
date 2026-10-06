@@ -1,5 +1,5 @@
 import { Schema, SchemaGetter, type Cause } from "effect";
-import "effect/unstable/httpapi";
+import "effect/http-api";
 
 /**
  * Encode the class's `message` getter as a required wire string. Decoding validates the field,

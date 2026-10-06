@@ -3,7 +3,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { Random } from "alchemy";
 import { Effect, Redacted, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { Fetcher } from "@cloudflare/workers-types";
 import { credentialFetch, credentialKey } from "@executor-js/sdk/workerd";
 

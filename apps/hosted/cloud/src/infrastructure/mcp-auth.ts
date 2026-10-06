@@ -11,7 +11,7 @@ import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
 import { RuntimeContext } from "alchemy";
 import { betterAuth } from "better-auth";
 import { Effect, Layer, Option, Redacted } from "effect";
-import type { SqlClient } from "effect/unstable/sql";
+import type { SqlClient } from "effect/sql";
 import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
 import { organizationTables } from "./app-sessions.ts";
 import { AuthDatabase, type AuthDatabaseService } from "./auth-database.ts";

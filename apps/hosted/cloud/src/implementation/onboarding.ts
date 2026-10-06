@@ -5,7 +5,7 @@ import {
   OrganizationIconKey,
   organizationIconContentType,
 } from "@executor-js/hosted-server/organization-icon";
-import { SqlError } from "effect/unstable/sql";
+import { SqlError } from "effect/sql";
 import {
   OrganizationLogo,
   organizationHandle,

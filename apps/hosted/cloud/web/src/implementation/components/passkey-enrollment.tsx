@@ -2,7 +2,7 @@ import { LoginFrame } from "@executor-js/hosted-web/pages/login-frame";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Button } from "@executor-js/ui/components/button";
 import { Exit } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useState, type ReactNode } from "react";
 import { addPasskeyAtom } from "../../contracts/auth.ts";
 import {

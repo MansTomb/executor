@@ -6,7 +6,7 @@ import {
 } from "@executor-js/hosted-server/organization";
 import { ApiError } from "@executor-js/utils/api-error";
 import { Context, Effect, Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { RequireUser } from "@executor-js/hosted-server";
 
 /** The cloud projection of Autumn's catalog. Prices come from the selected provider catalog. */

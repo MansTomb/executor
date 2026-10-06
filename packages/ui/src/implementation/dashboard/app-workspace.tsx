@@ -4,7 +4,7 @@ import { AppWorkspaceLoading, SourceHistoryLoading } from "./app-loading.tsx";
 import { AppSectionHeader, AppSectionTitle } from "./app-section-header.tsx";
 /** Inspect agent-authored source and manage app deployments. */
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Option } from "effect";
 import type { ReactNode } from "react";
 import type { App } from "@executor-js/sdk";

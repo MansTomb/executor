@@ -21,6 +21,12 @@ import { appDataSupervisors } from "./app-data.ts";
 import { readNativeWorkflowStatus } from "../implementation/workflow-status.ts";
 import { providerFailureCode } from "../implementation/provider-failure.ts";
 
+/** A retryable step failure. The engine serializes its encoded message, so a replay decodes the same. */
+class RetryableStepFailure extends Schema.TaggedError<RetryableStepFailure>()(
+  "RetryableStepFailure",
+  { message: Schema.String },
+) {}
+
 const failure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const encode = workflowFailureMessage;
 const recover = decodeWorkflowFailure;
@@ -57,12 +63,11 @@ const runWorkflow = (input: {
                   },
                 }),
                 Effect.provideContext(services),
+                // The engine retries typed failures and stops at a defect.
                 Effect.catch((error) =>
-                  Effect.die(
-                    error.retryable
-                      ? new Error(encode(error))
-                      : new NonRetryableError(encode(error)),
-                  ),
+                  error.retryable
+                    ? Effect.fail(new RetryableStepFailure({ message: encode(error) }))
+                    : Effect.die(new NonRetryableError(encode(error))),
                 ),
               ),
             ),

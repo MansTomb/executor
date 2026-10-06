@@ -1,8 +1,8 @@
 /** Browser-owned Effect telemetry, shared by Promise calls and Atom runtimes. */
 import { Cause, Context, Deferred, Effect, FiberSet, Layer, Logger, ManagedRuntime } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
-import { OtlpExporter } from "effect/unstable/observability";
-import { Atom } from "effect/unstable/reactivity";
+import { FetchHttpClient } from "effect/http";
+import { OtlpExporter } from "effect/observability";
+import { Atom } from "effect/reactivity";
 import type { TelemetryConfig } from "./config.ts";
 import { telemetryLayer } from "./layer.ts";
 import { observeBrowserPerformance } from "./browser-performance.ts";

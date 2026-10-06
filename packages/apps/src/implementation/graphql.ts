@@ -4,7 +4,7 @@ import { NetworkRefused } from "../contracts/network.ts";
 import { failOnNetworkRefusal } from "./network.ts";
 /** Discover GraphQL tools live; transport, decoding and cancellation stay in Effect. */
 import { Effect, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import {
   getIntrospectionQuery,
   Kind,

@@ -1,7 +1,7 @@
 /** The member's own scoped connections in one organization, reconciled after each write. */
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { Effect } from "effect";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import type { ConnectionId } from "@executor-js/mcp-auth/connections";

@@ -1,7 +1,7 @@
 import { useDashboard } from "./context.tsx";
 import { useState, type ReactNode, type ComponentType } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
-import { AsyncResult, type Atom } from "effect/unstable/reactivity";
+import { AsyncResult, type Atom } from "effect/reactivity";
 import { Exit, type Cause } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Cancel01Icon, UserCircleIcon } from "@hugeicons/core-free-icons";

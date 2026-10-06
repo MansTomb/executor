@@ -30,7 +30,7 @@ import { BetterAuthApiError, isAPIErrorLike } from "@alchemy.run/better-auth";
 import { cloudSessionCookiePrefix } from "../contracts/browser.ts";
 import { RuntimeContext } from "alchemy";
 import { Context, Effect, Layer, Option, Redacted, Schema, type Scope } from "effect";
-import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { SendAuthEmail } from "../contracts/email.ts";
 import { cloudSecrets } from "./secrets.ts";
 import { AuthDatabase, appSessionsPerCall, boundAuthAdapter } from "./auth-database.ts";

@@ -5,7 +5,7 @@ import { scenarios } from "../test-plan.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 import { Collector, SpanQuery } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { Onboarding } from "../support/onboarding.ts";

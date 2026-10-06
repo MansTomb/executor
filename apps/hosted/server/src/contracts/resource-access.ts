@@ -18,7 +18,7 @@ import {
   AppNotFound,
 } from "@executor-js/sdk/core";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { Principal } from "./auth.ts";
 import { GroupId } from "./groups.ts";
 import {

@@ -1,6 +1,6 @@
 /** CLI composition root: Effect owns server processes, Vitest, raw evidence and target isolation. */
 import { Config, Console, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
 import { patternForTarget, scenariosForSuite, type TestPlan } from "../test-plan.ts";
 import { readEvidence, combineEvidenceReports } from "../evidence-results.ts";

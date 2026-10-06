@@ -1,5 +1,5 @@
 import { Cause, Effect, Exit, Stream } from "effect";
-import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { providerFailureCode } from "./provider-failure.ts";
 
 /** Record which side closes an MCP stream without retaining frames, headers or error messages. */

@@ -1,6 +1,6 @@
 /** Run the shipped collector as a separate process; query only its public HTTP API. */
 import { Deferred, Effect, FileSystem, Path, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /** workerd's control message once the collector socket accepts connections. */
 const Listening = Schema.Struct({

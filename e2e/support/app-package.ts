@@ -2,8 +2,8 @@
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { HttpClient } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { HttpClient } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /**
  * Published apps versions, exactly as npm serves them. beta.0 and beta.1 speak host protocol 1,

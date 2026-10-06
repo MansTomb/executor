@@ -3,9 +3,9 @@ import { revalidated } from "./refresh.ts";
 import type { App, AppId } from "@executor-js/sdk";
 import { AppAccess, appManagementApi, type CopyApp } from "@executor-js/app-management/contracts";
 import { Array as Arr, Data, Effect, Schema, type Cause } from "effect";
-import type { HttpApiClient } from "effect/unstable/httpapi";
+import type { HttpApiClient } from "effect/http-api";
 import { hydratedResult, requestKey } from "./http.ts";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery } from "./mutations.ts";
 
 class OwnedCopy extends Data.Class<{ readonly app: AppId }> {}

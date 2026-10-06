@@ -1,7 +1,7 @@
 /** ChatGPT verifies the Cloud domain by reading a fixed token from one exact path. */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 import { scenarios } from "../test-plan.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";

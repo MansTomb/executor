@@ -17,7 +17,7 @@ import {
   Path,
   Schema,
 } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { HttpRouter, HttpServer } from "effect/http";
 import { dataDirectory } from "./contracts/config.ts";
 import { selfHostConfiguration } from "./implementation/bootstrap.ts";
 import { dashboardFiles } from "./implementation/web.ts";

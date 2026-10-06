@@ -6,7 +6,7 @@ import type {
   ConnectionTargetInput,
   ConnectionView,
 } from "@executor-js/mcp-auth/connections";
-import type { Atom } from "effect/unstable/reactivity";
+import type { Atom } from "effect/reactivity";
 import type { Query } from "./dashboard.ts";
 
 /**

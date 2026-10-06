@@ -4,7 +4,7 @@ import * as Command from "alchemy/Command";
 import * as Provider from "alchemy/Provider";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { AppDomainLifecycle, AppDomainLifecycleProvider } from "./app-domain-lifecycle.ts";
 
 /** Only Alchemy's exact empty precreate script can have no runtime-owned team DNS. */

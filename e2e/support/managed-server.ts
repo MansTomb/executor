@@ -19,14 +19,14 @@ import {
   Semaphore,
   Stream,
 } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   HttpClient,
   HttpRouter,
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import type { Target } from "./platform.ts";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
 import {

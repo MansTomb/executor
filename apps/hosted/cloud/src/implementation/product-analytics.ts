@@ -17,7 +17,7 @@ import {
   HttpClientRequest,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 
 const Settings = Schema.Struct({
   token: Schema.String,

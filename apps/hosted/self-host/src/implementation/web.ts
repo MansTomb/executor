@@ -2,7 +2,7 @@
 import { dashboardDocument } from "@executor-js/dashboard-start/document";
 import { hostedDocumentContext } from "@executor-js/hosted-server/document";
 import { Effect, FileSystem, Path, Result } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /** The renderer is loaded on the first page request; API-only processes never load React. */
 const document = dashboardDocument({

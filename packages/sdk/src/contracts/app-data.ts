@@ -3,7 +3,7 @@ import { ApiError } from "@executor-js/utils/api-error";
 import { ProfileErrors, ProfileRevision } from "./profiles.ts";
 /** Framework data operations. Product hosts authenticate and authorize the configured app. */
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 import { AppId, DeploymentId, Json, StorageError, CredentialsError } from "./shared.ts";
 import { AppNotFound, AppNotDeployed, AccountRequired, AccountSelectionInvalid } from "./apps.ts";
 import { AccountNotFound } from "./account.ts";

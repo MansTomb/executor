@@ -25,7 +25,7 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { provisionTestAccount, testAccountAuth, TestAccountFailed } from "./accounts.ts";
 import { cloudSessionCookiePrefix } from "../cloud/src/contracts/browser.ts";
 

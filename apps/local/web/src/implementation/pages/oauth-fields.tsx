@@ -1,7 +1,7 @@
 import { usePageUrl } from "@executor-js/dashboard-start/page";
 import type { OAuthSubmission } from "@executor-js/ui/contracts/credentials";
 import { useAtomSet } from "@effect/atom-react";
-import type { Atom } from "effect/unstable/reactivity";
+import type { Atom } from "effect/reactivity";
 import { Cause, Effect, Option, Schema } from "effect";
 import type { ReactNode } from "react";
 import {

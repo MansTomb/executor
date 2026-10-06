@@ -6,7 +6,7 @@
  * each from the streamed reply. The client still decodes each answer with its endpoint's schemas.
  */
 import { Effect, Exit, Option, Request, RequestResolver, Result, Schema, Stream } from "effect";
-import { HttpApi, type HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, type HttpApiGroup } from "effect/http-api";
 import {
   FindMyWay,
   HttpClient,
@@ -15,7 +15,7 @@ import {
   HttpClientResponse,
   HttpTraceContext,
   Url,
-} from "effect/unstable/http";
+} from "effect/http";
 import {
   BatchAnswer,
   batchable,

@@ -7,7 +7,7 @@ import {
   migrateProductSteps,
 } from "@executor-js/hosted-server/migrations";
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { cloudAuthSetup } from "./auth-provisioning.ts";
 import { migrateAppDomainRecords } from "./app-domain-records.ts";
 

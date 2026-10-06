@@ -20,8 +20,8 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Path, Redacted, Schedule, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import apps from "../../packages/apps/package.json" with { type: "json" };
 import {
   AppsReleaseMismatch,

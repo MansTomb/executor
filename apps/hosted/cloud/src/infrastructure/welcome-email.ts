@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { Effect, Layer } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerResponse } from "effect/http";
 import { cloudDatabaseConnection } from "./database.ts";
 import { deliverWelcomeEmails } from "../implementation/welcome-emails.ts";
 import type { SendWelcomeEmail } from "../contracts/email.ts";

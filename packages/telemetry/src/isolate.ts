@@ -29,14 +29,14 @@ import {
   HttpClientError,
   HttpClientRequest,
   HttpClientResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import {
   OtlpExporter,
   OtlpLogger,
   OtlpMetrics,
   OtlpSerialization,
   OtlpTracer,
-} from "effect/unstable/observability";
+} from "effect/observability";
 import { CurrentTelemetryConfig, type TelemetryConfig, type TelemetryTarget } from "./config.ts";
 import { spanAttributes } from "./span-attributes.ts";
 import { telemetryHttpClient } from "./transport.ts";

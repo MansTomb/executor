@@ -1,5 +1,5 @@
 import { Option, type Cause } from "effect";
-import { AsyncResult, Atom, type AtomRegistry } from "effect/unstable/reactivity";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
 /**
  * Publish server-confirmed changes before a mutation completes. Refresh failures

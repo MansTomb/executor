@@ -8,7 +8,7 @@ import {
 } from "@executor-js/hosted-server";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Cause, Effect, Layer, Schema } from "effect";
-import { FetchHttpClient, HttpServerRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpServerRequest } from "effect/http";
 import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
 import { autumnLive } from "./autumn-client.ts";
 import {
@@ -18,7 +18,7 @@ import {
   seatReconcileCandidates,
 } from "./billing-seats.ts";
 import { reportCloudFailure } from "./error-reporting.ts";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import {
   Billing,
   BillingOverview,

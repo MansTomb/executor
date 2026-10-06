@@ -38,16 +38,11 @@ import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/h
 import { appAddresses, hostedAppUi } from "@executor-js/hosted-server/app-ui";
 import { appSignInCallbackPath } from "apps/ui/auth";
 import { AppUiApi } from "apps/ui/contracts";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { appUiBaseUrl } from "../contracts/config.ts";
 import { type HostEgress } from "@executor-js/utils/url-policy";
 import { Config, Effect, Layer, Option } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
 import { selfHostApi } from "./api.ts";
 import { selfHostMcp } from "../mcp.ts";

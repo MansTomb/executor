@@ -4,12 +4,7 @@ import { Socket } from "node:net";
 import { createHash, generateKeyPairSync, type KeyObject, randomUUID, sign } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { tokenRequestParameters } from "./client-credentials-issuer.ts";
 
 type TokenAuth = "client_secret_basic" | "client_secret_post" | "none";

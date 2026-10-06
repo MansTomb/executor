@@ -1,7 +1,7 @@
 /** Sign in to the PlanetScale emulator, whose Doorkeeper token endpoint compares Basic credentials literally. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";

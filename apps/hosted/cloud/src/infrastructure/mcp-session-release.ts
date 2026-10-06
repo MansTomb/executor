@@ -16,7 +16,7 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Stage } from "alchemy/Stage";
 import { Config, DateTime, Duration, Effect, Schema, Stream } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { telemetryDatasets } from "./telemetry.ts";
 
 export class McpSessionReleaseBlocked extends Schema.TaggedError<McpSessionReleaseBlocked>()(

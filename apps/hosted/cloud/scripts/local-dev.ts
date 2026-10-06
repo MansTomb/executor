@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Path, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { freePort as freeLoopbackPort } from "../../../../scripts/dev-host.ts";
 import {
   LocalSecrets,

@@ -1,6 +1,7 @@
 /** Shared SQLite engine. Drivers, persistent paths and app ownership belong to the host. */
-import { Cause, Clock, Effect, Encoding, Schema, Semaphore } from "effect";
-import type { SqlClient } from "effect/unstable/sql/SqlClient";
+import { Cause, Clock, Effect, Schema, Semaphore } from "effect";
+import { Base64Url } from "effect/encoding";
+import type { SqlClient } from "effect/sql/SqlClient";
 import {
   AppDatabaseError,
   DatabaseLimitExceeded,
@@ -55,7 +56,7 @@ export const makeSqliteDatabase = (options: {
           yield* sql`CREATE TABLE IF NOT EXISTS app_indexes (table_name TEXT NOT NULL, index_name TEXT NOT NULL, sort_key BLOB NOT NULL, row_id TEXT NOT NULL, PRIMARY KEY (table_name, index_name, sort_key)) WITHOUT ROWID`;
           yield* sql`CREATE TABLE IF NOT EXISTS app_mutation_receipts (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL) WITHOUT ROWID`;
           yield* sql`CREATE INDEX IF NOT EXISTS app_indexes_by_row ON app_indexes (table_name, row_id)`;
-          const generated = Encoding.encodeBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+          const generated = Base64Url.encode(crypto.getRandomValues(new Uint8Array(32)));
           yield* sql`INSERT OR IGNORE INTO app_database (singleton, schema_hash, cursor_key) VALUES (1, ${schemaHash}, ${generated})`;
           const saved =
             yield* sql`SELECT schema_hash, cursor_key FROM app_database WHERE singleton = 1`.pipe(
@@ -63,7 +64,7 @@ export const makeSqliteDatabase = (options: {
             );
           if (saved.schema_hash !== schemaHash)
             return yield* new AppDatabaseError({ reason: "schema_changed" });
-          return yield* Effect.fromResult(Encoding.decodeBase64Url(saved.cursor_key));
+          return yield* Effect.fromResult(Base64Url.decode(saved.cursor_key));
         }),
       )
       .pipe(
@@ -240,11 +241,8 @@ export const makeSqliteDatabase = (options: {
                           table: tableName,
                           index: plan.index,
                           order: plan.order,
-                          lower: Encoding.encodeBase64Url(bounds.lower),
-                          upper:
-                            bounds.upper === undefined
-                              ? null
-                              : Encoding.encodeBase64Url(bounds.upper),
+                          lower: Base64Url.encode(bounds.lower),
+                          upper: bounds.upper === undefined ? null : Base64Url.encode(bounds.upper),
                         }),
                       );
                       const position =

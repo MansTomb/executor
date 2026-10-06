@@ -10,7 +10,7 @@ export const hostedExecutorOrigin = "https://v2.executor.sh";
 
 /** Public name inside a publishing owner's namespace. */
 export const PackageName = Schema.String.check(
-  Schema.isPattern(/^@[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,62}$/),
+  Schema.isPattern(/^@[a-z0-9][a-z0-9-]{0,79}\/[a-z0-9][a-z0-9-]{0,62}$/u),
 );
 export type PackageName = typeof PackageName.Type;
 /** Standard npm metadata remains source; only name and description identify a public listing. */

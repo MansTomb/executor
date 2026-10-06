@@ -51,7 +51,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useAtomValue } from "@effect/atom-react";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import type { HighlighterCore } from "shiki/core";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "../components/button.tsx";

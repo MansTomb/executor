@@ -1,6 +1,6 @@
 /** Client primitives use Effect Atom while authors keep ordinary schemas and Promise transports. */
 import { Effect, Schema as EffectSchema, Stream } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { AppQueryFailed, type OperationReference, type QueryTransport } from "../contracts/live.ts";
 import { JsonValue } from "../contracts/schema.ts";
 import { StorageName } from "../contracts/storage.ts";

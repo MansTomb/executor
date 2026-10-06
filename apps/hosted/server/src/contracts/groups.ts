@@ -1,8 +1,8 @@
 /** Hosted organization groups. Account and app grants are separate later capabilities. */
 import { Context, Effect, Schema } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
-import type { SqlClient } from "effect/unstable/sql";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import type { SqlClient } from "effect/sql";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   OrganizationReference,
   OrganizationForbidden,

@@ -1,6 +1,7 @@
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
-import { Cause, Clock, Effect, Encoding, Redacted, Result, Schema, type Crypto } from "effect";
+import { Cause, Clock, Effect, Redacted, Result, Schema, type Crypto } from "effect";
+import { Hex } from "effect/encoding";
 import {
   HostedWorkflow,
   WorkflowFailure,
@@ -266,7 +267,7 @@ export const makeWorkflowRuns = (
               ? {
                   replay: {
                     key: input.stepId,
-                    fingerprint: Encoding.encodeHex(
+                    fingerprint: Hex.encode(
                       yield* crypto.digest(
                         "SHA-256",
                         new TextEncoder().encode(

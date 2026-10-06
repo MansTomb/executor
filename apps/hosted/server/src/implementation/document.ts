@@ -8,7 +8,7 @@ import {
   readLastOrganization,
   type HostedDocumentContext,
 } from "../contracts/browser.ts";
-import { Cookies, HttpServerRequest } from "effect/unstable/http";
+import { Cookies, HttpServerRequest } from "effect/http";
 
 /**
  * A missing session produces `null`; a failed lookup fails, so the page reports that it is

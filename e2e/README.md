@@ -540,10 +540,8 @@ The Worker is the real Cloud entry point; only external service configuration an
 resource lifetimes vary. No alternate auth server is constructed.
 
 The runner ignores inherited infrastructure credentials, sets `CI=true`, and
-uses an empty per-run `ALCHEMY_HOME`. Alchemy beta.79's local Worker/R2/Hyperdrive
-providers require the included patch to stop resolving cloud credentials for
-local identities. Live providers and bindings explicitly marked remote retain
-normal credential resolution. Generated test credentials are ephemeral, not
+uses an empty per-run `ALCHEMY_HOME`. Alchemy's local Worker, R2 and Hyperdrive
+providers use a fixed local account in CI and never resolve cloud credentials. Generated test credentials are ephemeral, not
 personal or production secrets. On completion the runner stops the Worker,
 removes its Postgres container, removes the emulator credential file and resets
 its external emulator instances. Recordings remain in the report.

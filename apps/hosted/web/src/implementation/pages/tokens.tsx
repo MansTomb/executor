@@ -4,7 +4,7 @@ import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Cause, Exit, Redacted } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import {

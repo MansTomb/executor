@@ -1,6 +1,6 @@
 /** Correlate transport and decoded outcomes without exporting response bodies or errors. */
 import { Cause, Context, Effect, Exit, Schema, SchemaAST, Tracer } from "effect";
-import { HttpClient, HttpClientError } from "effect/unstable/http";
+import { HttpClient, HttpClientError } from "effect/http";
 import { TraceContext } from "./trace-context.ts";
 
 const pageIds = new WeakMap<Document, string>();

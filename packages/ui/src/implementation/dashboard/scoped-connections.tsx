@@ -8,7 +8,7 @@ import {
 } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import type { AccountId, App, AppId, Profile, ToolName } from "@executor-js/sdk";
 import { ConnectionId, type ConnectionView } from "@executor-js/mcp-auth/connections";
 import type { AccountSummary, FailureProps, Inventory, Query } from "../../contracts/dashboard.ts";

@@ -1,7 +1,7 @@
 /** Rendered dashboard pages and their bundled files; every data read still goes through authenticated routes. */
 import { dashboardDocument, withSameSiteReload } from "@executor-js/dashboard-start/document";
 import { Effect, Path, Schema } from "effect";
-import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerResponse } from "effect/http";
 
 /** Serve pages rendered in this process and the browser files built beside them. */
 export const webFiles = Effect.gen(function* () {

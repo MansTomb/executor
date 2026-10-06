@@ -1,5 +1,5 @@
 import { Schema, SchemaGetter, type Cause } from "effect";
-import "effect/unstable/httpapi";
+import "effect/http-api";
 import { MessageField } from "./api-error.ts";
 
 /** Curated explanation and recovery. Never include raw diagnostics, credentials, or form values. */

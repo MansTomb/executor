@@ -6,7 +6,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";

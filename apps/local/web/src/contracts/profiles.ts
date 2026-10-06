@@ -2,7 +2,7 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Data, Effect } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import type { AppId, ProfileId, ProfileInputs, Profile } from "@executor-js/sdk";
 import { acknowledge, upsert } from "@executor-js/ui/contracts/mutations";
 import { pollingQuery, steadyPolling } from "@executor-js/ui/contracts/polling";

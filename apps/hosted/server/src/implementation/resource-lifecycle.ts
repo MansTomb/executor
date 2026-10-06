@@ -7,7 +7,7 @@ import {
   type OwnerId,
 } from "@executor-js/sdk/core";
 import { Context, Effect, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { OrganizationId } from "../contracts/organization.ts";
 import { ConnectionDestination } from "../contracts/resource-access.ts";

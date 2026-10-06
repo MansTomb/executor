@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit, Schema, type Cause } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import {
   registryPublicationPath,
   type App,

@@ -1,7 +1,7 @@
 /** Skill access through an authorized app evaluation and retained deployment. */
 import { Schema } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AppId, DeploymentId, OwnerId, RequestInvalid, StorageError } from "./shared.ts";
 import { AccountNotFound } from "./account.ts";
 import { CredentialsError } from "./shared.ts";

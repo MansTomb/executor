@@ -7,8 +7,8 @@
  * process; the retained stage keeps running until it is explicitly destroyed.
  */
 import { Clock, Console, Effect, FileSystem, Path, Redacted, Schedule, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient } from "effect/http";
 import { startFixtureControl, fixtureControlEnvironment } from "../../sdk/fixtures.ts";
 
 export class StageFailed extends Schema.TaggedError<StageFailed>()("StageFailed", {

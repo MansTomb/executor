@@ -1,5 +1,5 @@
 import { PageSkeleton, DetailSkeleton } from "@executor-js/ui/dashboard/loading";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Alert, AlertDescription } from "@executor-js/ui/components/alert";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { Card } from "@executor-js/ui/components/card";

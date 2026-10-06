@@ -12,8 +12,8 @@ import {
   Tracer,
   type Scope,
 } from "effect";
-import { McpProtocol, McpServer } from "effect/unstable/ai";
-import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { McpProtocol, McpServer } from "effect/ai";
+import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { ElicitationMode } from "../contracts/elicitation.ts";
 import {
   McpToolkit,

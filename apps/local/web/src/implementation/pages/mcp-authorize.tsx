@@ -2,7 +2,7 @@ import { usePageUrl } from "@executor-js/dashboard-start/page";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import { Exit } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { grantTarget } from "@executor-js/mcp-auth/grants";
 import {
   McpConsentLayout,

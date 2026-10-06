@@ -12,7 +12,7 @@ import type { BetterAuthOptions } from "better-auth";
 import { admin } from "better-auth/plugins/admin";
 import { Config, ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpUrl } from "@executor-js/sdk/core";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   Authentication,
   AuthenticationUnavailable,

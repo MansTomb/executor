@@ -16,8 +16,8 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   npmArchiveBudgetBytes,
   platformArchive,

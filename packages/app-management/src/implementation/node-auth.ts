@@ -10,11 +10,11 @@ import {
   Effect,
   FileSystem,
   Path,
-  Encoding,
   Layer,
   Redacted,
   Schema,
 } from "effect";
+import { Base64Url, Hex } from "effect/encoding";
 import {
   FetchHttpClient,
   HttpClient,
@@ -24,9 +24,9 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
-import { NetAddress } from "effect/unstable/net";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+} from "effect/http";
+import { NetAddress } from "effect/net";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { AppClientError } from "../client-error.ts";
 
 /** Credential-bearing traffic is permitted only over TLS or to loopback development hosts. */
@@ -103,7 +103,7 @@ const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
       yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
       const key = yield* Effect.tryPromise({
         try: async () =>
-          Encoding.encodeHex(
+          Hex.encode(
             new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(host))),
           ),
         catch: authError,
@@ -171,7 +171,7 @@ export const registryLogin = (host: string, platform: string) =>
         crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
       const challenge = yield* Effect.tryPromise({
         try: async () =>
-          Encoding.encodeBase64Url(
+          Base64Url.encode(
             new Uint8Array(
               await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)),
             ),

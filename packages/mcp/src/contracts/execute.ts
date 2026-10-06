@@ -1,8 +1,8 @@
 /** Execute tool schemas, limits and discovery instructions. */
 import { CodeMode } from "@opencode-ai/codemode";
 import { Schema } from "effect";
-import { HttpServerRequest } from "effect/unstable/http";
-import { McpSchema, Tool as McpTool } from "effect/unstable/ai";
+import { HttpServerRequest } from "effect/http";
+import { McpSchema, Tool as McpTool } from "effect/ai";
 import { ApiErrorResponse, ElicitationResponse } from "apps/contracts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { InteractionId, PendingInteraction, ElicitationResponseInvalid } from "./interactions.ts";

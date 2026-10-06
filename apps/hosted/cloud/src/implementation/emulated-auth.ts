@@ -1,5 +1,5 @@
 import { Effect, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { genericOAuth } from "better-auth/plugins";
 import { EmulatedServices } from "../contracts/emulators.ts";
 

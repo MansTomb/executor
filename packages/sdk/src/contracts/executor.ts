@@ -2,7 +2,7 @@ import { ProfileHost, type ProfileDispatcher } from "./profiles.ts";
 import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
 import { type Effect, type Redacted, type Stream, Schema } from "effect";
-import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { WebhookSetupApi } from "./webhook-setup.ts";
 import type { ExecutorApi } from "./http.ts";
 import { StorageHost, type Credentials } from "./storage.ts";

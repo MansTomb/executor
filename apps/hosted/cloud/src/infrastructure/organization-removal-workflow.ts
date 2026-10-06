@@ -24,6 +24,12 @@ import {
 import { Billing } from "../contracts/billing.ts";
 import { cloudSentry } from "../implementation/error-reporting.ts";
 
+/** One failed attempt. The engine retries only typed failures it can serialize. */
+class RemovalAttemptFailed extends Schema.TaggedError<RemovalAttemptFailed>()(
+  "RemovalAttemptFailed",
+  {},
+) {}
+
 /**
  * One durable step. The engine owns the journal and the retries; a body that
  * still fails after them becomes a named failure, so the report and the failed
@@ -48,14 +54,12 @@ const runner =
           Cause.hasInterrupts(cause)
             ? Effect.interrupt
             : Effect.logError("Organization removal step failed", cause).pipe(
-                Effect.andThen(
-                  Effect.die(new OrganizationRemovalFailed({ organization, step: name })),
-                ),
+                Effect.andThen(Effect.fail(new RemovalAttemptFailed())),
               ),
         ),
       ),
       { retries },
-    );
+    ).pipe(Effect.mapError(() => new OrganizationRemovalFailed({ organization, step: name })));
 
 export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval>()(
   "OrganizationRemoval",

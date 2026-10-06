@@ -34,7 +34,7 @@ import {
   HttpClient,
   HttpClientRequest,
   type HttpClientResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import {
   defaultMcpClientLimits,
   McpCredentialsUnverified,

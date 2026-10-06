@@ -1,8 +1,9 @@
 /** OAuth wire protocol. Effect owns transport and cancellation; oauth4webapi validates responses. */
 import { parseDestination } from "@executor-js/utils/url-policy";
-import { Clock, Effect, Encoding, Match, Result, Schema } from "effect";
+import { Clock, Effect, Match, Result, Schema } from "effect";
+import { Base64 } from "effect/encoding";
 import { captureTelemetry } from "@executor-js/telemetry";
-import { FetchHttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClientRequest } from "effect/http";
 import * as oauth from "oauth4webapi";
 import {
   AuthorizationServerSignal,
@@ -574,7 +575,7 @@ const metadata = (server: OAuthTokenServer): oauth.AuthorizationServer => ({
 
 /** An RFC 7617 Basic credential, with the ID and secret encoded as the client's method requires. */
 const basicCredential = (clientId: string, secret: string, encode: (value: string) => string) =>
-  Encoding.encodeBase64(new TextEncoder().encode(`${encode(clientId)}:${encode(secret)}`));
+  Base64.encode(new TextEncoder().encode(`${encode(clientId)}:${encode(secret)}`));
 
 const basicAuth =
   (secret: string, encode: (value: string) => string): oauth.ClientAuth =>

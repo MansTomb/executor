@@ -1,6 +1,6 @@
 import { PasskeyEnrollment } from "../components/passkey-enrollment.tsx";
 import { reportBrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { LoginLegalFooter, LoginPage, type LoginProps } from "@executor-js/hosted-web/pages/login";
 import { AuthFailed, sessionAtom } from "@executor-js/hosted-web/contracts/auth";

@@ -9,7 +9,8 @@
  * handle therefore carries its own value: the outbound needs no lookup, so it works from any
  * isolate, after the invocation's request context is gone, and for accounts not saved yet.
  */
-import { Clock, Effect, Encoding, Option, Result, Schema } from "effect";
+import { Clock, Effect, Option, Result, Schema } from "effect";
+import { Base64, Hex } from "effect/encoding";
 import {
   NetworkRefused,
   networkRefusalHeader,
@@ -76,13 +77,13 @@ const seal = (key: CryptoKey, sealed: Sealed) =>
     const bytes = new Uint8Array(iv.length + ciphertext.length);
     bytes.set(iv);
     bytes.set(ciphertext, iv.length);
-    return `${handlePrefix}${Encoding.encodeHex(bytes)}_`;
+    return `${handlePrefix}${Hex.encode(bytes)}_`;
   });
 
 /** A handle this key did not seal, or that was altered, opens to nothing. */
 const open = (key: CryptoKey, hex: string) =>
   Effect.gen(function* () {
-    const bytes = Result.getOrUndefined(Encoding.decodeHex(hex));
+    const bytes = Result.getOrUndefined(Hex.decode(hex));
     if (bytes === undefined || bytes.length <= 12) return Option.none<Sealed>();
     const plaintext = yield* Effect.tryPromise(() =>
       crypto.subtle.decrypt(
@@ -269,16 +270,14 @@ const credentialHeaders = new Set(["authorization", "proxy-authorization"]);
 /** The decoded user and password of a Basic credential header. */
 const basicDecoded = (header: string) => {
   const match = /^basic\s+([A-Za-z0-9+/=]+)\s*$/i.exec(header);
-  return match === null
-    ? undefined
-    : Result.getOrUndefined(Encoding.decodeBase64String(match[1] ?? ""));
+  return match === null ? undefined : Result.getOrUndefined(Base64.decodeString(match[1] ?? ""));
 };
 
 /** Basic credentials are base64 in the header, so handles inside them are decoded first. */
 const basicCredentials = (header: string, values: ReadonlyMap<string, string>) => {
   const decoded = basicDecoded(header);
   if (decoded === undefined || handlesIn(decoded).length === 0) return header;
-  return `Basic ${Encoding.encodeBase64(replaceAll(decoded, values))}`;
+  return `Basic ${Base64.encode(replaceAll(decoded, values))}`;
 };
 
 /** Which destinations Executor refuses before an app's request reaches the host's network. */

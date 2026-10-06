@@ -6,7 +6,7 @@ import {
   OrganizationIconKey,
   type OrganizationIconContentType,
 } from "@executor-js/hosted-server/organization-icon";
-import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 /** Safe uploader identity for the existing first-team icon namespace. */
 export const TeamIconOwner = Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]{1,255}$/));

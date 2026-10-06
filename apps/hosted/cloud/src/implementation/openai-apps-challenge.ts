@@ -1,5 +1,5 @@
 import { Effect } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerResponse } from "effect/http";
 
 /** The token ChatGPT reads to verify this domain for the Executor app. */
 const OPENAI_APPS_CHALLENGE_TOKEN = "P_fW7WgF8HkXXQkP85B7aDZD_RuZv8YmQA2Zq9JoIfc";

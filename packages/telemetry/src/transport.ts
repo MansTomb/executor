@@ -1,12 +1,7 @@
 /** Telemetry uses a host-selected HTTP client without changing product HTTP requests. */
 import { BinaryReader, WireType } from "@bufbuild/protobuf/wire";
 import { Context, Effect, Layer, Schema } from "effect";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientError,
-  type HttpClientResponse,
-} from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientError, type HttpClientResponse } from "effect/http";
 import { recordExportFailure } from "./measurements.ts";
 import { telemetryRequestTimeout } from "./config.ts";
 

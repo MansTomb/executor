@@ -5,7 +5,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
-import { HttpRouter, HttpClient, HttpServerRequest, FetchHttpClient } from "effect/unstable/http";
+import { HttpRouter, HttpClient, HttpServerRequest, FetchHttpClient } from "effect/http";
 import { CloudEntry } from "../src/contracts/entry.ts";
 import { cloudEntryDocument } from "../src/implementation/entry.ts";
 import { browserReturnTo } from "@executor-js/hosted-server/browser/contracts";

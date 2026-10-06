@@ -1,6 +1,6 @@
 import { useContext, useState } from "react";
 import { RegistryContext } from "@effect/atom-react";
-import { AtomRegistry } from "effect/unstable/reactivity";
+import { AtomRegistry } from "effect/reactivity";
 import { Effect, Exit, type Cause } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Add01Icon } from "@hugeicons/core-free-icons";

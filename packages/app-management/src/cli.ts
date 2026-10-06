@@ -11,15 +11,15 @@ import {
   Stdio,
   Stream,
 } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import {
   FetchHttpClient,
   HttpClient,
   HttpClientError,
   HttpClientRequest,
   type HttpClientResponse,
-} from "effect/unstable/http";
-import { HttpApiClient } from "effect/unstable/httpapi";
+} from "effect/http";
+import { HttpApiClient } from "effect/http-api";
 import type { PlatformError } from "effect/PlatformError";
 import {
   AppDeploymentChanged,

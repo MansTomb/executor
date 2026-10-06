@@ -2,7 +2,7 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { Data, Effect, Option, Schema, type Redacted } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import {
   AppId,
   AccountId,

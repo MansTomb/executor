@@ -12,8 +12,8 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Duration, Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";

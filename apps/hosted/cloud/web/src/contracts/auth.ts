@@ -6,7 +6,7 @@ import { dashboardAuthClientOptions } from "@executor-js/ui/contracts/http";
 import { emailOTPClient } from "better-auth/client/plugins";
 import { authRequest } from "@executor-js/hosted-web/contracts/auth";
 import { Effect, Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { AccountFailed } from "@executor-js/hosted-web/contracts/account";

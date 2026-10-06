@@ -13,14 +13,14 @@ export {
 } from "./implementation/framework.ts";
 /** Product-authorized app authoring, release discovery, and ordinary Git access. */
 import { Context, Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   HttpApi,
   HttpApiBuilder,
   HttpApiEndpoint,
   HttpApiGroup,
   HttpApiMiddleware,
-} from "effect/unstable/httpapi";
+} from "effect/http-api";
 import { AppGitProtocol } from "./contracts/git.ts";
 import {
   AppId,

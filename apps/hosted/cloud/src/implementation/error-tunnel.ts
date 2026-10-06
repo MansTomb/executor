@@ -10,7 +10,7 @@ import {
   HttpIncomingMessage,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 
 const Settings = Schema.Struct({
   localTest: Schema.optional(Schema.Literal(true)),

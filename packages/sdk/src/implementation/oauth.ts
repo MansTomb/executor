@@ -7,7 +7,6 @@ import {
   Clock,
   type Crypto,
   Effect,
-  Encoding,
   Fiber,
   JsonSchema,
   Match,
@@ -16,6 +15,7 @@ import {
   SchemaRepresentation,
   Struct,
 } from "effect";
+import { Base64, Hex } from "effect/encoding";
 import {
   StartConnectionOAuth,
   CompleteConnectionOAuth,
@@ -403,7 +403,7 @@ export const makeOAuth = (
 ) => {
   const hash = (value: string) =>
     crypto.digest("SHA-256", new TextEncoder().encode(value)).pipe(
-      Effect.map(Encoding.encodeHex),
+      Effect.map(Hex.encode),
       Effect.mapError(() => new StorageError()),
     );
   const nextId = crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
@@ -751,7 +751,7 @@ export const makeOAuth = (
             : {
                 savedClient: {
                   key: clientId,
-                  version: Encoding.encodeBase64(reused?.version ?? encryptedClient),
+                  version: Base64.encode(reused?.version ?? encryptedClient),
                   ...(source === undefined ? {} : { source }),
                   fresh: reused === undefined,
                 },
@@ -971,7 +971,7 @@ export const makeOAuth = (
             Effect.gen(function* () {
               const saved = attempt.savedClient;
               if (saved === undefined) return yield* error;
-              const version = yield* Effect.fromResult(Encoding.decodeBase64(saved.version)).pipe(
+              const version = yield* Effect.fromResult(Base64.decode(saved.version)).pipe(
                 Effect.mapError(() => new StorageError()),
               );
               // Only the version this attempt used: a client saved since then stays.

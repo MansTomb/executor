@@ -21,7 +21,7 @@ import {
 import { Button } from "@executor-js/ui/components/button";
 import { Link, Navigate, useLocation } from "@tanstack/react-router";
 import { Cause, Exit, Option, Schema } from "effect";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useEffect, useState, type ReactNode } from "react";
 import { reportBrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
 import {

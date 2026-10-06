@@ -6,12 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { developmentDashboard } from "@executor-js/dashboard-start/development";
 import { hostedDocumentContext } from "@executor-js/hosted-server/document";
 import { Config, Console, Effect, Layer, Path } from "effect";
-import {
-  FetchHttpClient,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 const isApiPath = (pathname: string) =>
   pathname === "/api" ||

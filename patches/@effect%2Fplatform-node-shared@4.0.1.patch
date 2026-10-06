@@ -1,5 +1,5 @@
 diff --git a/dist/NodeChildProcessSpawner.js b/dist/NodeChildProcessSpawner.js
-index 732c848..6de1997 100644
+index 822127c47b984159183c62c9d4da3005d2993cf4..5bf3478fe0b70cac1a12d39ac78c17865900d901 100644
 --- a/dist/NodeChildProcessSpawner.js
 +++ b/dist/NodeChildProcessSpawner.js
 @@ -170,6 +170,9 @@ const make = /*#__PURE__*/Effect.gen(function* () {
@@ -13,7 +13,7 @@ index 732c848..6de1997 100644
                  evaluate: () => nodeStream,
                  onError: error => toPlatformError(`fromWritable(fd${fd})`, toError(error), command)
 diff --git a/src/NodeChildProcessSpawner.ts b/src/NodeChildProcessSpawner.ts
-index 588f989..99ff5ae 100644
+index 26143d53daa5b41194d93681161ec223179d1f10..d90e7b9655ffeaf0713dc9aa983822629fd21d65 100644
 --- a/src/NodeChildProcessSpawner.ts
 +++ b/src/NodeChildProcessSpawner.ts
 @@ -243,6 +243,9 @@ const make = Effect.gen(function*() {

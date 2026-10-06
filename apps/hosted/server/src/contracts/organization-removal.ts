@@ -1,7 +1,7 @@
 /** Removing an organization is a separate capability; a host composes it only where it applies. */
 import { Context, Effect, Schema } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { StorageError, AppWorkflowsActive, AccountWorkflowsActive } from "@executor-js/sdk/core";
 import { AuthenticationUnavailable } from "./auth.ts";
 import {

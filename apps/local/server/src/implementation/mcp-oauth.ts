@@ -25,7 +25,7 @@ import {
   Clock,
   Option,
 } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import type { ServerConfig } from "../contracts/config.ts";
 import { localRequest, sessionCookie, type LocalAuth } from "./auth.ts";

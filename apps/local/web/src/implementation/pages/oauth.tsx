@@ -1,4 +1,4 @@
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Effect } from "effect";
 import { useEffect } from "react";
