@@ -3479,6 +3479,16 @@ export const scenarios = {
       local: na("This scenario uses hosted APIs; localRejectionRecording covers Local."),
     },
   },
+  appEvaluationReporting: {
+    fixtures: "actors",
+    file: "app-evaluation-reporting.spec.ts",
+    title: "app evaluation failures explain the likely cause and still report as incidents",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("The hosted Sentry reporter and REST app routes own this behavior."),
+    },
+  },
   localRejectionRecording: {
     file: "client-rejection-reporting.spec.ts",
     title: "local request rejections are recorded on their request span",

@@ -13,7 +13,7 @@ import { ElicitationReply, FormElicitation } from "../elicitation.ts";
 import { RouterIcon } from "../router.ts";
 import { OperationSchedule } from "../schedules.ts";
 import { JsonObject, JsonValue } from "../schema.ts";
-import { AppSkillName, SkillLoadFailed } from "../skills.ts";
+import { AppSkillName } from "../skills.ts";
 import { ToolAnnotations } from "../tools.ts";
 import { WebhookCommand } from "../webhook-protocol.ts";
 import {
@@ -34,7 +34,7 @@ import {
   SkillCatalogResponse,
   TrustedToolApproval,
 } from "./3.ts";
-import { McpError, ProviderError } from "./1.ts";
+import { McpError, ProviderError, SkillLoadFailed } from "./1.ts";
 
 export {
   DeclaredAuthMethod,

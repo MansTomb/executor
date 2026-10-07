@@ -1,7 +1,6 @@
 export * from "./skills.ts";
-import { SkillLoadFailed, type SkillFile } from "./skills.ts";
+import { type SkillFile } from "./skills.ts";
 import { ProviderError } from "./provider-error.ts";
-import { McpError } from "./mcp.ts";
 import { OpenapiResponseError } from "./api-response-error.ts";
 export {
   ApiErrorResponse,
@@ -10,7 +9,6 @@ export {
   OpenapiResponseError,
 } from "./api-response-error.ts";
 export { ProviderError } from "./provider-error.ts";
-export { McpError } from "./mcp.ts";
 export {
   FetchOptionUnsupported,
   NetworkRefusal,
@@ -71,6 +69,7 @@ export { protocol5 } from "./protocols/5.ts";
 export { protocol6 } from "./protocols/6.ts";
 export { protocol7, AccountCheckCommand, CredentialHost } from "./protocols/7.ts";
 export { protocol8 } from "./protocols/8.ts";
+export { protocol9 } from "./protocols/9.ts";
 export { AccountCheckResult, AccountInfo } from "./provider.ts";
 import {
   HostAccountsInvalid,
@@ -86,13 +85,20 @@ import {
   HostToolBlocked,
   HostToolNotFound,
   HostToolPolicyFailed,
+  McpError,
+  SkillLoadFailed,
   SkillSources,
   type InvocationDeadline,
   ResolvedAccounts,
   type SkillCatalogResponse,
   type TrustedToolApproval,
-} from "./protocols/8.ts";
-export { DeclaredRequirements, HostRequest } from "./protocols/8.ts";
+} from "./protocols/9.ts";
+export { DeclaredRequirements, HostRequest } from "./protocols/9.ts";
+/**
+ * The MCP and skill loader failures as they cross the host boundary. Apps throw the author-facing
+ * classes from `apps/mcp` and `apps/skills`.
+ */
+export { McpError, SkillLoadFailed } from "./protocols/9.ts";
 export {
   DeclaredAuthMethod,
   DeclaredProvider,
@@ -126,7 +132,7 @@ export {
   HostError,
   HostResponse,
   HostInvocation,
-} from "./protocols/8.ts";
+} from "./protocols/9.ts";
 /** Raw host inputs; the host boundary parses and redacts these immediately. */
 export type ResolvedAccountsInput = typeof ResolvedAccounts.Encoded;
 

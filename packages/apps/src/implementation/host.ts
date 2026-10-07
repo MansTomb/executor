@@ -1,5 +1,5 @@
 import { folderSkillsEffect } from "./skill-files.ts";
-import { AppSkills, SkillFile, SkillLoadFailed } from "../contracts/skills.ts";
+import { AppSkills, SkillFile } from "../contracts/skills.ts";
 import { accountProviderError, httpProviderError, parseProviderError } from "./provider-error.ts";
 import { ResponseStatusError } from "../contracts/http.ts";
 import { OpenapiResponseError } from "../contracts/api-response-error.ts";
@@ -77,6 +77,7 @@ import {
   failureDetail,
   leavingProviderError,
   parseMcpError,
+  parseSkillLoadFailed,
 } from "./failure-detail.ts";
 
 /** Either catalog detail on the wire; summaries are descriptions without schemas. */
@@ -913,19 +914,6 @@ function checkAccount(
     );
   });
 }
-
-/** Rebuild only the allowlisted skill loader fields from an author-visible rejection. */
-const parseSkillLoadFailed = (error: unknown): Option.Option<SkillLoadFailed> =>
-  Schema.decodeUnknownOption(SkillLoadFailed)(error).pipe(
-    Option.map(
-      ({ reason, message, status }) =>
-        new SkillLoadFailed({
-          reason,
-          ...(message ? { message } : {}),
-          ...(status === undefined ? {} : { status }),
-        }),
-    ),
-  );
 
 const errorStatus = Match.type<HostError>().pipe(
   Match.tagsExhaustive({

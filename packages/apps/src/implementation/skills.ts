@@ -35,7 +35,7 @@ import {
 } from "../contracts/skills.ts";
 
 const failed = (reason: SkillLoadFailed["reason"]) => new SkillLoadFailed({ reason });
-/** Keep only the status and whether the service reported a rate limit. */
+/** Keep only the status the request returned and whether it reported a rate limit. */
 const rejected = (status: number, headers: Readonly<Record<string, string>>) =>
   new SkillLoadFailed({
     reason:
@@ -66,27 +66,24 @@ const describe = (service: string, { reason, status }: SkillLoadFailed) => {
 /** Give every failure without a message one that names the service. */
 export const withService =
   (service: string | undefined) =>
-  <A, R>(effect: Effect.Effect<A, SkillLoadFailed, R>) =>
+  <A, R>(effect: Effect.Effect<A, SkillLoadFailed | NetworkRefused, R>) =>
     service === undefined || !Schema.is(SkillServiceName)(service)
       ? effect
       : effect.pipe(
           Effect.mapError((error) =>
-            !error.message
+            Schema.is(SkillLoadFailed)(error) && !error.message
               ? new SkillLoadFailed({
                   reason: error.reason,
                   message: describe(service, error),
                   ...(error.status === undefined ? {} : { status: error.status }),
+                  ...(error.missing === undefined ? {} : { missing: error.missing }),
                 })
               : error,
           ),
         );
-/** Executor's app network refused the request, so the service never saw it. */
-const refusedRequest = (refused: NetworkRefused) =>
-  new SkillLoadFailed({
-    reason: "source",
-    status: networkRefusalStatus,
-    message: refused.message.slice(0, 500),
-  });
+/** Keep network refusals and the loader's own failures; anything else did not load. */
+const loaderFailure = (error: unknown, otherwise: () => SkillLoadFailed) =>
+  Schema.is(SkillLoadFailed)(error) || Schema.is(NetworkRefused)(error) ? error : otherwise();
 const parse = <S extends Schema.Top>(schema: S, input: unknown) =>
   Schema.decodeUnknownEffect(schema)(input).pipe(Effect.mapError(() => failed("document")));
 
@@ -108,8 +105,8 @@ const pathUrl = (base: string, path: string) =>
 
 interface ReadRequest {
   readonly headers?: Readonly<Record<string, string>>;
-  /** Describe a refusal by Executor's app network; defaults to the refusal's own message. */
-  readonly refused?: (refused: NetworkRefused) => SkillLoadFailed;
+  /** Describe a refusal by Executor's app network; defaults to the refusal itself. */
+  readonly refused?: (refused: NetworkRefused) => SkillLoadFailed | NetworkRefused;
 }
 
 /** One loader invocation owns its byte budget and all of its network requests. */
@@ -130,7 +127,7 @@ export const reader = (transport: SkillTransport) =>
           parsed.hash
         )
           return yield* failed("source");
-        const refused = request.refused ?? refusedRequest;
+        const refusal = request.refused ?? ((refused: NetworkRefused) => refused);
         const client = HttpClient.withScope(yield* HttpClient.HttpClient);
         const headers = {
           "User-Agent": "executor-skills",
@@ -146,13 +143,13 @@ export const reader = (transport: SkillTransport) =>
                 body: HttpBody.uint8Array(request.body, request.headers?.["Content-Type"]),
               })
         ).pipe(
-          // `ctx.fetch` rejects a request Executor's app network refused.
+          // `ctx.fetch` rejects with a network refusal; any other failed request got no answer.
           Effect.mapError((error) =>
-            Schema.is(NetworkRefused)(error.cause) ? refused(error.cause) : failed("request"),
+            Schema.is(NetworkRefused)(error.cause) ? refusal(error.cause) : failed("request"),
           ),
         );
-        // The platform's fetch returns the refusal as a marked response instead.
-        yield* failOnNetworkRefusal(response).pipe(Effect.mapError(refused));
+        // A response marked as a network refusal fails as one, whatever its status.
+        yield* failOnNetworkRefusal(response).pipe(Effect.mapError(refusal));
         if (response.status < 200 || response.status >= 300)
           return yield* rejected(response.status, response.headers);
         const chunks: Uint8Array[] = [];
@@ -223,9 +220,9 @@ const githubRequests = (remote: Remote, repo: string, token: string | undefined)
       ? new SkillLoadFailed({
           reason: "source",
           status: networkRefusalStatus,
-          message: `Executor did not send the GitHub token to ${host}. The account's provider must declare hosts ${githubHosts.join(" and ")}; reconnect an account connected with other hosts.`,
+          message: `A request with the GitHub token to ${host} was refused because the account's provider does not declare that host. The provider must declare hosts ${githubHosts.join(" and ")}; reconnect an account connected with other hosts.`,
         })
-      : refusedRequest(refusal);
+      : refusal;
   const upload = (body: Uint8Array) =>
     remote.fetchBytes(`https://${githubHosts[0]}/${repo}.git/git-upload-pack`, {
       body,
@@ -257,28 +254,36 @@ const resolveCommit = (github: GitHub, ref: string | undefined) =>
     const names = refCandidates(ref);
     const response = yield* github.upload(lsRefsRequest(names)).pipe(
       Effect.mapError((error) => {
-        // Without credentials GitHub asks for them when a repository is missing or private. With
-        // them, it hides a repository the token cannot read and rejects a bad token with 401.
-        const hidden =
-          error.reason === "request" &&
-          (error.status === 404 || (error.status === 401 && !github.authenticated));
-        return hidden
-          ? new SkillLoadFailed({
-              reason: "source",
-              message: github.authenticated
-                ? `GitHub has no repository named ${repo} that the account's token can read.`
-                : `GitHub has no public repository named ${repo}. To read a private repository, pass a GitHub account and its token.`,
-              status: error.status,
-            })
-          : error;
+        if (!Schema.is(SkillLoadFailed)(error) || error.reason !== "request") return error;
+        // Without credentials GitHub asks for them when a repository is missing or private. The
+        // status reached the app's code, which may have replaced the fetch, so the repository is
+        // not claimed missing.
+        if (!github.authenticated && (error.status === 404 || error.status === 401))
+          return new SkillLoadFailed({
+            reason: "source",
+            message: `Reading GitHub repository ${repo} without credentials returned HTTP ${error.status}: it may not exist, or it may be private. To read a private repository, pass a GitHub account and its token.`,
+            status: error.status,
+            missing: "repository",
+          });
+        // With them, GitHub answers 404 for a repository the token cannot read as for one that
+        // does not exist, and the token is Executor's to send, so neither is claimed.
+        if (github.authenticated && error.status === 404)
+          return new SkillLoadFailed({
+            reason: "request",
+            message: `GitHub repository ${repo} is not available with the account's token (HTTP 404). Check the repository name and that the token can read it.`,
+            status: error.status,
+          });
+        return error;
       }),
     );
     const refs = yield* git(() => parseLsRefs(response));
     const commit = names.map((name) => refs.get(name)).find((sha) => sha !== undefined);
+    // The refs read from the repository include none with this name.
     if (commit === undefined)
       return yield* new SkillLoadFailed({
         reason: "source",
-        message: `GitHub repository ${repo} has no branch or tag named ${ref}.`,
+        message: `The refs read from GitHub repository ${repo} include no branch or tag named ${ref}.`,
+        missing: "ref",
       });
     return commit;
   });
@@ -312,7 +317,7 @@ const skillDirectories = (
   github: GitHub,
   commit: string,
   path: string | undefined,
-): Effect.Effect<SkillDirectories, SkillLoadFailed> =>
+): Effect.Effect<SkillDirectories, SkillLoadFailed | NetworkRefused> =>
   Effect.gen(function* () {
     const files = yield* listFiles(github, commit, path);
     const documents = files.filter(
@@ -359,12 +364,14 @@ const cachedSkillDirectories = (
           ),
       }),
     catch: (error) =>
-      Schema.is(SkillLoadFailed)(error)
-        ? error
-        : new SkillLoadFailed({
+      loaderFailure(
+        error,
+        () =>
+          new SkillLoadFailed({
             reason: "request",
             message: "Executor could not read or update the app cache for skills.",
           }),
+      ),
   });
 
 /**
@@ -377,7 +384,7 @@ const cachedCatalog = (
   load: (
     transport: SkillTransport,
     cache: AppCache | undefined,
-  ) => Effect.Effect<typeof AppSkills.Type, SkillLoadFailed>,
+  ) => Effect.Effect<typeof AppSkills.Type, SkillLoadFailed | NetworkRefused>,
 ) =>
   options.cache === undefined
     ? load(options, undefined)
@@ -396,12 +403,14 @@ const cachedCatalog = (
       }).pipe(
         Effect.flatMap((catalog) => catalog.list()),
         Effect.mapError((error) =>
-          Schema.is(SkillLoadFailed)(error)
-            ? error
-            : new SkillLoadFailed({
+          loaderFailure(
+            error,
+            () =>
+              new SkillLoadFailed({
                 reason: "request",
                 message: "Executor could not read or update the app cache for skills.",
               }),
+          ),
         ),
       );
 
@@ -434,8 +443,9 @@ const githubCache = (options: GitHubSkillsOptions) =>
 /** GitHub rejected the account's token or refused its request; name the account. */
 const attributed =
   (account: { readonly id: string } | undefined) =>
-  (error: SkillLoadFailed): SkillLoadFailed | ProviderError =>
+  (error: SkillLoadFailed | NetworkRefused): SkillLoadFailed | NetworkRefused | ProviderError =>
     account !== undefined &&
+    Schema.is(SkillLoadFailed)(error) &&
     error.reason === "request" &&
     (error.status === 401 || error.status === 403)
       ? accountProviderError(
@@ -449,7 +459,7 @@ const attributed =
 
 export const githubSkillsEffect = (
   options: GitHubSkillsOptions,
-): Effect.Effect<typeof AppSkills.Type, SkillLoadFailed | ProviderError> =>
+): Effect.Effect<typeof AppSkills.Type, SkillLoadFailed | NetworkRefused | ProviderError> =>
   Effect.gen(function* () {
     if (
       !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(options.repo) ||

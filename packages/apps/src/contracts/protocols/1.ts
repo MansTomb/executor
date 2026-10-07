@@ -22,7 +22,7 @@ import {
 import { OAuth2Config } from "./oauth.ts";
 import { OperationSchedule } from "../schedules.ts";
 import { AccountId, JsonObject, JsonValue } from "../schema.ts";
-import { AppSkills, SkillLoadFailed } from "../skills.ts";
+import { AppSkills } from "../skills.ts";
 import { ToolAnnotations } from "../tools.ts";
 import { WebhookCommand } from "../webhook-protocol.ts";
 import {
@@ -51,6 +51,21 @@ export class McpError extends Schema.TaggedError<McpError>()("McpError", {
     "invalid_input",
   ]),
   status: Schema.optional(Schema.Number),
+}) {}
+
+/** Protocols 1 to 8's skill loader failure, as released: a reason, a message and an HTTP status. */
+export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("SkillLoadFailed", {
+  reason: Schema.Literals([
+    "source",
+    "request",
+    "rate_limited",
+    "document",
+    "limit",
+    "changed",
+    "encoding",
+  ]),
+  message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+  status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
 }) {}
 
 /** Protocol 1's workflow failure: a reason code only, as released. */

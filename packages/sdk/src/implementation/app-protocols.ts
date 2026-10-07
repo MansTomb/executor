@@ -43,17 +43,24 @@ export interface AppProtocol {
   readonly workflow: (execution: WorkflowExecution) => WorkflowExecution;
 }
 
-/** Protocol 8 is the host's current protocol, so its messages need no conversion. */
-const protocol8: AppProtocol = {
-  version: 8,
+/** Protocol 9 is the host's current protocol, so its messages need no conversion. */
+const protocol9: AppProtocol = {
+  version: 9,
   workerEntry: appBridge,
-  nodeEntry: nodeAppEntry(8),
+  nodeEntry: nodeAppEntry(9),
   invocation: (input) => JSON.stringify(input),
   request: (command) => command,
   refuse: () => undefined,
   response: (_command, body) => Effect.succeed(body),
   workflow: (execution) => execution,
 };
+
+/**
+ * Protocol 8 is protocol 9 without the session an MCP failure's request carried or what a skill
+ * source is missing. Its failures are protocol 9 failures without that detail, so every reply is
+ * unchanged.
+ */
+const protocol8: AppProtocol = { ...protocol9, version: 8, nodeEntry: nodeAppEntry(8) };
 
 /**
  * Protocol 7 is protocol 8 without upstream failure detail. Its failures are protocol 8 failures
@@ -150,6 +157,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol6,
     protocol7,
     protocol8,
+    protocol9,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

@@ -15,7 +15,6 @@ import { OpenapiResponseError } from "../api-response-error.ts";
 import { ElicitationFailed, ElicitationReply, FormElicitation } from "../elicitation.ts";
 import { FailureCode, FailureMessage, FailureName, FailureSource } from "../failure.ts";
 import { JsonValue } from "../schema.ts";
-import { SkillLoadFailed } from "../skills.ts";
 import {
   WorkflowControlCommand,
   WorkflowFailure,
@@ -39,6 +38,7 @@ import {
   HostToolPolicyFailed,
   McpError,
   ProviderError,
+  SkillLoadFailed,
 } from "./1.ts";
 import { SkillCatalogResponse } from "./2.ts";
 

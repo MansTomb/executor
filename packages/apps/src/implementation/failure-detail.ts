@@ -5,8 +5,13 @@ import { AppStorageError, AppStorageUnavailable } from "../contracts/storage.ts"
 import { OpenapiError } from "../contracts/openapi.ts";
 import { OpenapiCompileError } from "../contracts/openapi-compile.ts";
 import { FetchOptionUnsupported, NetworkRefused } from "../contracts/network.ts";
-import type { ResolvedAccounts } from "../contracts/host.ts";
+import {
+  McpError as HostMcpError,
+  SkillLoadFailed as HostSkillLoadFailed,
+  type ResolvedAccounts,
+} from "../contracts/host.ts";
 import { McpCredentialsUnverified, McpError } from "../contracts/mcp.ts";
+import { SkillLoadFailed } from "../contracts/skills.ts";
 import type { ProviderError } from "../contracts/provider-error.ts";
 import { providerError } from "./provider-error.ts";
 import { isShortenedUpstream } from "./upstream-error.ts";
@@ -200,17 +205,32 @@ export const leavingProviderError = (
 export const parseMcpError = (
   error: unknown,
   secrets: readonly string[],
-): Option.Option<McpError> =>
+): Option.Option<HostMcpError> =>
   Schema.decodeUnknownOption(McpError)(error).pipe(
-    Option.map(({ phase, reason, status, upstream }) => {
+    Option.map(({ phase, reason, status, upstream, session }) => {
       const stated = redactUpstream(upstream, secrets);
-      return new McpError({
+      return new HostMcpError({
         phase,
         reason,
         ...(status === undefined ? {} : { status }),
         ...(stated === undefined ? {} : { upstream: stated }),
+        ...(session === undefined ? {} : { session }),
       });
     }),
+  );
+
+/** Rebuild only the allowlisted skill loader fields from an author-visible rejection. */
+export const parseSkillLoadFailed = (error: unknown): Option.Option<HostSkillLoadFailed> =>
+  Schema.decodeUnknownOption(SkillLoadFailed)(error).pipe(
+    Option.map(
+      ({ reason, message, status, missing }) =>
+        new HostSkillLoadFailed({
+          reason,
+          ...(message ? { message } : {}),
+          ...(status === undefined ? {} : { status }),
+          ...(missing === undefined ? {} : { missing }),
+        }),
+    ),
   );
 
 const errorName = (error: Error) => (error.name.length > 0 ? error.name : "Error").slice(0, 128);

@@ -110,6 +110,10 @@ export const SkillServiceName = Schema.String.check(
  * A skill loader failure shown to people. `message` is the explanation they read; write it for
  * them and never include URLs, tokens or response bodies. `reason` selects the title and whether
  * a retry can help. Custom loaders throw this error to get the same presentation as built-ins.
+ * With `source`, `missing` names what the service's answer points to as missing: the `repository`,
+ * or the branch or tag (`ref`). It may be missing, or not readable with the request's credentials.
+ * Without it, the source's settings or the paths it lists are not valid.
+ * These fields choose the explanation; they never show that the failure lies outside Executor.
  */
 export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("SkillLoadFailed", {
   reason: Schema.Literals([
@@ -124,6 +128,7 @@ export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("Skil
   // Error instances read an omitted message as "", so an empty message means none was given.
   message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
   status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
+  missing: Schema.optional(Schema.Literals(["repository", "ref"])),
 }) {}
 /** Bounds shared by skill loaders across all app hosts. */
 export const skillLoadLimits = {

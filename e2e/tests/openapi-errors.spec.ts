@@ -513,8 +513,7 @@ export default defineApp({ accounts: {} }, async () => {
           message:
             "Executor could not load this app’s tool definitions. The app threw Error: Synthetic factory failure",
           recovery: {
-            action:
-              "Try again. If this continues, fix the app code that raised this error and deploy it.",
+            action: "Try again. If this continues, investigate this error and fix its cause.",
           },
         });
         expect(JSON.stringify(discovered)).not.toContain(openapiSecretMarker);

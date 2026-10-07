@@ -84,7 +84,9 @@ export default defineApp({ accounts: {} }, async () => {
         );
         expect(prompt).toContain(app.id);
         expect(prompt).toContain("AppEvaluationFailed");
-        expect(prompt).toContain("raised this error, not Executor");
+        // The app's code raised it, which does not show whether Executor caused it.
+        expect(prompt).toContain("failed with this error. It does not show whether the cause");
+        expect(prompt).not.toContain("not Executor");
         expect(prompt).toContain("SYNTHETIC_FACTORY_FAILURE");
 
         const retry = yield* holdQuery(paths, "continue");

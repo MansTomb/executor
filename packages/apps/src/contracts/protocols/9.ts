@@ -1,32 +1,35 @@
 /**
- * Host protocol 8: protocol 7 plus upstream failure detail.
+ * Host protocol 9: protocol 8 plus detail that chooses a failure's explanation.
  *
- * Declaration, evaluation and operation failures may carry the thrown error's own scalar fields,
- * such as a spec compiler's `reason` and `pointer`, beside its name, code and message. A provider
- * failure may carry the phase it happened in and the error code and description the service
- * stated, and an MCP failure the JSON-RPC error the server answered with. Older bundles never send
- * them, so their replies are protocol 8 replies without the detail. Every other message is
- * protocol 7's, re-exported unchanged.
+ * An MCP failure may say that the refused request carried the session the server issued at
+ * initialization (`session`). A skill loader failure may name what its service's answer points to
+ * as missing (`missing`: the repository, or the branch or tag). These fields only choose the copy:
+ * they cross from the app's code, so they never show whose side a failure is on. Older bundles
+ * never send them, so their replies are protocol 9 replies without the detail. Every other message
+ * is protocol 8's, re-exported unchanged.
  *
- * Once released this protocol is frozen like the earlier ones: `bun run check` compares `protocol8`
- * with `packages/apps/protocols/8.json`. Define the next protocol instead of editing this file.
+ * Once released this protocol is frozen like the earlier ones: `bun run check` compares `protocol9`
+ * with `packages/apps/protocols/9.json`. Define the next protocol instead of editing this file.
  * See notes/apps-publishing.md.
  */
 import { Schema } from "effect";
 import { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-data/contracts";
 import { OpenapiResponseError } from "../api-response-error.ts";
 import { ElicitationFailed } from "../elicitation.ts";
-import { FailureDetail, UpstreamError } from "../failure.ts";
+import { UpstreamError } from "../failure.ts";
 import { ProviderError } from "../provider-error.ts";
 import { JsonValue } from "../schema.ts";
 import { WorkflowFailure } from "../workflows.ts";
 import {
   HostAccountsInvalid,
+  HostDeclarationInvalid,
   HostedRouter as PreviousRouter,
   HostedCatalog as PreviousCatalog,
   HostedCatalogSummary as PreviousCatalogSummary,
+  HostEvaluationFailed,
   HostInputInvalid,
   HostKindMismatch,
+  HostOperationFailed,
   HostOperationNotFound,
   HostOutputInvalid,
   HostRequestInvalid,
@@ -34,13 +37,12 @@ import {
   HostToolBlocked,
   HostToolNotFound,
   HostToolPolicyFailed,
-  protocol7,
-} from "./7.ts";
-import { SkillLoadFailed } from "./1.ts";
+  protocol8,
+} from "./8.ts";
 
-export * from "./7.ts";
+export * from "./8.ts";
 
-/** Protocol 8's MCP failure, as released: protocol 1's with the JSON-RPC error the server stated. */
+/** Protocol 9's MCP failure: protocol 8's, with `session`. */
 export class McpError extends Schema.TaggedError<McpError>()("McpError", {
   phase: Schema.Literals(["connect", "discover", "call", "schema", "transport"]),
   reason: Schema.Literals([
@@ -52,26 +54,24 @@ export class McpError extends Schema.TaggedError<McpError>()("McpError", {
   ]),
   status: Schema.optional(Schema.Number),
   upstream: Schema.optional(UpstreamError),
+  session: Schema.optional(Schema.Literal(true)),
 }) {}
 
-/**
- * The module or declared capability shape could not be hosted. The detail names what the app
- * declared wrongly; declarations bind no accounts.
- */
-export class HostDeclarationInvalid extends Schema.TaggedError<HostDeclarationInvalid>()(
-  "HostDeclarationInvalid",
-  FailureDetail,
-) {}
-/** Fresh app evaluation failed before calling a tool. */
-export class HostEvaluationFailed extends Schema.TaggedError<HostEvaluationFailed>()(
-  "HostEvaluationFailed",
-  FailureDetail,
-) {}
-/** An app operation failed. Carries the app's own error name, code, fields and bounded message. */
-export class HostOperationFailed extends Schema.TaggedError<HostOperationFailed>()(
-  "HostOperationFailed",
-  FailureDetail,
-) {}
+/** Protocol 9's skill loader failure: protocol 1's, with `missing`. */
+export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("SkillLoadFailed", {
+  reason: Schema.Literals([
+    "source",
+    "request",
+    "rate_limited",
+    "document",
+    "limit",
+    "changed",
+    "encoding",
+  ]),
+  message: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
+  status: Schema.optional(Schema.Int.check(Schema.isBetween({ minimum: 100, maximum: 599 }))),
+  missing: Schema.optional(Schema.Literals(["repository", "ref"])),
+}) {}
 
 /** Why one router's tools could not be read. The rest of the app's catalog is unaffected. */
 export const HostRouterError = Schema.Union([
@@ -83,7 +83,7 @@ export const HostRouterError = Schema.Union([
 ]);
 export type HostRouterError = typeof HostRouterError.Type;
 
-/** One router in a live catalog, whose error carries protocol 8's detail. */
+/** One router in a live catalog, whose error carries protocol 9's detail. */
 export const HostedRouter = Schema.Struct({
   ...PreviousRouter.fields,
   error: Schema.optionalKey(HostRouterError),
@@ -146,11 +146,11 @@ export const HostResponse = Schema.Union([
 /** Parsed response envelope. */
 export type HostResponse = typeof HostResponse.Type;
 
-/** Every message of protocol 8, in the order its snapshot records them. */
-export const protocol8 = {
-  version: 8,
+/** Every message of protocol 9, in the order its snapshot records them. */
+export const protocol9 = {
+  version: 9,
   schemas: {
-    ...protocol7.schemas,
+    ...protocol8.schemas,
     response: HostResponse,
     catalog: HostedCatalog,
     catalogSummary: HostedCatalogSummary,

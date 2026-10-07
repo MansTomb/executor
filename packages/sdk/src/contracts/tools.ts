@@ -7,6 +7,7 @@ import {
   FailurePhase,
   FailureSource,
   McpError,
+  networkRefusalStatus,
   ProviderError,
   SkillLoadFailed,
   UpstreamError,
@@ -152,6 +153,42 @@ export type ToolIndex = typeof ToolIndex.Type;
 
 const evaluationInstructions =
   "Reproduce tool discovery for the current app, deployment, and selected profile. Inspect safe runtime diagnostics to distinguish an unavailable build, invalid app definition, invalid account bindings, protocol failure, or app evaluation failure. This error alone does not identify which cause occurred. Do not assume an account needs reconnecting. Verify that the Tools page loads after the repair.";
+/**
+ * What to do when the answer the skill loader received points to a repository or ref it cannot
+ * find. The answer reached the app's code, which can stand in for a failed request, so it is not
+ * claimed to be the service's, and the repository is not claimed missing.
+ */
+const missingSource = {
+  repository: {
+    action:
+      "Check the repository the app’s skill source names. If it is private, pass a GitHub account and its token to the skill loader.",
+    instructions:
+      "Reading the repository the skill source names without credentials returned HTTP 404 or 401: it may be misspelled, it may be private, or the request may have failed. This does not show that the repository does not exist. Check the repository name in the skill loader's options for typos. For a private repository, pass the loader a GitHub account and its token, such as account: ctx.accounts.github and token: ctx.accounts.github.fields.token, from a provider that declares hosts github.com and raw.githubusercontent.com; the user connects an account whose token can read the repository. Alternatively, bundle its skill folders with the app.",
+  },
+  ref: {
+    action: "Check the branch or tag the app’s skill source names.",
+    instructions:
+      "The refs read from the repository include no branch or tag with the name the skill source gives. Check the ref in the skill loader's options against the repository's branches and tags.",
+  },
+} as const;
+/**
+ * A service that answers 404 may hide a source the request's credentials cannot read, as GitHub
+ * does for a private repository, so the source is not claimed missing.
+ */
+const unavailableSource = {
+  action:
+    "Check the address or repository the app’s skill source names, and that any account it reads with can access it.",
+  instructions:
+    "Reading the source returned HTTP 404. The address or repository name may be misspelled, or the source may exist but not be readable with the credentials sent: GitHub answers 404 when a token cannot read a private repository. This does not show that the source does not exist. Check the name in the skill loader's options for typos, and that the account passed to the loader, if any, is selected and its token can read the source. Do not print the token.",
+};
+/** A request carrying an account's token was refused for a host its provider does not declare. */
+const refusedCredentialHost = {
+  action: "Check the hosts the provider of the skill loader’s account declares.",
+  instructions:
+    "A request of the skill loader that carried the account's token was refused because the account's provider does not declare the host it went to. The provider must declare every host the loader sends the token to: for GitHub, github.com and raw.githubusercontent.com. Reconnect an account connected with the provider's current hosts. Do not print the token.",
+};
+const invalidSourceInstructions =
+  "The skill loader reported a problem with its source, which its message names. Its settings may not be valid, such as a malformed or non-HTTP URL or an invalid repository name or path, or the source may list a file Executor cannot read, such as a symbolic link or a path outside the skill's folder. Check the skill loader's options and the files the source publishes.";
 const skillInstructions =
   "The app loads skills from a remote source. Read the app source to find the skill loader and its options. Do not print credentials or raw responses, and do not change accounts. If the factory awaits the loader, tools and skills both fail when that load fails. Declare it with dynamicSkills instead, such as dynamicSkills: dynamicSkills({ list: () => githubSkills(...) }), so only skill reads call it. To stop depending on the remote source, the app can bundle its skill folders and read them with folderSkills. Verify that the Skills and Tools pages load after the repair.";
 
@@ -206,26 +243,46 @@ const skillPresentation = ({
   reason,
   message,
   status,
+  missing,
 }: {
   readonly reason: SkillLoadFailed["reason"];
   readonly message?: string | undefined;
   readonly status?: number | undefined;
+  readonly missing?: SkillLoadFailed["missing"];
 }) => {
   const retryable =
     reason === "rate_limited" ||
     reason === "changed" ||
     (reason === "request" && (status === undefined || status >= 500));
+  const source =
+    reason === "request" && status === 404
+      ? unavailableSource
+      : reason !== "source"
+        ? undefined
+        : status === networkRefusalStatus
+          ? refusedCredentialHost
+          : missing === undefined
+            ? {
+                action: "Check the app’s skill source settings and the files it lists.",
+                instructions: invalidSourceInstructions,
+              }
+            : missingSource[missing];
   const action =
-    reason === "rate_limited"
+    source?.action ??
+    (reason === "rate_limited"
       ? "Wait for the rate limit to reset, then try again."
       : retryable
         ? "Try again. If this continues, check the app’s skill source."
-        : "Check the app’s skill source, then try again.";
+        : "Check the app’s skill source, then try again.");
   return {
     title:
       reason === "rate_limited" ? "Skill source rate limit reached" : "Skills could not be loaded",
     description: message || "The app could not load its skills.",
-    recovery: { action, instructions: skillInstructions },
+    recovery: {
+      action,
+      instructions:
+        source === undefined ? skillInstructions : `${source.instructions} ${skillInstructions}`,
+    },
     retryable,
   };
 };
@@ -240,19 +297,28 @@ export const McpFailure = Schema.Struct({
   status: McpError.fields.status,
   /** The JSON-RPC error the server answered with, bounded and with account secrets replaced. */
   upstream: McpError.fields.upstream,
+  /** The refused request carried the session ID the server issued at initialization. */
+  session: McpError.fields.session,
 });
 export type McpFailure = typeof McpFailure.Type;
 
 /** An MCP failure's fields, without keys for absent ones. */
-const mcpFailure = ({ phase, reason, status, upstream }: McpError): McpFailure => ({
+const mcpFailure = ({ phase, reason, status, upstream, session }: McpError): McpFailure => ({
   phase,
   reason,
   ...(status === undefined ? {} : { status }),
   ...(upstream === undefined ? {} : { upstream }),
+  ...(session === undefined ? {} : { session }),
 });
 
 /** Present an MCP server failure from its safe phase, reason, HTTP status and JSON-RPC error. */
-export const mcpFailurePresentation = ({ phase, reason, status, upstream }: McpFailure) => {
+export const mcpFailurePresentation = ({
+  phase,
+  reason,
+  status,
+  upstream,
+  session,
+}: McpFailure) => {
   const http = status === undefined ? "" : ` (HTTP ${status})`;
   const answered = upstreamText(upstream, "The server answered with JSON-RPC error");
   const stage =
@@ -325,6 +391,21 @@ export const mcpFailurePresentation = ({ phase, reason, status, upstream }: McpF
           },
           retryable: true,
         };
+      // A server may answer a request carrying the session it issued with 404 when it no longer
+      // has that session, such as one run on several instances that do not share sessions. A new
+      // listing opens another. `session` comes from the app, so the copy only says the session
+      // may have expired. Without a session, a 404 is an ordinary refusal.
+      if (status === 404 && phase === "discover" && session === true)
+        return {
+          title: "MCP session may have expired",
+          description: `The app reported HTTP 404 while listing tools with a session; the server may no longer recognize it.${answered}`,
+          recovery: {
+            action:
+              "Try again. If this continues, check that the MCP server keeps its sessions, for example across all of its instances.",
+            instructions,
+          },
+          retryable: true,
+        };
       if (status !== undefined)
         return {
           title: "MCP server refused the request",
@@ -336,12 +417,13 @@ export const mcpFailurePresentation = ({ phase, reason, status, upstream }: McpF
           retryable: false,
         };
       // A JSON-RPC error inside a successful response, such as arguments a tool rejects, states
-      // the server's error. Without one, only a transport failure never reached the server.
+      // the server's error. Without one, a transport failure got no answer from the server: it
+      // may not be reachable, or Executor's own request failed.
       return upstream === undefined
         ? phase === "transport"
           ? {
-              title: "MCP server unreachable",
-              description: `Executor could not reach the app’s MCP server while ${stage}.`,
+              title: "MCP server did not answer",
+              description: `Executor’s request to the app’s MCP server failed before the server answered, while ${stage}.`,
               recovery: {
                 action: "Try again. If this continues, check the MCP server’s address and status.",
                 instructions,
@@ -386,6 +468,7 @@ export const AppEvaluationFailed = UserFacingError.define({
         reason: SkillLoadFailed.fields.reason,
         message: SkillLoadFailed.fields.message,
         status: SkillLoadFailed.fields.status,
+        missing: SkillLoadFailed.fields.missing,
       }),
     ),
     /** Present when the app's own code threw while loading its definition. */
@@ -404,9 +487,8 @@ export const AppEvaluationFailed = UserFacingError.define({
             title: "Tools could not be loaded",
             description: `Executor could not load this app’s tool definitions. ${appFailureText(failure)}`,
             recovery: {
-              action:
-                "Try again. If this continues, fix the app code that raised this error and deploy it.",
-              instructions: `The app's factory or dynamic tool loader raised this error, not Executor. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the app raises it, fix the cause, deploy the app, and verify that its tools load. Error: ${appFailureText(failure)}`,
+              action: "Try again. If this continues, investigate this error and fix its cause.",
+              instructions: `The app's factory or dynamic tool loader failed with this error. It does not show whether the cause is the app's code, a service the app calls, or Executor, such as its storage or network. A transient cause, such as an unavailable upstream, may clear on retry. Otherwise find where the error is raised and what caused it, fix the cause, and verify that the app's tools load. Error: ${appFailureText(failure)}`,
             },
             retryable: true,
           }
@@ -599,6 +681,7 @@ export const evaluationFailure = (
             reason: error.reason,
             ...(error.message ? { message: error.message } : {}),
             ...(error.status === undefined ? {} : { status: error.status }),
+            ...(error.missing === undefined ? {} : { missing: error.missing }),
           },
         }
       : {}),
