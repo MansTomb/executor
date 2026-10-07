@@ -141,6 +141,7 @@ export interface GrantOAuthOptions {
   readonly resources: NonNullable<OAuthOptions<Scope[]>["resources"]>;
   readonly scopes: Scope[];
 }
+const accessTokenSeconds = 3600;
 /** Missing grant records fail closed, including credentials issued before this plugin was installed. */
 export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
   const { origin } = settings;
@@ -156,7 +157,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     clientRegistrationRequirePKCE: true,
     grantTypes: ["authorization_code", "refresh_token"],
     disableJwtPlugin: true,
-    accessTokenExpiresIn: 3600,
+    accessTokenExpiresIn: accessTokenSeconds,
+    // MCP clients often run several instances from one stored grant, each refreshing its own
+    // copy. A sibling presenting a token rotated while that rotation's access token is still
+    // live receives the same response instead of revoking every token for the client and user.
+    // Later reuse still revokes the family.
+    refreshTokenReuseInterval: accessTokenSeconds,
     loginPage: "/mcp/authorize",
     consentPage: "/mcp/authorize",
     clientPrivileges: () => false,

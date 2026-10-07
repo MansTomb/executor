@@ -4758,6 +4758,26 @@ export const scenarios = {
       cloud: na("Hosted consent is covered by the organization Claude Code scenario."),
     },
   },
+  mcpStaleRefresh: {
+    fixtures: "actors",
+    file: "mcp-oauth-refresh.spec.ts",
+    title: "A sibling MCP client refreshing a rotated grant keeps every instance signed in",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario tests hosted organization consent, which Local does not have."),
+    },
+  },
+  mcpLateRefreshReuse: {
+    fixtures: "actors",
+    file: "mcp-oauth-refresh.spec.ts",
+    title: "A rotated MCP refresh token replayed after the access-token hour ends every copy",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Advances the wall clock of a runner-owned product process."),
+      local: na("This scenario tests hosted organization consent, which Local does not have."),
+    },
+  },
   mcpProtocol: {
     fixtures: "actors",
     file: "mcp-server.spec.ts",
