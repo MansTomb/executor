@@ -16,8 +16,7 @@ import { cloudAnalytics } from "./implementation/product-analytics.ts";
 import { postHogBindings } from "./infrastructure/posthog.ts";
 import { cloudAppSessions } from "./infrastructure/app-sessions.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
-import { cloudProduct } from "./infrastructure/product.ts";
-import { cloudArtifactsTokensLive } from "./infrastructure/artifacts-tokens.ts";
+import { cloudAppPagesProduct } from "./infrastructure/app-pages-product.ts";
 import { sentryBindings } from "./infrastructure/sentry.ts";
 import { cloudOrigin } from "./infrastructure/stage.ts";
 import { appDataSupervisors } from "./infrastructure/app-data.ts";
@@ -73,10 +72,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const reportErrors = yield* cloudSentry;
     const analytics = yield* cloudAnalytics;
     const appSessions = yield* cloudAppSessions;
-    const executor = yield* cloudProduct(
-      yield* appDataSupervisors,
-      yield* cloudArtifactsTokensLive,
-    );
+    const executor = yield* cloudAppPagesProduct(yield* appDataSupervisors);
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
     const appUi = hostedAppUi(appAddresses(yield* cloudOrigin.pipe(Effect.orDie), base));
     const services = requestServices(Layer.mergeAll(appSessions, executor));

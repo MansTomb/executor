@@ -10,11 +10,10 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, FiberSet, Option } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { cachedDeploymentSources } from "../implementation/deployment-source-cache.ts";
-import { cloudAppSources } from "./source.ts";
+import type { AppSources } from "./source.ts";
 import { isolateDeclarations } from "./isolate-memory.ts";
-import type { ArtifactsTokens } from "@executor-js/app-source/cloudflare";
 import { cloudBlobs } from "./blobs.ts";
-import { cloudWorkflows } from "./workflows.ts";
+import { cloudWorkflows } from "./workflow-runtime.ts";
 import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
@@ -34,8 +33,8 @@ export const cloudEgress = Effect.gen(function* () {
 });
 
 /**
- * Build the executor from cloud inputs. Callers select the API-owned token coordinator
- * explicitly, including across Workers. The event's SQL client comes from
+ * Build the executor from cloud inputs. Callers choose the app source backend: Git through the
+ * API-owned token coordinator, or none where no source is read. The event's SQL client comes from
  * {@link InvocationDatabase}, shared with Better Auth. Its SQL.PostgresLayer currently returns a
  * lazy proxy: FumaDB's synchronous Statement.join cannot inspect those deferred fragments, so the
  * native client is resolved before composing ORM queries, through Alchemy's execution memo rather
@@ -43,7 +42,7 @@ export const cloudEgress = Effect.gen(function* () {
  */
 export const cloudExecutor = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
-  tokens: ArtifactsTokens,
+  appSources: AppSources,
 ) {
   // Resolve during initialization so Alchemy binds every value into the Worker environment.
   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
@@ -54,7 +53,6 @@ export const cloudExecutor = Effect.fn(function* (
   const makeRuntime = yield* cloudRuntime(origin);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
-  const appSources = yield* cloudAppSources(tokens);
   // App storage, hosted permission checks and Better Auth share the event's client.
   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
   const executor = yield* makeExecutionMemo(
