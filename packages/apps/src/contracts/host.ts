@@ -132,6 +132,9 @@ export const InvocationDeadline = Schema.Finite.check(Schema.isGreaterThanOrEqua
 
 /** Trusted invocation context, supplied separately from the Request. */
 export interface HostContext {
+  readonly recordAnalytics?: (
+    records: readonly import("@executor-js/telemetry").AnalyticsRecord[],
+  ) => Effect.Effect<void, unknown>;
   /** Trusted host deadline; never accepted in public operation JSON. */
   readonly deadline?: typeof InvocationDeadline.Type;
   /** Host-owned cache storage and refresh lifetime, separate from app database transactions. */

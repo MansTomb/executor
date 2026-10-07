@@ -55,7 +55,11 @@ export const invocationFetch = (signal: AbortSignal) =>
     return (input: string | URL | Request, init?: RequestInit): Promise<Response> =>
       Effect.runPromiseWith(context)(
         Effect.gen(function* () {
-          const request = yield* Effect.try(() => new Request(input, init));
+          const rejectRedirect =
+            (init?.redirect ?? (input instanceof Request ? input.redirect : undefined)) === "error";
+          const request = yield* Effect.try(
+            () => new Request(input, rejectRedirect ? { ...init, redirect: "manual" } : init),
+          );
           const client = yield* HttpClient.HttpClient;
           const response = yield* client.execute(HttpClientRequest.fromWeb(request)).pipe(
             Effect.withSpan("provider.http.request", {
@@ -82,6 +86,8 @@ export const invocationFetch = (signal: AbortSignal) =>
               }),
             ),
           );
+          if (rejectRedirect && [301, 302, 303, 307, 308].includes(response.status))
+            return yield* Effect.fail(new TypeError("Fetch redirect is forbidden"));
           const streamed = HttpServerResponse.fromClientResponse(response);
           const body = streamed.body;
           // Span the body's actual consumption, including streamed responses and cancellation.

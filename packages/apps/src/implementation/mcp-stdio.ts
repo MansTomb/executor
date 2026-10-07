@@ -4,7 +4,7 @@ import { ErrorCode, McpError as ProtocolError } from "@modelcontextprotocol/sdk/
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { Effect, Schema } from "effect";
 import { McpError, ProcessConfig } from "../contracts/mcp.ts";
-import { mcpClient, mcpJsonSchemaValidator } from "./mcp-client.ts";
+import { mcpClient, mcpJsonSchemaValidator, type McpCallGuard } from "./mcp-client.ts";
 import { adaptMcpTools } from "./mcp-tools.ts";
 
 // The client may start closing on an initialization failure. Join that same cleanup in finally.
@@ -42,7 +42,7 @@ const failure = (phase: McpError["phase"], error: unknown) =>
 function withClient<A, E>(
   config: ProcessConfig,
   mode: "discover" | "call",
-  use: (client: Client) => Effect.Effect<A, E>,
+  use: (client: Client, guard: McpCallGuard) => Effect.Effect<A, E>,
 ) {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -76,7 +76,7 @@ function withClient<A, E>(
         try: (signal) => client.connect(transport, { signal, timeout: config.timeoutMs }),
         catch: (error) => failure("connect", error),
       }).pipe(Effect.timeout(config.timeoutMs), Effect.withSpan("provider.mcp.connect"));
-      return yield* use(client);
+      return yield* use(client, (work) => work);
     }),
   ).pipe(
     Effect.withSpan("provider.mcp.session", {

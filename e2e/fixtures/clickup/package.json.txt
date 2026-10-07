@@ -1,0 +1,8 @@
+{
+  "name": "@executor/clickup-fresh",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  }
+}

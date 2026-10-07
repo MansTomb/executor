@@ -8,6 +8,7 @@ import tailwind from "tailwindcss/package.json" with { type: "json" };
 
 const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  exports: Schema.optional(Schema.Unknown),
 });
 
 /** Framework archives are loaded alone; direct npm imports retain their authored declarations and dependency graphs. */
@@ -67,12 +68,23 @@ export const workerDependencies = (filesystem: InMemoryFileSystem) =>
           }
           const parts = args.path.split("/");
           const name = args.path.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
-          if (name === undefined || !Object.hasOwn(dependencies, name)) return undefined;
+          if (name === undefined) return undefined;
           const version = dependencies[name];
-          if (version === undefined) return undefined;
-          await Effect.runPromiseWith(context)(install(name, version));
-          // Let the existing resolver apply package exports, conditions, and asset handling.
-          return undefined;
+          if (version !== undefined) await Effect.runPromiseWith(context)(install(name, version));
+          const subpath = parts.slice(name.startsWith("@") ? 2 : 1).join("/");
+          if (subpath === "" || subpath.split("/").includes("..")) return undefined;
+          const manifest = filesystem.read(`node_modules/${name}/package.json`);
+          if (manifest === null) return undefined;
+          const pkg = Schema.decodeUnknownSync(Schema.fromJsonString(Package))(manifest);
+          if (pkg.exports !== undefined) return undefined;
+          const path = `node_modules/${name}/${subpath}`;
+          const resolved = [
+            path,
+            ...[".js", ".mjs", ".cjs", ".json", "/index.js", "/index.mjs", "/index.cjs"].map(
+              (extension) => `${path}${extension}`,
+            ),
+          ].find((candidate) => filesystem.read(candidate) !== null);
+          return resolved === undefined ? undefined : { path: resolved, namespace: "virtual" };
         });
       },
     };

@@ -27,3 +27,13 @@ export {
   httpSpanAttributeAllowlist,
   spanAttributeAllowed,
 } from "./span-attributes.ts";
+
+export {
+  AnalyticsEvent,
+  AnalyticsRecord,
+  analyticsEmitter,
+  analyticsRecords,
+  collectAnalytics,
+} from "./analytics.ts";
+
+export { emitAnalytics, measureAnalytics } from "./analytics.ts";

@@ -1,0 +1,76 @@
+import { array, type AppContext, type AccountOf, object, string, number } from "apps";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+import type { provider, restProvider } from "./provider.ts";
+import { upstreamRequest } from "./analytics.ts";
+
+const Identity = object({ userId: string(), workspaceId: string() });
+const RestUser = object({ user: object({ id: number() }) });
+const McpUser = object({ structuredContent: object({ userIds: array(string()) }) });
+
+export const verifyIdentity = async (
+  ctx: AppContext,
+  mcp: AccountOf<typeof provider>,
+  rest: AccountOf<typeof restProvider>,
+) => {
+  if (!/^\d+$/.test(rest.fields.workspaceId)) throw new Error("Invalid bound ClickUp workspace ID");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(rest.fields.token));
+  const fingerprint = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return ctx.cache.forAccount(mcp).get({
+    key: { purpose: "clickup-rest-identity-v1", restAccount: rest.id, fingerprint, workspace: rest.fields.workspaceId },
+    schema: Identity,
+    freshFor: "1 day",
+    load: async ({ fetch, signal: lifetime }) => {
+      const signal = AbortSignal.any([lifetime, AbortSignal.timeout(30_000)]);
+      const userId = await upstreamRequest(
+        ctx,
+        { operation: "me", transport: "rest", purpose: "identity" },
+        async (status) => {
+          const response = await fetch("https://api.clickup.com/api/v2/user", {
+            method: "GET",
+            headers: { Authorization: rest.fields.token, "Cache-Control": "no-cache" },
+            redirect: "error",
+            signal,
+          });
+          status(response.status);
+          if (response.status !== 200) throw new Error(`ClickUp REST identity failed with HTTP ${response.status}`);
+          return RestUser.parse(await response.json()).user.id.toString();
+        },
+      );
+      const client = new Client({ name: "clickup-rest-identity", version: "1" });
+      const transport = new StreamableHTTPClientTransport(new URL("https://mcp.clickup.com/mcp"), {
+        requestInit: { headers: { Authorization: `Bearer ${mcp.fields.access_token}` }, signal },
+        fetch,
+        reconnectionOptions: {
+          maxReconnectionDelay: 0,
+          initialReconnectionDelay: 0,
+          reconnectionDelayGrowFactor: 1,
+          maxRetries: 0,
+        },
+      });
+      const wire: Omit<StreamableHTTPClientTransport, "sessionId"> = transport;
+      try {
+        await client.connect(wire, { signal, timeout: 30_000 });
+        await upstreamRequest(ctx, { operation: "me", transport: "mcp", purpose: "identity" }, async () => {
+          const result = await client.callTool(
+            {
+              name: "clickup_resolve_assignees",
+              arguments: { assignees: ["me"], workspace_id: rest.fields.workspaceId },
+            },
+            undefined,
+            { signal, timeout: 30_000 },
+          );
+          if (result.isError === true) throw new Error("MCP identity failed");
+          const users = McpUser.parse(result).structuredContent.userIds;
+          if (users.length !== 1 || users[0] !== userId) throw new Error("ClickUp REST and MCP users differ");
+        });
+      } catch {
+        throw new Error("ClickUp REST/MCP identity binding could not be verified; no task returned");
+      } finally {
+        await client.close();
+      }
+      return { userId, workspaceId: rest.fields.workspaceId };
+    },
+  });
+};

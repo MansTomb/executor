@@ -1,3 +1,4 @@
+import type { AnalyticsRecord } from "@executor-js/telemetry";
 /** Public Promise boundary for host-supplied runtime implementations. */
 import { Effect, Option, Schema } from "effect";
 import {
@@ -151,7 +152,11 @@ export const createAppRuntime = (options: {
 };
 
 /** Provide the host store without changing caller cancellation, tracing, or resource scopes. */
-export const toEffectRuntime = (definition: AppRuntime, blobs: BlobStorage): Runtime => {
+export const toEffectRuntime = (
+  definition: AppRuntime,
+  blobs: BlobStorage,
+  recordAnalytics?: (app: string, records: readonly AnalyticsRecord[]) => Effect.Effect<void>,
+): Runtime => {
   const runtime = definition[NativeRuntime];
   const asset = runtime.asset;
   const provide = Effect.provideService(BlobStore, {
@@ -173,19 +178,28 @@ export const toEffectRuntime = (definition: AppRuntime, blobs: BlobStorage): Run
       ),
     remove: (key) => blobs.remove(key).pipe(Effect.withSpan("storage.blob.remove")),
   });
+  const withAnalytics = <A extends { readonly app: string }>(input: A) => ({
+    ...input,
+    ...(recordAnalytics === undefined
+      ? {}
+      : {
+          recordAnalytics: (records: readonly AnalyticsRecord[]) =>
+            recordAnalytics(input.app, records),
+        }),
+  });
   return {
     ...(runtime.changes === undefined ? {} : { changes: runtime.changes }),
     build: (input) => runtime.build(input).pipe(provide),
     ...(asset === undefined
       ? {}
       : { asset: (input: Parameters<typeof asset>[0]) => asset(input).pipe(provide) }),
-    skills: (input) => runtime.skills(input).pipe(provide),
-    inspect: (input) => runtime.inspect(input).pipe(provide),
-    index: (input) => runtime.index(input).pipe(provide),
-    query: (input) => runtime.query(input).pipe(provide),
-    mutate: (input) => runtime.mutate(input).pipe(provide),
-    workflow: (input) => runtime.workflow(input).pipe(provide),
-    webhook: (input) => runtime.webhook(input).pipe(provide),
-    call: (input) => runtime.call(input).pipe(provide),
+    skills: (input) => runtime.skills(withAnalytics(input)).pipe(provide),
+    inspect: (input) => runtime.inspect(withAnalytics(input)).pipe(provide),
+    index: (input) => runtime.index(withAnalytics(input)).pipe(provide),
+    query: (input) => runtime.query(withAnalytics(input)).pipe(provide),
+    mutate: (input) => runtime.mutate(withAnalytics(input)).pipe(provide),
+    workflow: (input) => runtime.workflow(withAnalytics(input)).pipe(provide),
+    webhook: (input) => runtime.webhook(withAnalytics(input)).pipe(provide),
+    call: (input) => runtime.call(withAnalytics(input)).pipe(provide),
   };
 };

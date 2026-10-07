@@ -1,3 +1,4 @@
+import { analyticsEmitter, measureAnalytics } from "@executor-js/telemetry";
 import { folderSkillsEffect } from "./skill-files.ts";
 import { AppSkills, SkillFile, SkillLoadFailed } from "../contracts/skills.ts";
 import { parseProviderError } from "./provider-error.ts";
@@ -323,6 +324,7 @@ function dispatch(
         context.files ?? [],
       ).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
       const bound = {
+        analytics: yield* analyticsEmitter,
         cache: authorCache(
           context.cache ?? unavailableCache,
           Redacted.value(context.accounts),
@@ -409,6 +411,7 @@ function dispatch(
               );
               return {
                 ...accounts,
+                analytics: bound.analytics,
                 cache: authorCache(
                   context.cache ?? unavailableCache,
                   Redacted.value(current.accounts),
@@ -546,6 +549,7 @@ function dispatch(
             request,
             {
               files,
+              analytics: bound.analytics,
               cache: bound.cache,
               accounts: bound.accounts,
               workflows: workflowControls,
@@ -657,81 +661,89 @@ function dispatch(
         );
       }
       const execute = (db?: import("@executor-js/app-data/contracts").DatabaseSession) =>
-        Effect.gen(function* () {
-          transactionOpen = db !== undefined;
-          const output = yield* Effect.gen(function* () {
-            running = yield* captureTelemetry;
-            const fetch = yield* invocationFetch(invocationSignal);
-            return yield* tool.run(
-              {
-                ...bound,
-                fetch,
-                workflows: kind === "mutate" ? workflowControls : workflowReads,
-                ...(db === undefined || native.database === undefined
-                  ? {}
-                  : {
-                      db: authorDatabase(
-                        native.database.tables,
-                        db,
-                        invocationSignal,
-                        kind === "mutate",
-                      ),
-                    }),
-              },
-              input,
-            );
-          }).pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                running = undefined;
-              }),
-            ),
-            Effect.catchCause((cause) => {
-              if (Cause.hasInterrupts(cause)) return Effect.interrupt;
-              const error = Cause.squash(cause);
-              const provider = parseProviderError(error);
-              const response = Schema.decodeUnknownOption(OpenapiResponseError)(error);
-              const failure = Schema.decodeUnknownOption(ElicitationFailed)(error);
-              return Effect.fail(
-                Option.isSome(provider)
-                  ? provider.value
-                  : Option.isSome(response)
-                    ? new OpenapiResponseError({
-                        code: response.value.code,
-                        status: response.value.status,
-                        message: response.value.message,
-                        ...(response.value.recovery === undefined
-                          ? {}
-                          : { recovery: response.value.recovery }),
-                      })
-                    : Option.isSome(failure)
-                      ? failure.value
-                      : new HostOperationFailed({
-                          reason: operationFailureReason(
-                            error,
-                            Redacted.value(context.accounts),
-                            input,
-                          ),
-                        }),
+        measureAnalytics(
+          { event: "tool_invocation", operation: toolName, transport: "executor", purpose: "tool" },
+          Effect.gen(function* () {
+            transactionOpen = db !== undefined;
+            const output = yield* Effect.gen(function* () {
+              running = yield* captureTelemetry;
+              const fetch = yield* invocationFetch(invocationSignal);
+              return yield* tool.run(
+                {
+                  ...bound,
+                  fetch,
+                  workflows: kind === "mutate" ? workflowControls : workflowReads,
+                  ...(db === undefined || native.database === undefined
+                    ? {}
+                    : {
+                        db: authorDatabase(
+                          native.database.tables,
+                          db,
+                          invocationSignal,
+                          kind === "mutate",
+                        ),
+                      }),
+                },
+                input,
               );
-            }),
-            Effect.withSpan("app.operation.execute", {
-              attributes: { "executor.tool.name": toolName, "executor.operation": kind },
-            }),
-          );
-          const outputSchema = tool.output;
-          const decoded =
-            outputSchema === undefined
-              ? output
-              : yield* safe(
-                  () => Schema.decodeUnknownEffect(outputSchema)(output),
-                  new HostOutputInvalid(),
+            }).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  running = undefined;
+                }),
+              ),
+              Effect.catchCause((cause) => {
+                if (Cause.hasInterrupts(cause)) return Effect.interrupt;
+                const error = Cause.squash(cause);
+                const provider = parseProviderError(error);
+                const response = Schema.decodeUnknownOption(OpenapiResponseError)(error);
+                const failure = Schema.decodeUnknownOption(ElicitationFailed)(error);
+                return Effect.fail(
+                  Option.isSome(provider)
+                    ? provider.value
+                    : Option.isSome(response)
+                      ? new OpenapiResponseError({
+                          code: response.value.code,
+                          status: response.value.status,
+                          message: response.value.message,
+                          ...(response.value.recovery === undefined
+                            ? {}
+                            : { recovery: response.value.recovery }),
+                        })
+                      : Option.isSome(failure)
+                        ? failure.value
+                        : new HostOperationFailed({
+                            reason: operationFailureReason(
+                              error,
+                              Redacted.value(context.accounts),
+                              input,
+                            ),
+                          }),
                 );
-          return yield* safe(
-            () => Schema.decodeUnknownEffect(JsonValue)(decoded),
-            new HostOutputInvalid(),
-          );
-        });
+              }),
+              Effect.withSpan("app.operation.execute", {
+                attributes: { "executor.tool.name": toolName, "executor.operation": kind },
+              }),
+            );
+            const outputSchema = tool.output;
+            const decoded =
+              outputSchema === undefined
+                ? output
+                : yield* safe(
+                    () => Schema.decodeUnknownEffect(outputSchema)(output),
+                    new HostOutputInvalid(),
+                  );
+            return yield* safe(
+              () => Schema.decodeUnknownEffect(JsonValue)(decoded),
+              new HostOutputInvalid(),
+            );
+          }),
+          (value) =>
+            typeof value === "object" &&
+            value !== null &&
+            "isError" in value &&
+            value.isError === true,
+        );
       const replay =
         context.replay === undefined
           ? undefined

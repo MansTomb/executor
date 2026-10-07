@@ -1,3 +1,4 @@
+import { HostedAnalytics } from "./analytics.ts";
 import { HostedProfiles } from "./profiles.ts";
 import { HostedResourceAccess } from "./resource-access.ts";
 import { HostedSchedules } from "./schedules.ts";
@@ -159,6 +160,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedWorkflows,
     HostedApps,
     HostedSkills,
+    HostedAnalytics,
     HostedSchedules,
     HostedAccounts,
     HostedTools,

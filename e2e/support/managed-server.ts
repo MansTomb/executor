@@ -224,7 +224,7 @@ export const startManagedServer = (
               Schema.decodeUnknownEffect(
                 Schema.Struct({
                   milliseconds: Schema.Int.check(
-                    Schema.isBetween({ minimum: 1, maximum: 86_400_000 }),
+                    Schema.isBetween({ minimum: 1, maximum: 31 * 86_400_000 }),
                   ),
                 }),
               ),
@@ -235,7 +235,7 @@ export const startManagedServer = (
               if (target.metadata.target !== "local" || current !== undefined)
                 return HttpServerResponse.empty({ status: 409 });
               const offset = Number(env.EXECUTOR_TEST_CLOCK_OFFSET_MS) + body.milliseconds;
-              if (offset > 86_400_000) return HttpServerResponse.empty({ status: 400 });
+              if (offset > 31 * 86_400_000) return HttpServerResponse.empty({ status: 400 });
               env.EXECUTOR_TEST_CLOCK_OFFSET_MS = String(offset);
               return HttpServerResponse.jsonUnsafe({ offset });
             }),

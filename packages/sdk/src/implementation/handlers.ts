@@ -7,6 +7,11 @@ import type { Executor } from "../contracts/executor.ts";
 /** Mount the SDK contract with one supplied executor; the host provides transport and access control. */
 export const executorHandlers = (executor: Executor) =>
   Layer.mergeAll(
+    HttpApiBuilder.group(ExecutorApi, "analytics", (handlers) =>
+      handlers.handle("summary", ({ params, query }) =>
+        executor.analytics.summary({ ...params, ...query }),
+      ),
+    ),
     HttpApiBuilder.group(ExecutorApi, "appProfiles", (handlers) =>
       handlers
         .handle("create", ({ params, payload }) =>

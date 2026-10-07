@@ -1,3 +1,4 @@
+import { analyticsRecords } from "@executor-js/telemetry";
 /** Portable app protocol. Runtime adapters own processes, sockets and storage bindings. */
 import { RpcTarget, type RpcStub } from "capnweb";
 import { Cause, Effect, Option, Redacted, Schema, Stream } from "effect";
@@ -245,6 +246,10 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
           }),
         )(body);
         if (telemetry.telemetry !== undefined) {
+          if (input.recordAnalytics !== undefined)
+            yield* input
+              .recordAnalytics(analyticsRecords(telemetry.telemetry))
+              .pipe(Effect.catchCause(() => Effect.void));
           const span = yield* Effect.currentSpan.pipe(Effect.option);
           if (Option.isSome(span))
             yield* forward(telemetry.telemetry, span.value.traceId, input.build);

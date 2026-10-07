@@ -2,6 +2,7 @@ import type { ProviderError } from "./provider-error.ts";
 /** MCP protocol data uses Effect Schema; executable tool methods use Effect. */
 import { type Effect, type Redacted, Schema } from "effect";
 import type { Elicit, ElicitationFailed } from "./elicitation.ts";
+import type { AppContext } from "./context.ts";
 import { AccountId, HttpUrl } from "./schema.ts";
 import { JsonObject, type JsonValue } from "./schema.ts";
 
@@ -70,6 +71,13 @@ export const McpToolMetadata = Schema.Struct({
   _meta: Schema.optional(JsonObject),
 });
 export type McpToolMetadata = typeof McpToolMetadata.Type;
+
+export type McpOperationInterceptor = (invocation: {
+  readonly tool: McpToolMetadata;
+  readonly context: AppContext;
+  readonly input: JsonObject;
+  readonly next: () => Promise<McpToolResult>;
+}) => Promise<McpToolResult>;
 
 /** Direct callers can omit interaction capabilities. A server that asks for input then fails explicitly. */
 export interface McpToolContext {

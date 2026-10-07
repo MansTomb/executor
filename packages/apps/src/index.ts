@@ -186,3 +186,5 @@ export {
 export { interval, cron, type ScheduleDeclaration } from "./implementation/schedules.ts";
 
 export type { AppSkillSource as Skill, SkillFile } from "./contracts/skills.ts";
+
+export type { AnalyticsEvent } from "@executor-js/telemetry";

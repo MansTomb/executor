@@ -7,6 +7,7 @@ import { AccountConnectApi } from "./account-connections.ts";
 import { LocalWebhookSetupApi } from "./webhook-setup.ts";
 
 const api = HttpApi.make("local-management")
+  .add(ExecutorApi.groups.analytics)
   .add(ExecutorApi.groups.apps)
   .add(ExecutorApi.groups.appProfiles)
   .add(ExecutorApi.groups.skills)

@@ -1,0 +1,39 @@
+import type { AppContext } from "apps";
+
+export const upstreamRequest = async <T>(
+  context: Pick<AppContext, "analytics" | "signal">,
+  dimensions: {
+    readonly operation: "get_task" | "me";
+    readonly transport: "rest" | "mcp";
+    readonly purpose: "task" | "identity";
+  },
+  run: (status: (code: number) => void) => Promise<T>,
+): Promise<T> => {
+  const event = { event: "upstream_request", ...dimensions };
+  await context.analytics.emit({ ...event, phase: "started" });
+  const start = performance.now();
+  let statusCode: number | undefined;
+  const status = (code: number) => {
+    if (code >= 100 && code <= 599) statusCode = code;
+  };
+  try {
+    const value = await run(status);
+    await context.analytics.emit({
+      ...event,
+      phase: "completed",
+      outcome: "success",
+      ...(statusCode === undefined ? {} : { statusCode }),
+      durationMs: performance.now() - start,
+    });
+    return value;
+  } catch (error) {
+    await context.analytics.emit({
+      ...event,
+      phase: "completed",
+      outcome: context.signal.aborted ? "cancelled" : "error",
+      ...(statusCode === undefined ? {} : { statusCode }),
+      durationMs: performance.now() - start,
+    });
+    throw error;
+  }
+};

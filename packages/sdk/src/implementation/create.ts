@@ -1,10 +1,13 @@
+import { AppId } from "../contracts/shared.ts";
 import { ProfileHost } from "../contracts/profiles.ts";
 import { makeProfileSetup } from "./profile-setup.ts";
 import { WorkflowHost } from "../contracts/workflow-runtime.ts";
 import { makeWorkflowRuns } from "./workflows.ts";
 /** Compose native operations once for in-process and HTTP callers. */
-import { Crypto, Effect } from "effect";
+import { Crypto, Effect, Schema } from "effect";
 import type { Executor, ExecutorOptions, RemoteExecutorOptions } from "../contracts/executor.ts";
+import { AppNotFound } from "../contracts/apps.ts";
+import { query } from "./database.ts";
 import { NotImplemented } from "../contracts/shared.ts";
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
@@ -28,7 +31,17 @@ export const createExecutor = (
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
     const db = database(options.storage);
-    const runtime = toEffectRuntime(options.runtime, options.blobs);
+    const runtime = toEffectRuntime(options.runtime, options.blobs, (app, records) =>
+      Effect.gen(function* () {
+        const row = yield* query(() =>
+          db.findFirst("apps", {
+            where: (b) => b("id", "=", Schema.decodeUnknownSync(AppId)(app)),
+          }),
+        );
+        if (row !== null)
+          yield* options.storage.analytics.append({ app: row.id, owner: row.owner }, records);
+      }).pipe(Effect.catchCause(() => Effect.void)),
+    );
     const oauth = makeOAuth(
       db,
       options.credentials,
@@ -92,6 +105,21 @@ export const createExecutor = (
       runs: workflows.runs,
     });
     return {
+      analytics: {
+        summary: (input) =>
+          Effect.gen(function* () {
+            const app = yield* query(() =>
+              db.findFirst("apps", {
+                where: (b) =>
+                  input.owner === undefined
+                    ? b("id", "=", input.app)
+                    : b.and(b("id", "=", input.app), b("owner", "=", input.owner)),
+              }),
+            );
+            if (app === null) return yield* new AppNotFound({ app: input.app });
+            return yield* options.storage.analytics.summary({ ...input, owner: app.owner });
+          }),
+      },
       [ProfileHost]: { tick: setup.tick },
       [WorkflowHost]: workflows.host,
       scheduler: schedules.dispatcher,

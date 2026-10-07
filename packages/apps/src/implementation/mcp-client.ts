@@ -37,10 +37,13 @@ export const mcpJsonSchemaValidator: jsonSchemaValidator = {
 };
 
 /** An operation owns its connection; it must close even when interrupted. */
+export interface McpCallGuard {
+  <A, E>(work: Effect.Effect<A, E>): Effect.Effect<A, E | ProviderError>;
+}
 export interface WithMcpClient {
   <A, E>(
     mode: "discover" | "call",
-    use: (client: Client) => Effect.Effect<A, E>,
+    use: (client: Client, guard: McpCallGuard) => Effect.Effect<A, E>,
   ): Effect.Effect<A, E | McpError | ProviderError>;
 }
 /** Shared client operations never cache catalogs or account credentials. */
@@ -50,54 +53,56 @@ export function mcpClient(
   failure: (phase: McpError["phase"], error: unknown) => McpError | ProviderError,
 ) {
   /** Follow the complete live catalog, rejecting duplicate tools and cursor loops. */
-  const list = withClient("discover", (client) =>
-    Effect.gen(function* () {
-      const tools = new Map<string, typeof McpToolMetadata.Type>();
-      const cursors = new Set<string>();
-      let cursor: string | undefined;
-      do {
-        const page = yield* Effect.tryPromise({
-          // This session only reads metadata. listTools() also eagerly compiles
-          // every output validator; mcpOperations validates the selected tool on call.
-          try: (signal) =>
-            client.request(
-              { method: "tools/list", params: cursor === undefined ? {} : { cursor } },
-              ListToolsResultSchema,
-              { signal, timeout: timeoutMs },
-            ),
-          catch: (error) => failure("discover", error),
-        }).pipe(
-          Effect.withSpan("provider.mcp.request", {
-            kind: "client",
-            attributes: { "rpc.system.name": "jsonrpc", "rpc.method": "tools/list" },
-          }),
-        );
-        const metadata = yield* Schema.decodeUnknownEffect(Schema.Array(McpToolMetadata))(
-          page.tools,
-        ).pipe(
-          Effect.mapError(() => new McpError({ phase: "discover", reason: "invalid_response" })),
-        );
-        for (const tool of metadata) {
-          if (!tool.name || tools.has(tool.name) || tools.size >= defaultMcpClientLimits.maxTools)
-            return yield* new McpError({ phase: "discover", reason: "invalid_response" });
-          tools.set(tool.name, tool);
-        }
-        cursor = page.nextCursor;
-        if (cursor !== undefined) {
-          if (cursors.has(cursor) || cursors.size >= defaultMcpClientLimits.maxPaginationCursors)
-            return yield* new McpError({ phase: "discover", reason: "invalid_response" });
-          cursors.add(cursor);
-        }
-      } while (cursor !== undefined);
-      return [...tools.values()];
-    }),
+  const list = withClient("discover", (client, guard) =>
+    guard(
+      Effect.gen(function* () {
+        const tools = new Map<string, typeof McpToolMetadata.Type>();
+        const cursors = new Set<string>();
+        let cursor: string | undefined;
+        do {
+          const page = yield* Effect.tryPromise({
+            // This session only reads metadata. listTools() also eagerly compiles
+            // every output validator; mcpOperations validates the selected tool on call.
+            try: (signal) =>
+              client.request(
+                { method: "tools/list", params: cursor === undefined ? {} : { cursor } },
+                ListToolsResultSchema,
+                { signal, timeout: timeoutMs },
+              ),
+            catch: (error) => failure("discover", error),
+          }).pipe(
+            Effect.withSpan("provider.mcp.request", {
+              kind: "client",
+              attributes: { "rpc.system.name": "jsonrpc", "rpc.method": "tools/list" },
+            }),
+          );
+          const metadata = yield* Schema.decodeUnknownEffect(Schema.Array(McpToolMetadata))(
+            page.tools,
+          ).pipe(
+            Effect.mapError(() => new McpError({ phase: "discover", reason: "invalid_response" })),
+          );
+          for (const tool of metadata) {
+            if (!tool.name || tools.has(tool.name) || tools.size >= defaultMcpClientLimits.maxTools)
+              return yield* new McpError({ phase: "discover", reason: "invalid_response" });
+            tools.set(tool.name, tool);
+          }
+          cursor = page.nextCursor;
+          if (cursor !== undefined) {
+            if (cursors.has(cursor) || cursors.size >= defaultMcpClientLimits.maxPaginationCursors)
+              return yield* new McpError({ phase: "discover", reason: "invalid_response" });
+            cursors.add(cursor);
+          }
+        } while (cursor !== undefined);
+        return [...tools.values()];
+      }),
+    ),
   ).pipe(Effect.withSpan("provider.mcp.discover"));
 
   /** Call once with one account, retaining content and MCP tool-error results. */
   const call = (name: string, input: JsonObject, context: McpToolContext) =>
-    withClient("call", (client) => mcpCall(client, name, input, context, timeoutMs, failure)).pipe(
-      Effect.withSpan("provider.mcp.call", { attributes: { "mcp.tool.name": name } }),
-    );
+    withClient("call", (client, guard) =>
+      mcpCall(client, name, input, context, timeoutMs, failure, guard),
+    ).pipe(Effect.withSpan("provider.mcp.call", { attributes: { "mcp.tool.name": name } }));
 
   return { list, call };
 }

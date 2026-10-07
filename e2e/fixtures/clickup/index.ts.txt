@@ -1,0 +1,35 @@
+import { accountOperations, defineApp } from "apps";
+import { mcpOperations } from "apps/mcp";
+
+import { verifyIdentity } from "./identity.ts";
+import { provider, restProvider } from "./provider.ts";
+import { readTask, supportsTask } from "./task.ts";
+
+export default defineApp(
+  { accounts: { service: provider.many(), rest: restProvider.many() } },
+  async ({ accounts, signal }) =>
+    accountOperations(
+      accounts.service,
+      async (account) =>
+        mcpOperations({
+          url: "https://mcp.clickup.com/mcp",
+          headers: { Authorization: `Bearer ${account.fields.access_token}` },
+          signal,
+          intercept: async ({ tool, context, input, next }) => {
+            if (tool.name !== "clickup_get_task" || !supportsTask(input)) return next();
+            const candidates = accounts.rest.filter((rest) => rest.fields.mcpAccountId === account.id);
+            if (candidates.length === 0 || input["workspace_id"] === undefined) return next();
+            if (candidates.length !== 1)
+              throw new Error("Select exactly one ClickUp REST account for this MCP account");
+            const rest = candidates[0];
+            if (rest === undefined) throw new Error("ClickUp REST binding is missing");
+            if (input["workspace_id"] !== rest.fields.workspaceId)
+              throw new Error("ClickUp REST workspace binding differs from the request");
+            await verifyIdentity(context, account, rest);
+            const result = await readTask(context, rest.fields.token, input);
+            return result.kind === "rest" ? result.value : next();
+          },
+        }),
+      { signal },
+    ),
+);

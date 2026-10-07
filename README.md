@@ -357,3 +357,6 @@ Development happens in this private repository. The public
 through `scripts/export-public.sh`. Paths listed in
 `scripts/export-public.exclude`, such as `notes/`, stay private. The export
 workflow runs the script on every push to `main`. See `RELEASING.md`.
+
+App event emission, scoped usage summaries, storage, and completeness limits are
+documented in [app analytics](packages/sdk/ANALYTICS.md).

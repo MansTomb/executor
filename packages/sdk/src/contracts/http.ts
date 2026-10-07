@@ -1,3 +1,4 @@
+import { AnalyticsGroup } from "./analytics.ts";
 /** The single HTTP contract, composed from each area and projected into Executor. */
 import { HttpApi } from "effect/unstable/httpapi";
 import { AccountConnectionsGroup } from "./account-connection.ts";
@@ -14,6 +15,7 @@ import { AppSkillsGroup } from "./skills.ts";
 
 /** The one contract artifact; everything else projects from it. */
 export const ExecutorApi = HttpApi.make("executor")
+  .add(AnalyticsGroup)
   .add(AccountsGroup)
   .add(AccountConnectionsGroup)
   .add(AppsGroup)
