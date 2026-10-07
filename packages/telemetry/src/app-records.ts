@@ -42,6 +42,7 @@ const operations = [
   "workflows",
   "workflow-validate",
   "workflow-run",
+  "migrate",
 ];
 const httpMethods = [
   "GET",
@@ -68,6 +69,7 @@ export const appSpanNames: ReadonlySet<string> = new Set([
   "app.tool.approval",
   "app.tool.elicitation",
   "app.operation.execute",
+  "app.sql.migrate",
   "app.cache.get",
   "app.cache.load",
   "app.cache.command",

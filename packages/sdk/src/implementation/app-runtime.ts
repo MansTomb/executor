@@ -15,6 +15,7 @@ import {
   HostedCatalogSummary,
   HostInspectError,
   HostResponse,
+  MigrateResult,
   indexCommand,
   inspectCommand,
   selectTools,
@@ -142,7 +143,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
     ) =>
       Effect.scoped(
         Effect.gen(function* () {
-          if (input.storage !== undefined) return yield* new RuntimeProtocolFailed();
           const lifetime = yield* Effect.acquireRelease(
             Effect.sync(() => new AbortController()),
             (controller) => Effect.sync(() => controller.abort()),
@@ -283,6 +283,13 @@ export const appRuntime = (host: AppRuntimeHost) =>
           AccountCheckResult,
           HostAccountCheckError,
         ).pipe(Effect.withSpan(span("checkAccount"))),
+      migrate: (input) =>
+        dispatch(
+          { ...input, database: true, accounts: Redacted.make({}) },
+          { operation: "migrate" },
+          MigrateResult,
+          HostCallError,
+        ).pipe(Effect.withSpan(span("migrate"))),
       workflow: (input) =>
         dispatch({ ...input, database: false }, input.command, Json, HostCallError).pipe(
           Effect.withSpan(span("workflow"), {

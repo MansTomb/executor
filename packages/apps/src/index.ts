@@ -215,16 +215,14 @@ export {
   type Elicit,
 } from "./contracts/elicitation.ts";
 
-export {
-  table,
-  defineDatabase,
-  type Table,
-  type DatabaseReader,
-  type Database,
-  type DatabaseDefinition,
-} from "./implementation/storage.ts";
-
-export { id, userId } from "./implementation/schema.ts";
+export type {
+  Sql,
+  SqlCursor,
+  SqlReader,
+  SqlRow,
+  SqlTransaction,
+  SqlValue,
+} from "./contracts/sql.ts";
 
 export {
   query,

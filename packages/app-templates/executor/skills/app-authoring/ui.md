@@ -51,8 +51,8 @@ schemas in a separate file. Use `client.queryAtom(reference, input, outputSchema
 with `useAppQuery` from `apps/react`, and `client.mutate(reference, input,
 outputSchema)` for explicit writes. `client.query(reference, input, outputSchema)`
 reads once. Both operation types may fetch external APIs. External changes do
-not invalidate subscriptions, and a database rollback cannot undo external
-effects. All callbacks use Promises; the framework runs Effect internally.
+not invalidate subscriptions, and rolling back a SQL transaction cannot undo
+external effects. All callbacks use Promises; the framework runs Effect internally.
 
 Do not include an app ID or credentials in browser code. The host binds both
 identity and authentication. Compiled imports and `ui/public/` files are retained

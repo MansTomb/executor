@@ -6,16 +6,12 @@
   "exports": {
     ".": "./src/index.ts",
     "./contracts": "./src/contracts/database.ts",
-    "./schema": "./src/implementation/schema.ts",
-    "./node": "./src/node.ts",
     "./worker-bundle": "./src/contracts/worker-bundle.ts",
     "./cloudflare": "./src/cloudflare.ts",
     "./evaluated": "./src/contracts/evaluated.ts"
   },
   "dependencies": {
-    "@effect/sql-sqlite-node": "4.0.1",
     "@executor-js/app-cache": "workspace:*",
-    "@executor-js/reactivity": "workspace:*",
     "effect": "4.0.1"
   },
   "devDependencies": {

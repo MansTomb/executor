@@ -32,17 +32,20 @@ type ServerSpan = { readonly traceId: string; readonly spanId: string };
 const files = [
   {
     path: "index.ts",
-    content: `import { defineApp, defineDatabase, table, query, mutation, object, string, router } from "apps";
-const database = defineDatabase({ messages: table({ body: string() }) });
-export const list = query({ input: object({}) }, async ({ db }) =>
-  (await db.messages.withIndex("by_creation").collect()).map((row) => row.body));
-export const save = mutation({ input: object({ body: string() }) }, async ({ db }, input) => {
-  await db.messages.insert(input); return input.body;
+    content: `import { defineApp, query, mutation, object, string, router } from "apps";
+export const list = query({ input: object({}) }, async ({ sql }) =>
+  sql.exec("SELECT body FROM messages ORDER BY seq").toArray().map((row) => row.body));
+export const save = mutation({ input: object({ body: string() }) }, async ({ sql }, input) => {
+  sql.exec("INSERT INTO messages (body) VALUES (?)", input.body); return input.body;
 });
-export default defineApp({ accounts: {}, database }, {  tools: router({
+export default defineApp({ accounts: {} }, {  tools: router({
     list,
     save,
   }) });`,
+  },
+  {
+    path: "migrations/0001_messages.sql",
+    content: "CREATE TABLE messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL);\n",
   },
   {
     path: "ui/index.html",

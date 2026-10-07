@@ -51,11 +51,17 @@ export type AccountRequirement = typeof AccountRequirement.Type;
 /** App-wide requirements, extracted from the deployed app's declaration. */
 export const AppRequirements = Schema.Struct({
   capabilities: DeclaredRequirements.fields.capabilities,
+  /** The document store of apps built before `sql`. Their retained builds still use it. */
   database: DeclaredRequirements.fields.database,
+  sql: DeclaredRequirements.fields.sql,
   accounts: Schema.Record(Schema.NonEmptyString, AccountRequirement),
 });
 
 export type AppRequirements = typeof AppRequirements.Type;
+
+/** Whether the app owns a database, so its calls run in its data facet. */
+export const ownsDatabase = (requirements: Pick<AppRequirements, "database" | "sql">) =>
+  requirements.sql === true || requirements.database !== undefined;
 
 /** Saved slot -> account ID or account IDs. Empty arrays explicitly select zero for many(). */
 export const SelectedAccounts = Schema.Record(

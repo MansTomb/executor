@@ -11,15 +11,12 @@ import {
 import { deepCompareStrict, dereference, validate } from "@cfworker/json-schema";
 import { JsonObject, ValidationError, type JsonValue } from "../contracts/schema.ts";
 
-import type { Field } from "@executor-js/app-data/contracts";
 import type { FieldExposure } from "../contracts/provider.ts";
-const StorageField = Symbol("apps.StorageField");
 
 const Decoder = Symbol("apps.Schema");
 
 /** An author-facing value schema. Effect is never required in author code. */
 export interface Schema<T, Optional extends boolean = false> {
-  readonly [StorageField]?: Field;
   readonly [Decoder]: EffectSchema.Decoder<T>;
   readonly optionalValue: Optional;
   /** Parse an unknown value; invalid input throws a safe ValidationError. */
@@ -88,19 +85,12 @@ export const parse = <T>(
 export function wrap<T, Optional extends boolean>(
   decoder: EffectSchema.Decoder<T>,
   optionalValue: Optional,
-  field?: Field,
 ): Schema<T, Optional> {
   return {
     [Decoder]: decoder,
-    ...(field === undefined ? {} : { [StorageField]: field }),
     optionalValue,
     parse: (input) => Effect.runSync(parse(decoder, input)),
-    optional: () =>
-      wrap(
-        EffectSchema.optional(decoder),
-        true,
-        field === undefined ? undefined : { ...field, optional: true },
-      ),
+    optional: () => wrap(EffectSchema.optional(decoder), true),
     default: (value) => {
       const parsed = Effect.runSync(parse(decoder, value));
       return {
@@ -109,18 +99,6 @@ export function wrap<T, Optional extends boolean>(
             .annotate({ default: parsed })
             .pipe(EffectSchema.withDecodingDefault(Effect.succeed(parsed))),
           false,
-          field === undefined || parsed === undefined
-            ? undefined
-            : {
-                ...field,
-                default: EffectSchema.decodeUnknownSync(
-                  EffectSchema.Union([
-                    EffectSchema.String,
-                    EffectSchema.Finite,
-                    EffectSchema.Boolean,
-                  ]),
-                )(parsed),
-              },
         ),
         hasDefault: true,
         inputOptional: optionalValue,
@@ -136,14 +114,12 @@ export function string(options: { readonly minLength?: number } = {}): Schema<st
       ? EffectSchema.String
       : EffectSchema.String.check(EffectSchema.isMinLength(options.minLength)),
     false,
-    { kind: "string" },
   );
 }
 /** A finite JSON number. No coercion. */
-export const number = (): Schema<number> => wrap(EffectSchema.Finite, false, { kind: "number" });
+export const number = (): Schema<number> => wrap(EffectSchema.Finite, false);
 /** A boolean. No coercion. */
-export const boolean = (): Schema<boolean> =>
-  wrap(EffectSchema.Boolean, false, { kind: "boolean" });
+export const boolean = (): Schema<boolean> => wrap(EffectSchema.Boolean, false);
 /** Any JSON value. Values still cross the native JSON decoder. */
 export const json = (): Schema<EffectSchema.Json> => wrap(EffectSchema.Json, false);
 /** Named values with a common schema. */
@@ -1210,16 +1186,6 @@ export const jsonSchema = (input: unknown): Schema<EffectSchema.Json> => {
     false,
   );
 };
-
-/** Database declaration retained by primitive constructors; nested payload schemas are not database fields. */
-export const storageFieldOf = (schema: Schema<unknown, boolean>): Field | undefined =>
-  schema[StorageField];
-/** A row reference records the target table; existence is not a foreign-key constraint. */
-export const id = (table: string): Schema<string> =>
-  wrap(EffectSchema.NonEmptyString, false, { kind: "id", references: table });
-/** A host user identifier, stored as a string without imposing a product auth model. */
-export const userId = (): Schema<string> =>
-  wrap(EffectSchema.NonEmptyString, false, { kind: "userId" });
 
 /** Render a decoder as a JSON Schema document, keeping an imported upstream document as-is. */
 export const jsonSchemaDocument = (decoder: EffectSchema.Decoder<unknown>) => {

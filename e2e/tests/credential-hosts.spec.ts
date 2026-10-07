@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { appsManifest, withApps } from "../support/apps-release.ts";
+import { appsManifest, databaseFiles, withApps } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { credentialUpstream, ReceivedRequest } from "../support/credential-upstream.ts";
@@ -70,9 +70,7 @@ const credentialApp = (options: {
   readonly name: string;
   readonly host: string | readonly string[] | null;
   readonly health: string | null;
-  /** With a database, queries run in the app's data facet and use its outbound network. */
-  readonly database?: boolean;
-}) => `import { defineApp, defineDatabase, defineProvider, secrets, table, object, string, plain, raw, query, router, workflow } from "apps";
+}) => `import { defineApp, defineProvider, secrets, object, string, plain, raw, query, router, workflow } from "apps";
 const service = defineProvider({
   name: ${JSON.stringify(options.name)},
 ${options.host === null ? "" : `  hosts: ${JSON.stringify([options.host].flat())},\n`}
@@ -97,7 +95,7 @@ const send = async (url, init) => {
   const response = await fetch(url, init);
   return { status: response.status, echoed: response.headers.get("x-echo-authorization") ?? "", text: await response.text() };
 };
-export default defineApp({ accounts: { service }${options.database === true ? ", database: defineDatabase({ marks: table({ label: string() }) })" : ""} }, {
+export default defineApp({ accounts: { service } }, {
   // A workflow step reads its accounts through the run's own capability.
   workflows: { fields: workflow({ input: object({}) }, async (ctx) =>
     ctx.step.do("fields", async (step) => step.accounts.service.fields)) },
@@ -168,11 +166,11 @@ const scenario = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
   const prefix = `/api/organizations/${actors.organization.id}`;
-  const deploy = (name: string, content: string, manifest = appsManifest) =>
+  const deploy = (name: string, content: string, manifest = appsManifest, database = false) =>
     Effect.gen(function* () {
       const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
         name,
-        files: [{ path: "index.ts", content }, manifest],
+        files: [{ path: "index.ts", content }, manifest, ...databaseFiles(database)],
       });
       expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
       const app = yield* body(App, deployed);
@@ -351,7 +349,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
       const values = synthetic();
       const { path } = yield* deploy(
         name,
-        credentialApp({ name, host: declaredHost, health: null, database }),
+        credentialApp({ name, host: declaredHost, health: null }),
+        appsManifest,
+        database,
       );
       const { profile, account } = yield* connect(path, name, values);
 

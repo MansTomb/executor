@@ -29,9 +29,16 @@ import { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-d
 export { DatabaseFieldReserved, DatabaseLimitExceeded } from "@executor-js/app-data/contracts";
 /** Portable framework dispatch contracts. Requests never carry account bindings. */
 import { Context, Schema, type Effect, type Redacted } from "effect";
-import type { AppStorage } from "./storage.ts";
+import type { AppSqlStorage } from "./sql.ts";
 import type { InvocationTelemetry } from "@executor-js/telemetry";
-export { AppStorageError, AppStorageUnavailable, StorageName, type AppStorage } from "./storage.ts";
+export {
+  type AppSqlStorage,
+  type Sql,
+  type SqlCursor,
+  type SqlReader,
+  type SqlRow,
+  type SqlValue,
+} from "./sql.ts";
 import { ElicitationFailed, type ElicitationHandler } from "./elicitation.ts";
 export {
   ElicitationLimits,
@@ -70,6 +77,7 @@ export { protocol6 } from "./protocols/6.ts";
 export { protocol7, AccountCheckCommand, CredentialHost } from "./protocols/7.ts";
 export { protocol8 } from "./protocols/8.ts";
 export { protocol9 } from "./protocols/9.ts";
+export { protocol10, MigrateCommand, MigrateResult } from "./protocols/10.ts";
 export { AccountCheckResult, AccountInfo } from "./provider.ts";
 import {
   HostAccountsInvalid,
@@ -92,13 +100,13 @@ import {
   ResolvedAccounts,
   type SkillCatalogResponse,
   type TrustedToolApproval,
-} from "./protocols/9.ts";
-export { DeclaredRequirements, HostRequest } from "./protocols/9.ts";
+} from "./protocols/10.ts";
+export { DeclaredRequirements, HostRequest } from "./protocols/10.ts";
 /**
  * The MCP and skill loader failures as they cross the host boundary. Apps throw the author-facing
  * classes from `apps/mcp` and `apps/skills`.
  */
-export { McpError, SkillLoadFailed } from "./protocols/9.ts";
+export { McpError, SkillLoadFailed } from "./protocols/10.ts";
 export {
   DeclaredAuthMethod,
   DeclaredProvider,
@@ -132,7 +140,7 @@ export {
   HostError,
   HostResponse,
   HostInvocation,
-} from "./protocols/9.ts";
+} from "./protocols/10.ts";
 /** Raw host inputs; the host boundary parses and redacts these immediately. */
 export type ResolvedAccountsInput = typeof ResolvedAccounts.Encoded;
 
@@ -152,7 +160,8 @@ export interface HostContext {
   /** Trusted in-process tracing capability; never decoded from a public request. */
   readonly telemetry?: InvocationTelemetry;
   readonly approval?: TrustedToolApproval;
-  readonly storage?: AppStorage;
+  /** The data facet's SQLite storage, for apps that declare `sql`. Never exposed to app code. */
+  readonly storage?: AppSqlStorage;
   readonly accounts: Redacted.Redacted<ResolvedAccounts>;
 }
 
@@ -186,7 +195,7 @@ export const selectTools =
       : { ...catalog, tools: catalog.tools.filter((tool) => tools.includes(tool.name)) };
 
 /** Declaration reads do not bind accounts or evaluate the app factory. A named declaration
- * problem, such as a reserved database field, is reported so the deploy can explain it. */
+ * problem is reported so the deploy can explain it. */
 export const HostRequirementsError = Schema.Union([
   HostRequestInvalid,
   HostDeclarationInvalid,

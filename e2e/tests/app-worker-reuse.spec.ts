@@ -28,7 +28,7 @@ import {
   RunObservation,
 } from "../support/worker-observer.ts";
 import { scenarios } from "../test-plan.ts";
-import { appsManifest } from "../support/apps-release.ts";
+import { appsManifest, databaseFiles } from "../support/apps-release.ts";
 
 /** Token renewals and workflow runs, each a single request to the product. */
 const rounds = 50;
@@ -104,6 +104,7 @@ const keyApp = (options: { readonly database: boolean; readonly resource: string
     const app = yield* deploy(name, [
       { path: "index.ts", content: observerApp({ name, ...options }) },
       appsManifest,
+      ...databaseFiles(options.database),
     ]);
     const path = `${prefix}/apps/${app.id}`;
     const submit = (connection: string, token: string) =>

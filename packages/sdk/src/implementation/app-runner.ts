@@ -113,6 +113,7 @@ export interface AppCapabilities {
 
 /** Operations an app with a database serves from its data facet, with its storage. */
 const dataOperations: ReadonlySet<HostRequest["operation"]> = new Set([
+  "migrate",
   "call",
   "query",
   "mutate",
@@ -124,6 +125,7 @@ const dataOperations: ReadonlySet<HostRequest["operation"]> = new Set([
   "webhook-unregister",
 ]);
 const writeOperations: ReadonlySet<HostRequest["operation"]> = new Set([
+  "migrate",
   "mutate",
   "webhook-register",
   "webhook-handle",
@@ -569,6 +571,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
               writeOperations.has(command.operation) ||
               // A call without a kind is to a tool the catalog does not list; it may write.
               (command.operation === "call" && command.kind !== "query"),
+            concurrent: protocol.concurrentData,
           },
           async () => {
             const bundle = await load();

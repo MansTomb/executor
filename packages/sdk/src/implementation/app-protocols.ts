@@ -7,6 +7,7 @@
 import { Effect, Schema } from "effect";
 import {
   HostKindMismatch,
+  HostOperationNotFound,
   protocol1,
   protocol2,
   protocol3,
@@ -41,18 +42,40 @@ export interface AppProtocol {
   readonly response: (command: HostRequest, body: unknown) => Effect.Effect<unknown>;
   /** Adapt the workflow steps a bundle of this protocol invokes to the host's current model. */
   readonly workflow: (execution: WorkflowExecution) => WorkflowExecution;
+  /**
+   * Whether this protocol's data calls may run alongside each other. Earlier bundles keep a
+   * database transaction open for a whole call, so their facet runs one call at a time.
+   */
+  readonly concurrentData: boolean;
 }
 
-/** Protocol 9 is the host's current protocol, so its messages need no conversion. */
-const protocol9: AppProtocol = {
-  version: 9,
+/** Protocol 10 is the host's current protocol, so its messages need no conversion. */
+const protocol10: AppProtocol = {
+  version: 10,
   workerEntry: appBridge,
-  nodeEntry: nodeAppEntry(9),
+  nodeEntry: nodeAppEntry(10),
   invocation: (input) => JSON.stringify(input),
   request: (command) => command,
   refuse: () => undefined,
   response: (_command, body) => Effect.succeed(body),
   workflow: (execution) => execution,
+  concurrentData: true,
+};
+
+/**
+ * Protocol 9 is protocol 10 without app-owned SQL. Its apps never declare `sql`, so the host never
+ * sends them `migrate`, and every other message and reply is unchanged. Their document store holds
+ * a transaction across a whole call.
+ */
+const protocol9: AppProtocol = {
+  ...protocol10,
+  version: 9,
+  nodeEntry: nodeAppEntry(9),
+  refuse: (command) =>
+    command.operation === "migrate"
+      ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
+      : undefined,
+  concurrentData: false,
 };
 
 /**
@@ -144,6 +167,7 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
           name: `${input.kind === "query" ? "queries" : "mutations"}.${input.name}`,
         }),
     }),
+    concurrentData: false,
   };
 };
 
@@ -158,6 +182,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol7,
     protocol8,
     protocol9,
+    protocol10,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

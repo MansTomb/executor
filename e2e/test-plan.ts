@@ -4294,7 +4294,7 @@ export const scenarios = {
   workflowTimeout: {
     fixtures: "actors",
     file: "workflow-durability.spec.ts",
-    title: "workflow timeouts roll back confirmed writes without late commits",
+    title: "a timed-out workflow step keeps its committed write exactly once across retries",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -4314,11 +4314,23 @@ export const scenarios = {
   appDataLimits: {
     fixtures: "actors",
     file: "app-data-limits.spec.ts",
-    title: "app database budgets and reserved fields fail with named errors",
+    title:
+      "app SQL migrations keep their history and apply all or nothing, and queries never commit",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
       local: na("This scenario uses hosted app deploy and tool call routes."),
+    },
+  },
+  appCallbacks: {
+    fixtures: "actors",
+    file: "app-callbacks.spec.ts",
+    title:
+      "an app with storage answers its webhook verification and other calls while one call waits",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted account and webhook management routes."),
     },
   },
   appContext: {

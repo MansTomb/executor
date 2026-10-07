@@ -204,7 +204,6 @@ export const defineApp = <
   const factory = fromPromise(evaluate);
   const native: NativeApp<Requirements["accounts"], EffectDefinition<Def>> = {
     accounts: requirements.accounts,
-    ...(requirements.database === undefined ? {} : { database: requirements.database }),
     evaluate: (context) =>
       factory(context).pipe(Effect.map((value) => adaptDefinition<Requirements, Def>(value))),
   };

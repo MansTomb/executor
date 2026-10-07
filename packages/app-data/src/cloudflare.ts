@@ -8,7 +8,7 @@ import type {
   WebSocket,
 } from "@cloudflare/workers-types";
 import { Clock, Deferred, Effect, Exit, Result, Schema, Semaphore } from "effect";
-import { fingerprint } from "./implementation/cursor.ts";
+import { fingerprint } from "./implementation/fingerprint.ts";
 import { AppDatabaseError } from "./contracts/database.ts";
 import { CacheCommand, CacheError, CacheReply } from "@executor-js/app-cache/contracts";
 import { holdLeases } from "@executor-js/app-cache";
@@ -27,10 +27,15 @@ export const FacetInvocation = Schema.Struct({
   body: Schema.String,
   cacheNamespace: Schema.optionalKey(Schema.String),
   write: Schema.Boolean,
+  /**
+   * The bundle's calls may run alongside other calls of the same execution context. Bundles built
+   * before app SQL hold a transaction for a whole call, so their facet runs one call at a time.
+   */
+  concurrent: Schema.Boolean,
   headers: Schema.Record(Schema.String, Schema.String),
 });
 /**
- * The supervisor attaches the revision before releasing its serialized invocation, and whether
+ * The supervisor attaches the revision the invocation observed, and whether
  * the invocation invalidated app cache data.
  */
 export const FacetResult = Schema.Struct({
@@ -178,8 +183,54 @@ export const makeFacetSupervisor = (
   unloadReplacedFacets = false,
 ) =>
   Effect.gen(function* () {
-    const execution = yield* Semaphore.make(1);
     const metadata = yield* Semaphore.make(1);
+    /**
+     * Which calls may run in the facet now. Calls of the loaded execution context run together when
+     * their bundle allows it, so a call waiting on an outside service never holds up the app's
+     * other calls, including that service's callbacks into the app. A call for another context, or
+     * one that needs the facet alone, waits until the running calls finish. Durable Objects share
+     * one I/O context, so waiters can be woken through a Deferred.
+     */
+    /**
+     * Calls of the running execution context always join it: a running call may be waiting for
+     * one of them, such as a provider's callback during webhook registration, so holding them
+     * back could deadlock. The cost is fairness: steady overlapping traffic for one context keeps
+     * another waiting until it pauses.
+     */
+    const admission = { running: 0, identity: "", alone: false };
+    let wake = yield* Deferred.make<void>();
+    /** Enter now when allowed, or return the signal to wait on. Synchronous, so it cannot interleave. */
+    const tryEnter = (identity: string, concurrent: boolean) => {
+      const joins =
+        concurrent && !admission.alone && admission.running > 0 && admission.identity === identity;
+      if (!joins && admission.running > 0) return wake;
+      admission.running += 1;
+      admission.identity = identity;
+      admission.alone = !concurrent;
+      return undefined;
+    };
+    const leave = Effect.gen(function* () {
+      admission.running -= 1;
+      if (admission.running === 0) admission.alone = false;
+      const woken = wake;
+      wake = yield* Deferred.make<void>();
+      yield* Deferred.succeed(woken, undefined);
+    });
+    /**
+     * Wait until the call may run in the facet. Waiting is interruptible, so cancelling a queued
+     * call ends it at once; an attempt that enters registers `leave` with the call's scope.
+     */
+    const admit = (identity: string, concurrent: boolean) =>
+      Effect.gen(function* () {
+        for (;;) {
+          const signal = yield* Effect.acquireRelease(
+            Effect.sync(() => tryEnter(identity, concurrent)),
+            (pending) => (pending === undefined ? leave : Effect.void),
+          );
+          if (signal === undefined) return;
+          yield* Deferred.await(signal);
+        }
+      });
     const evaluated = evaluatedStore(state.storage);
     const cached = sqliteCache(state.storage);
     // Every cache command, from the host or from an invocation, passes here, so an invalidation
@@ -249,7 +300,7 @@ export const makeFacetSupervisor = (
     const select = (name: string, app: string, load: () => Promise<typeof FacetBundle.Type>) =>
       Effect.try({
         try: () =>
-          // An abort invalidates stubs. Reacquire on every serialized invocation.
+          // An abort invalidates stubs. Reacquire on every invocation.
           Schema.decodeUnknownSync(FacetEntrypoint)(
             state.facets.get("data", () => {
               const { worker } = loadWorker(loader, name, async () => {
@@ -361,9 +412,10 @@ export const makeFacetSupervisor = (
     ) =>
       Effect.scoped(
         Effect.gen(function* () {
+          yield* admit(invocation.identity, invocation.concurrent);
           const entrypoint = yield* acquire(invocation, load);
-          // Reads share the invocation lock with writes. Capture the revision before
-          // execution so a later write cannot make an old query look current.
+          // Capture the revision before execution so a later write cannot make an old query
+          // look current. A write that commits while the query runs only causes a refetch.
           const observedRevision = yield* revision;
           let cacheChanged = false;
           if (invocation.write)
@@ -415,9 +467,11 @@ export const makeFacetSupervisor = (
               }),
               ({ id, result }, exit) =>
                 Effect.promise(async () => {
-                  if (Exit.isFailure(exit)) {
-                    // A facet transaction closes its input gate, so a cancel RPC cannot
-                    // enter until it commits. Abort the isolated facet to roll it back.
+                  if (Exit.isFailure(exit) && !invocation.concurrent) {
+                    // An older bundle's transaction closes the facet's input gate, so a cancel
+                    // RPC cannot enter until it commits. Abort the facet, which runs only this
+                    // call, to roll it back. Current bundles never hold a transaction across a
+                    // wait, so their cancel below reaches the call without touching others.
                     state.facets.abort("data", "App invocation cancelled");
                   }
                   if (Exit.isSuccess(exit) && entrypoint.finish !== undefined) {
@@ -450,10 +504,6 @@ export const makeFacetSupervisor = (
             ...(cacheChanged ? { cacheChanged: true } : {}),
           };
         }),
-      ).pipe(
-        // Storage operations already serialize inside the facet. Queue here so aborting
-        // one invocation never kills another caller or leaves a stale facet capability.
-        execution.withPermits(1),
       );
     return {
       cache,

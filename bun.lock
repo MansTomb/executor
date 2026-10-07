@@ -411,9 +411,7 @@
     "packages/app-data": {
       "name": "@executor-js/app-data",
       "dependencies": {
-        "@effect/sql-sqlite-node": "4.0.1",
         "@executor-js/app-cache": "workspace:*",
-        "@executor-js/reactivity": "workspace:*",
         "effect": "4.0.1",
       },
       "devDependencies": {
@@ -479,11 +477,10 @@
     },
     "packages/apps": {
       "name": "apps",
-      "version": "0.0.1-beta.37",
+      "version": "0.0.1-beta.38",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@csstools/css-tokenizer": "4.0.2",
-        "@effect/sql-sqlite-do": "4.0.1",
         "@executor-js/app-cache": "workspace:*",
         "@executor-js/app-data": "workspace:*",
         "@executor-js/telemetry": "workspace:*",

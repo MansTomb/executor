@@ -1,7 +1,5 @@
 import { Match, Option, Predicate, Redacted, Schema } from "effect";
 import { CacheError } from "@executor-js/app-cache/contracts";
-import { AppDatabaseError } from "@executor-js/app-data/contracts";
-import { AppStorageError, AppStorageUnavailable } from "../contracts/storage.ts";
 import { OpenapiError } from "../contracts/openapi.ts";
 import { OpenapiCompileError } from "../contracts/openapi-compile.ts";
 import { FetchOptionUnsupported, NetworkRefused } from "../contracts/network.ts";
@@ -35,21 +33,6 @@ export interface FailureDetail {
   readonly message?: string;
   readonly fields?: FailureFields;
 }
-
-const storageMessages = {
-  schema: "The app's database schema is invalid.",
-  schema_changed: "The app's database schema changed during this operation. Retry it.",
-  table: "The operation used a table the app's database schema does not declare.",
-  index: "The operation used an index the table does not declare, or used it incorrectly.",
-  range: "The index range is invalid for the declared index.",
-  value: "A value does not match the table's declared field schema.",
-  readonly: "Queries cannot write. Move writes into a mutation.",
-  cursor: "The pagination cursor is invalid or belongs to a different query.",
-  limit: "The operation exceeded a per-invocation app data limit.",
-  closed: "The database session closed before this operation finished.",
-  storage: "App storage failed to complete the operation.",
-  replay: "A workflow step replayed with different input than its first run.",
-} satisfies Record<AppDatabaseError["reason"], string>;
 
 /** Fixed text per reason; cache keys, values and scopes never enter the message. */
 const cacheMessages = {
@@ -320,25 +303,6 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
       errorName: "CacheError",
       code: error.reason,
       message: cacheMessages[error.reason],
-    };
-  if (Schema.is(AppDatabaseError)(error))
-    return {
-      source: "storage",
-      errorName: "AppDatabaseError",
-      code: error.reason,
-      message: boundFailureMessage(ownMessage(error) ?? storageMessages[error.reason], secrets),
-    };
-  if (Schema.is(AppStorageUnavailable)(error))
-    return {
-      source: "storage",
-      errorName: "AppStorageUnavailable",
-      message: "App storage is not available on this host.",
-    };
-  if (Schema.is(AppStorageError)(error))
-    return {
-      source: "storage",
-      errorName: "AppStorageError",
-      message: "App storage failed to complete the operation.",
     };
   if (Schema.is(OpenapiError)(error))
     return {

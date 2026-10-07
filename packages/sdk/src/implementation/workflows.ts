@@ -26,7 +26,6 @@ import type { Credentials } from "../contracts/storage.ts";
 import type { Runtime } from "../contracts/runtime.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 import type { Executor } from "../contracts/executor.ts";
-import type { AppDatabases } from "@executor-js/app-data";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
 import { storedProfile } from "./profiles.ts";
@@ -34,8 +33,8 @@ import { ProfileId } from "../contracts/shared.ts";
 import { storedAccount } from "./accounts.ts";
 import { storedApp } from "./apps.ts";
 import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
-import { bindAppStorage } from "./app-database.ts";
 import type { Declarations } from "./declarations.ts";
+import { ownsDatabase } from "../contracts/apps.ts";
 
 const StoredRun = Schema.Struct({
   id: WorkflowRunId,
@@ -115,7 +114,6 @@ export const makeWorkflowRuns = (
   crypto: Crypto.Crypto,
   declarations: Declarations,
   backend?: WorkflowRuntime,
-  appStorage?: AppDatabases,
   lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
@@ -209,8 +207,7 @@ export const makeWorkflowRuns = (
         );
         return {
           ...(yield* resolve(state, resolveAccount, lifecycle)),
-          database: state.deployment.requirements.database !== undefined,
-          ...(yield* bindAppStorage(appStorage, row.app)),
+          database: ownsDatabase(state.deployment.requirements),
           workflowControls: controls(state),
         };
       }),

@@ -79,7 +79,6 @@ export const createExecutor = (
       crypto,
       declarations,
       options.workflows,
-      options.appData,
       options.hooks,
     );
     const webhooks = makeWebhooks(
@@ -90,7 +89,6 @@ export const createExecutor = (
       crypto,
       options.origin,
       declarations,
-      options.appData,
       workflows.controls,
       options.hooks,
     );
@@ -123,7 +121,6 @@ export const createExecutor = (
         lifecycle: options.hooks,
         policy: toolListings,
       }),
-      options.appData,
       workflows.controls,
       options.hooks,
     );
@@ -210,7 +207,6 @@ export const createExecutor = (
         options.database,
         oauth.resolveSelected,
         runtime,
-        options.appData,
         workflows.controls,
         options.hooks,
       ),

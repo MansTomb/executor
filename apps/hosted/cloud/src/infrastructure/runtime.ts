@@ -7,6 +7,7 @@ import {
   RuntimeProtocolUnsupported,
   describeBuildCause,
   RuntimeAppsDependencyMissing,
+  ownsDatabase,
   runtimeAdapter,
 } from "@executor-js/sdk/core";
 import {
@@ -166,7 +167,7 @@ export const cloudRuntime = Effect.fn(function* (origin: string) {
               );
             const stored = yield* retainCloudBuild(
               build,
-              { ...bundle, database: requirements.database !== undefined, protocol },
+              { ...bundle, database: ownsDatabase(requirements), protocol },
               framework,
               ui,
             ).pipe(Effect.provide(RuntimeContext.phantom));

@@ -10,6 +10,7 @@ import {
   type HostDataError,
   type HostedCatalog,
   type HostedCatalogSummary,
+  type MigrateResult,
   type SkillCatalog,
   type HostContext,
   type WebhookCommand,
@@ -309,4 +310,12 @@ export interface Runtime<Requirements = never> {
     RuntimeLoadError | typeof HostAccountCheckError.Type,
     Requirements
   >;
+  /**
+   * Apply a build's pending SQL migrations to its app's database, before the build is activated.
+   * Send only to builds whose requirements declare `sql`.
+   */
+  readonly migrate: (input: {
+    readonly app: string;
+    readonly build: BuildId;
+  }) => Effect.Effect<MigrateResult, RuntimeLoadError | typeof HostCallError.Type, Requirements>;
 }

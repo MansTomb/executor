@@ -95,6 +95,8 @@ export const BuildStage = Schema.Literals([
   "compile",
   "declaration",
   "retain",
+  /** Applying the app's SQL migrations to its database, before activation. */
+  "migrate",
 ]);
 
 /** The build did not complete; nothing was retained, created or changed. */

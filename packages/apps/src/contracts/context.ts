@@ -1,19 +1,20 @@
 /** Public handler contexts derive capabilities from one shared requirements declaration. */
 import type { WorkflowControls } from "./workflows.ts";
 import type { AccountSlots, BoundContext } from "./app.ts";
-import type { Database, DatabaseDefinition, DatabaseReader, Tables } from "./storage.ts";
+import type { Sql, SqlReader } from "./sql.ts";
 
-/** Requirements are pure values; selected accounts and database sessions belong to invocations. */
+/** Requirements are pure values; selected accounts and SQL access belong to invocations. */
 export interface AppRequirements {
   readonly accounts: AccountSlots;
-  readonly database?: DatabaseDefinition;
 }
 
-type StorageContext<Requirements, Writable extends boolean> = Requirements extends {
-  readonly database: DatabaseDefinition<infer T extends Tables>;
-}
-  ? { readonly db: Writable extends true ? Database<T> : DatabaseReader<T> }
-  : {};
+/**
+ * Every handler has `ctx.sql`. The app's database exists once the build has SQL files in
+ * `migrations/`; before that, any statement fails and says so.
+ */
+type StorageContext<Writable extends boolean> = {
+  readonly sql: Writable extends true ? Sql : SqlReader;
+};
 
 /** Context available during dynamic app evaluation; storage opens only for handlers. */
 export type AppContext<Requirements extends AppRequirements = AppRequirements> = BoundContext<
@@ -22,13 +23,13 @@ export type AppContext<Requirements extends AppRequirements = AppRequirements> =
 
 /** Interactive query context; declared storage exposes only read methods. */
 export type QueryContext<Requirements extends AppRequirements = AppRequirements> =
-  AppContext<Requirements> & StorageContext<Requirements, false>;
+  AppContext<Requirements> & StorageContext<false>;
 
-/** Interactive mutation context; declared storage belongs to the invocation transaction. */
+/** Interactive mutation context; outside calls happen between SQL transactions, never inside one. */
 export type MutationContext<Requirements extends AppRequirements = AppRequirements> = Omit<
   AppContext<Requirements>,
   "workflows"
-> & { readonly workflows: WorkflowControls } & StorageContext<Requirements, true>;
+> & { readonly workflows: WorkflowControls } & StorageContext<true>;
 
 /** Background webhook context has account and storage access without interactive input. */
 export type WebhookContext<Requirements extends AppRequirements = AppRequirements> = Omit<

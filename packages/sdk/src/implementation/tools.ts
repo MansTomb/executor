@@ -3,8 +3,6 @@ import { appProviderFailure } from "./provider-error.ts";
 import { grantedDefinition } from "./provider.ts";
 /** Snapshot the configured app, then execute with its selected credentials. */
 import { type Crypto, Effect, Match, Option, Redacted, Result, Schema } from "effect";
-import type { AppDatabases } from "@executor-js/app-data";
-import { bindAppStorage } from "./app-database.ts";
 import {
   type WorkflowHostControls,
   HostToolApprovalRequired,
@@ -62,6 +60,7 @@ import { CurrentProfile, ProfileConflict } from "../contracts/profiles.ts";
 import type { ProfileId } from "../contracts/shared.ts";
 import { validateSelection } from "./selection.ts";
 import type { Listings, ToolListing } from "./listings.ts";
+import { ownsDatabase } from "../contracts/apps.ts";
 
 /**
  * Resolve the app, pinned deployment, profile and account selection before invoking authored code.
@@ -402,7 +401,6 @@ export const makeTools = (
   credentials: Credentials,
   crypto: Crypto.Crypto,
   listings: Listings,
-  appStorage?: AppDatabases,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
 ) => {
@@ -742,16 +740,14 @@ export const makeTools = (
         });
         const kind = yield* kindOf(state, context, parsed.tool, parsed.kind);
         let toolError = false;
-        const storageBinding = yield* bindAppStorage(appStorage, state.app.id);
         const execute = (context: InvocationContext) =>
           Effect.suspend(() => {
             toolError = false;
             return runtime.call({
               app: state.app.id,
-              ...storageBinding,
               ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
               build: state.deployment.build,
-              database: state.deployment.requirements.database !== undefined,
+              database: ownsDatabase(state.deployment.requirements),
               ...context,
               tool: parsed.tool,
               ...(kind === undefined ? {} : { kind }),
@@ -840,16 +836,14 @@ export const makeTools = (
                   );
                   const kind = yield* kindOf(state, context, saved.tool, saved.kind);
                   let toolError = false;
-                  const storageBinding = yield* bindAppStorage(appStorage, saved.app);
                   const execute = (context: InvocationContext) =>
                     Effect.suspend(() => {
                       toolError = false;
                       return runtime.call({
                         app: saved.app,
-                        ...storageBinding,
                         ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
                         build: state.deployment.build,
-                        database: state.deployment.requirements.database !== undefined,
+                        database: ownsDatabase(state.deployment.requirements),
                         ...context,
                         tool: saved.tool,
                         ...(kind === undefined ? {} : { kind }),

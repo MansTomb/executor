@@ -21,17 +21,18 @@ build through `execute`; source then travels as data inside tool calls.
 
 ## Read only the topics needed
 
-| Task                                                         | Reference                          |
-| ------------------------------------------------------------ | ---------------------------------- |
-| Start a new UI with storage from a checked example           | [starter.md](starter.md)           |
-| Declare queries, mutations, schemas, approvals or app skills | [tools.md](tools.md)               |
-| Create, save, deploy, update or select dependencies          | [deploy.md](deploy.md)             |
-| Build a React UI and subscribe to data                       | [ui.md](ui.md)                     |
-| Store, query or modify app data                              | [storage.md](storage.md)           |
-| Connect provider accounts and check they work                | [accounts.md](accounts.md)         |
-| Add a service: MCP, OpenAPI, GraphQL or another API          | [integrations.md](integrations.md) |
-| Handle webhooks                                              | [webhooks.md](webhooks.md)         |
-| Run workflows or scheduled mutations                         | [workflows.md](workflows.md)       |
+| Task                                                         | Reference                                              |
+| ------------------------------------------------------------ | ------------------------------------------------------ |
+| Start a new UI with storage from a checked example           | [starter.md](starter.md)                               |
+| Declare queries, mutations, schemas, approvals or app skills | [tools.md](tools.md)                                   |
+| Create, save, deploy, update or select dependencies          | [deploy.md](deploy.md)                                 |
+| Build a React UI and subscribe to data                       | [ui.md](ui.md)                                         |
+| Store, query or modify app data                              | [storage.md](storage.md)                               |
+| Connect provider accounts and check they work                | [accounts.md](accounts.md)                             |
+| Add a service: MCP, OpenAPI, GraphQL or another API          | [integrations.md](integrations.md)                     |
+| Handle webhooks                                              | [webhooks.md](webhooks.md)                             |
+| Run workflows or scheduled mutations                         | [workflows.md](workflows.md)                           |
+| Upgrade an app to a newer `apps` version                     | [upgrades/0.0.1-beta.38.md](upgrades/0.0.1-beta.38.md) |
 
 For a new UI with storage, start with `starter.md`. It links to the topics
 needed to adapt the example. For an existing app, read its current source and

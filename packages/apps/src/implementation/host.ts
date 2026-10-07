@@ -65,8 +65,7 @@ import { jsonSchemaDocument } from "./schema.ts";
 import { locate } from "./router.ts";
 import { readCatalog, routerSkills } from "./router-catalog.ts";
 import { dispatchWebhook } from "./webhooks.ts";
-import { authorDatabase, unavailableStorage } from "./storage.ts";
-import { parseDatabaseSchema } from "@executor-js/app-data/schema";
+import { authorSql, hasMigrations, migrate, noDatabase, type StepReplay } from "./sql.ts";
 import { isApp, toEffectApp } from "./app.ts";
 import { authorCache, unavailableCache } from "./cache.ts";
 import type { HostCache } from "../contracts/cache.ts";
@@ -184,7 +183,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
   );
 }
 
-function requirements(slots: AccountSlots, database?: typeof DeclaredRequirements.Type.database) {
+function requirements(slots: AccountSlots, sql: boolean) {
   return Effect.gen(function* () {
     const accounts = new Map<string, DeclaredRequirements["accounts"][string]>();
     for (const [slot, selection] of Object.entries(slots)) {
@@ -198,10 +197,10 @@ function requirements(slots: AccountSlots, database?: typeof DeclaredRequirement
     return yield* Schema.decodeUnknownEffect(DeclaredRequirements)({
       accounts: Object.fromEntries(accounts),
       capabilities: { skills: true, toolIndex: true, skillSources: true, scheduledTools: true },
-      ...(database === undefined ? {} : { database }),
+      ...(sql ? { sql: true } : {}),
     }).pipe(
       Effect.mapError((cause) =>
-        declarationInvalid("The app's account or database declarations are invalid", cause),
+        declarationInvalid("The app's account declarations are invalid", cause),
       ),
     );
   });
@@ -342,21 +341,31 @@ function dispatch(
         );
       const native = toEffectApp(app);
       const secrets = accountSecrets(context.accounts);
-      const storageFailure = (error: unknown) =>
-        Effect.fail(new HostOperationFailed(failureDetail(error, secrets)));
-      const declared = yield* requirements(native.accounts, native.database?.schema);
-      if (request.operation === "requirements") {
-        if (native.database !== undefined)
-          yield* parseDatabaseSchema(native.database.schema).pipe(
-            Effect.catchTag("AppDatabaseError", (cause) =>
-              Effect.fail(
-                declarationInvalid("The app's account or database declarations are invalid", cause),
-              ),
-            ),
-          );
+      // The build's migrations, not a flag, decide whether the app has a database.
+      const ownsSql = hasMigrations(context.files ?? []);
+      const declared = yield* requirements(native.accounts, ownsSql);
+      if (request.operation === "requirements")
         return yield* safe(
           () => Schema.decodeUnknownEffect(JsonValue)(declared),
           new HostDeclarationInvalid(),
+        );
+      if (request.operation === "migrate") {
+        if (!ownsSql) return yield* new HostOperationNotFound();
+        const storage = context.storage;
+        if (storage === undefined)
+          return yield* new HostOperationFailed(
+            failureDetail(new Error("This host gave the app no SQL storage."), secrets),
+          );
+        const sources = yield* Schema.decodeUnknownEffect(Schema.Array(SkillFile))(
+          context.files ?? [],
+        ).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
+        const applied = yield* migrate(storage, sources).pipe(
+          Effect.mapError((error) => new HostOperationFailed(failureDetail(error, secrets))),
+          Effect.withSpan("app.sql.migrate"),
+        );
+        return yield* safe(
+          () => Schema.decodeUnknownEffect(JsonValue)(applied),
+          new HostOutputInvalid(),
         );
       }
       const lifetime = yield* Effect.acquireRelease(
@@ -364,6 +373,26 @@ function dispatch(
         (controller) => Effect.sync(() => controller.abort()),
       );
       const invocationSignal = AbortSignal.any([signal, lifetime.signal]);
+      /** One invocation's `ctx.sql`. Without migrations it explains that the app has no database. */
+      const storage = context.storage;
+      const sqlSession = (step?: StepReplay) =>
+        !ownsSql
+          ? Effect.succeed({ reader: noDatabase, writer: noDatabase })
+          : storage === undefined
+            ? Effect.fail(
+                new HostOperationFailed(
+                  failureDetail(new Error("This host gave the app no SQL storage."), secrets),
+                ),
+              )
+            : Effect.acquireRelease(
+                Effect.sync(() =>
+                  authorSql(storage, {
+                    signal: invocationSignal,
+                    ...(step === undefined ? {} : { step }),
+                  }),
+                ),
+                (session) => Effect.sync(session.close),
+              );
       const deadline =
         context.deadline === undefined
           ? undefined
@@ -399,19 +428,17 @@ function dispatch(
           deadline,
         ).pipe(withinDeadline);
       let running: InvocationTelemetry | undefined;
-      let transactionOpen = false;
+      // SQL transactions are synchronous, so a handler can never wait for input inside one.
       const delivery: ElicitationHandler = (request, signal) =>
         Effect.suspend(() =>
-          transactionOpen
-            ? Effect.fail(new ElicitationFailed({ reason: "transaction" }))
-            : running !== undefined && context.elicitation !== undefined
-              ? context
-                  .elicitation(request, signal)
-                  .pipe(
-                    Effect.withSpan("app.tool.elicitation"),
-                    Effect.provideContext(running.context),
-                  )
-              : Effect.fail(new ElicitationFailed({ reason: "unavailable" })),
+          running !== undefined && context.elicitation !== undefined
+            ? context
+                .elicitation(request, signal)
+                .pipe(
+                  Effect.withSpan("app.tool.elicitation"),
+                  Effect.provideContext(running.context),
+                )
+            : Effect.fail(new ElicitationFailed({ reason: "unavailable" })),
         );
       const unavailableWorkflow = () =>
         Effect.fail(new WorkflowFailure({ reason: "unavailable", retryable: false }));
@@ -634,38 +661,22 @@ function dispatch(
         request.operation === "webhook-handle" ||
         request.operation === "webhook-unregister"
       ) {
-        const executeWebhook = (db?: import("@executor-js/app-data/contracts").DatabaseSession) =>
-          dispatchWebhook(
-            definition,
-            request,
-            {
-              files,
-              cache: bound.cache,
-              accounts: bound.accounts,
-              workflows: workflowControls,
-              signal: bound.signal,
-              fetch: bound.fetch,
-              ...(db === undefined || native.database === undefined
-                ? {}
-                : {
-                    db: authorDatabase(native.database.tables, db, invocationSignal, true),
-                  }),
-            },
-            Redacted.value(context.accounts),
-          );
-        if (
-          native.database === undefined ||
-          !["webhook-register", "webhook-handle", "webhook-unregister"].includes(request.operation)
-        )
-          return yield* executeWebhook();
-        const storage = context.storage ?? unavailableStorage;
-        return yield* storage.mutate(native.database.schema, executeWebhook).pipe(
-          Effect.catchTags({
-            AppDatabaseError: storageFailure,
-            DatabaseLimitExceeded: (error) => Effect.fail(error),
-            AppStorageUnavailable: storageFailure,
-            AppStorageError: storageFailure,
-          }),
+        // Lifecycle hooks get `ctx.sql` with no surrounding transaction: registration can wait on a
+        // provider that calls this app back before it answers.
+        const session = yield* sqlSession();
+        return yield* dispatchWebhook(
+          definition,
+          request,
+          {
+            files,
+            cache: bound.cache,
+            accounts: bound.accounts,
+            workflows: workflowControls,
+            signal: bound.signal,
+            fetch: bound.fetch,
+            sql: session.writer,
+          },
+          Redacted.value(context.accounts),
         );
       }
       const toolName = request.operation === "call" ? request.tool : request.name;
@@ -745,9 +756,18 @@ function dispatch(
           Match.exhaustive,
         );
       }
-      const execute = (db?: import("@executor-js/app-data/contracts").DatabaseSession) =>
+      const replay =
+        context.replay === undefined
+          ? undefined
+          : yield* safe(
+              () => Schema.decodeUnknownEffect(WorkflowReplay)(context.replay),
+              new HostInputInvalid(),
+            );
+      if (replay !== undefined && kind !== "mutate") return yield* new HostInputInvalid();
+      // A replayed workflow step records its receipt inside its one SQL transaction.
+      const session = yield* sqlSession(replay);
+      const execute = () =>
         Effect.gen(function* () {
-          transactionOpen = db !== undefined;
           const output = yield* Effect.gen(function* () {
             running = yield* captureTelemetry;
             const fetch = yield* appInvocationFetch(fetching.signal);
@@ -756,16 +776,7 @@ function dispatch(
                 ...bound,
                 fetch,
                 workflows: kind === "mutate" ? workflowControls : workflowReads,
-                ...(db === undefined || native.database === undefined
-                  ? {}
-                  : {
-                      db: authorDatabase(
-                        native.database.tables,
-                        db,
-                        invocationSignal,
-                        kind === "mutate",
-                      ),
-                    }),
+                sql: kind === "mutate" ? session.writer : session.reader,
               },
               input,
             );
@@ -819,30 +830,7 @@ function dispatch(
             new HostOutputInvalid(),
           );
         });
-      const replay =
-        context.replay === undefined
-          ? undefined
-          : yield* safe(
-              () => Schema.decodeUnknownEffect(WorkflowReplay)(context.replay),
-              new HostInputInvalid(),
-            );
-      if (replay !== undefined && kind !== "mutate") return yield* new HostInputInvalid();
-      if (native.database === undefined) return yield* withinDeadline(execute());
-      const storage = context.storage ?? unavailableStorage;
-      return yield* storage[kind === "query" ? "read" : "mutate"](native.database.schema, (db) =>
-        withinDeadline(
-          replay === undefined
-            ? execute(db)
-            : db.once(replay.key, replay.fingerprint, () => execute(db)),
-        ),
-      ).pipe(
-        Effect.catchTags({
-          AppDatabaseError: storageFailure,
-          DatabaseLimitExceeded: (error) => Effect.fail(error),
-          AppStorageUnavailable: storageFailure,
-          AppStorageError: storageFailure,
-        }),
-      );
+      return yield* withinDeadline(execute());
     }),
   );
 }

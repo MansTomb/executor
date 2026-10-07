@@ -36,6 +36,7 @@ import { appRuntime, buildLoadSpan } from "./app-runtime.ts";
 import { appWorker } from "./app-runner.ts";
 import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
 import { loadWorkerBuild, retainWorkerBuild, workerBuildAsset } from "./worker-build-storage.ts";
+import { ownsDatabase } from "../contracts/apps.ts";
 
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
@@ -267,7 +268,7 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
             build,
             {
               ...compiled.bundle,
-              database: requirements.database !== undefined,
+              database: ownsDatabase(requirements),
               protocol: compiled.protocol,
             },
             compiled.framework,

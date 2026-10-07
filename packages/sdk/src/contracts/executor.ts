@@ -79,7 +79,6 @@ export interface ExecutorInputs {
   /** Optional product-owned metadata lifecycle. Failures roll back the resource write. */
   readonly hooks?: ResourceLifecycle;
   readonly workflows?: WorkflowRuntime;
-  readonly appData?: import("@executor-js/app-data").AppDatabases;
   readonly cache?: ExecutorCache;
   /**
    * Revalidates stale declarations and revokes deleted accounts' OAuth grants after the response.
