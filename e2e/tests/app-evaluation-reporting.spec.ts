@@ -203,9 +203,7 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
         );
         const silentApp = yield* deploy("Silent MCP", mcpAppFiles(server.url("silent"), 1_000));
         // Nothing listens on this port, so the request fails before any server answers: the same
-        // failure a fault in Executor's own network would cause. Cloud's app network answers a
-        // request it could not send with HTTP 500 instead, which app code reads as the service's
-        // answer, so this request is checked where the app's fetch rejects.
+        // failure a fault in Executor's own network would cause. The app's fetch rejects.
         const unanswered = yield* deploy(
           "Unanswered MCP",
           mcpAppFiles(`http://127.0.0.1:${yield* freePort}/mcp`),
@@ -466,13 +464,10 @@ export default defineApp({ accounts: {} }, async () => {
         expect(unattributed.error.message).toBe(
           "The request to the app’s MCP server failed while connecting.",
         );
-        const unreached = cloud
-          ? undefined
-          : yield* failing(`${prefix}/apps/${unanswered.id}/tools`);
-        if (unreached !== undefined)
-          expect(unreached.error.message).toBe(
-            "Executor’s request to the app’s MCP server failed before the server answered, while connecting.",
-          );
+        const unreached = yield* failing(`${prefix}/apps/${unanswered.id}/tools`);
+        expect(unreached.error.message).toBe(
+          "Executor’s request to the app’s MCP server failed before the server answered, while connecting.",
+        );
         const refusedEgress = yield* failing(`${prefix}/apps/${egress.id}/tools`);
         expect(refusedEgress.error.message).toContain("NetworkRefused (credential_app)");
         const thrown = yield* failing(`${prefix}/apps/${throwing.id}/tools`);
@@ -480,9 +475,7 @@ export default defineApp({ accounts: {} }, async () => {
           "Executor could not load this app’s tool definitions. The app threw TypeError: Synthetic failure in the factory",
         );
         const closed = yield* failing(`${prefix}/apps/${closedSkills.id}/skill-bundle`);
-        expect(closed.error.message).toMatch(
-          /^(Could not reach 127\.0\.0\.1|127\.0\.0\.1 returned HTTP 5\d\d)/,
-        );
+        expect(closed.error.message).toBe("Could not reach 127.0.0.1 to load skills.");
         const refusedSkill = yield* failing(`${prefix}/apps/${refusedSkills.id}/skill-bundle`);
         expect(refusedSkill.error.message).toContain("NetworkRefused (credential_app)");
         // A 404 the app's fetch returned, made up or in place of a failed request, reads the same as
@@ -502,6 +495,7 @@ export default defineApp({ accounts: {} }, async () => {
           { label: "invalid skill source settings over REST", trace: refused.trace },
           { label: "unreadable skill source", trace: garbled.trace },
           { label: "MCP client failure", trace: unattributed.trace },
+          { label: "unanswered MCP server", trace: unreached.trace, unsent: true },
           { label: "refused MCP egress", trace: refusedEgress.trace },
           { label: "thrown factory error", trace: thrown.trace },
           { label: "unanswered skill source", trace: closed.trace, unsent: true },
@@ -534,7 +528,7 @@ export default defineApp({ accounts: {} }, async () => {
           absent: absent.error,
           refused: refused.error,
           silent: silent.error,
-          unreached: unreached?.error,
+          unreached: unreached.error,
           refusedEgress: refusedEgress.error,
           garbled: garbled.error,
           unattributed: unattributed.error,
