@@ -195,6 +195,12 @@ export class Api extends Context.Service<Api, Sessions>()("e2e/Api") {
           Effect.gen(function* () {
             const traceId = randomBytes(16).toString("hex"),
               spanId = randomBytes(8).toString("hex");
+            yield* evidence.sending({
+              method,
+              path: new URL(path, origin).pathname,
+              traceId,
+              spanId,
+            });
             const start = yield* Clock.currentTimeMillis;
             const response = yield* actor.send(method, path, data, {
               origin,

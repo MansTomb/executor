@@ -69,6 +69,7 @@ const make = Effect.gen(function* () {
                       Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Rpc))),
                     )
                   : {};
+              yield* evidence.sending({ method: request.method, path: "/mcp", traceId, spanId });
               const response = yield* driver("MCP HTTP request", (signal) =>
                 fetch(request, {
                   signal: AbortSignal.any([signal, request.signal]),

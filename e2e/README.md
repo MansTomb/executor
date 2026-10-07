@@ -397,6 +397,31 @@ bun run e2e:render --directory .local/e2e/<run>
 bun run e2e:report --directory .local/e2e/<run>/report
 ```
 
+Each case's `telemetry.json` holds the delivered spans of its five slowest requests
+and its last five browser traces. A failed case also keeps the trace of every request
+it sent: from the test, its background fibers and its cleanup, answered or not. A case
+fails when its body fails or when its own cleanup does, so a finalizer that fails after
+the body passed fails the evidence too. The flush waits up to five seconds for the server
+to export the spans that answered those requests. Each entry's `kept` lists why it was kept.
+
+The failure traces have a budget of 64 MiB of compact JSON (`FailureTraceBudget`). The
+largest case, the 1,000-account inventory load, sends about 4,000 requests whose traces
+take 47 MB; most cases take under 4 MB. Past the budget, the oldest traces are left out.
+The newest request, every request that never answered and the five slowest are always
+kept, so the budget is soft: those traces are kept even when they alone exceed it.
+
+Exporting and reading traces stops after 25 seconds, so the evidence finishes inside the
+60-second cleanup hook and the product still stops. The evidence writes `result.json` and
+`trace-ids.json` before it reads any trace. `trace-ids.json` lists every request newest
+first with why its trace is kept, every answered request's trace, the `failure` traces
+kept, the `dropped` ones and the `unfetched` ones, and its `state`: `collecting` until the
+end, then `complete` or `partial` when the deadline stopped the reads. `telemetry.json`
+is written a batch at a time, one compact entry per line: first the newest request, then
+the other traces always kept, then the rest newest first. A trace not read before the
+deadline has an entry with only an `error`. `unanswered-requests.json` lists every
+request that never answered. `failure-evidence.spec.ts` checks this with cases that fail
+on purpose.
+
 For CI failures, download and extract the evidence artifact, then pass the
 extracted run directory (the one containing `evidence.json` and target folders)
 to `e2e:render`. Keep the target folders together. Rendering uses relative paths,

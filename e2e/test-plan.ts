@@ -503,6 +503,17 @@ export const scenarios = {
       ),
     },
   },
+  failureEvidence: {
+    // The cases it runs in their own process start their own products.
+    fixtures: "cli",
+    file: "failure-evidence.spec.ts",
+    title: "Failed cases keep the trace of every request they sent",
+    targets: {
+      "self-host": scheduled,
+      local: na("Evidence selection is the same test-side code for every target."),
+      cloud: na("Evidence selection is the same test-side code for every target."),
+    },
+  },
   testingSdk: {
     fixtures: "actors",
     file: "testing-sdk.spec.ts",
