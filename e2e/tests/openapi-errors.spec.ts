@@ -277,7 +277,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         const petError = (yield* Schema.decodeUnknownEffect(Failure)(invalidPet.structuredContent))
           .execution.error;
         expect(petError.message).toBe(
-          "InputInvalid (HTTP 422): Input failed validation: input.body: Expected object {petType, meow, ...} or object {petType, bark, ...}, told apart by petType. Closest is alternative 2, whose problems follow; input.body.bark: Missing key Recovery: Change the input to the shape each problem expects, then call the tool again.",
+          "InputInvalid (HTTP 422): Input failed validation: input.body: Expected object {petType, meow, ...} or object {petType, bark, ...}, told apart by petType. Closest is alternative 2, whose problems follow; input.body.bark: Missing key. Expected boolean Recovery: Change the input to the shape each problem expects, then call the tool again.",
         );
         expect(petError.message.toLowerCase()).not.toContain("dog");
         // The interpreter only exposes Error.message inside catch; its JSON envelope retains the same fields.

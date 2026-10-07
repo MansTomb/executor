@@ -225,6 +225,13 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({
   find: query({ input: object({ query: object({ text: string(), limit: number().default(10) }), filter: object({ tag: string() }).optional() }) }, async (_, input) => input.query.text),
   tree: query({ input: jsonSchema({ $schema: "https://json-schema.org/draft/2019-09/schema", $recursiveAnchor: true, type: "object", properties: { child: { $recursiveRef: "#" } }, anyOf: [{ required: ["name"] }, { required: ["id"] }] }) }, async () => "tree"),
   pick: query({ input: object({ version: literal("v1"), color: jsonSchema({ type: "string", enum: ${JSON.stringify(pickColors)} }) }) }, async (_, input) => input.color),
+  policy: query({ input: jsonSchema({ type: "object", required: ["policyId"], properties: { policyId: { type: "string" }, slug: { type: "string", pattern: "^[a-z-]+$" }, limit: { type: "integer", minimum: 1, maximum: 50 } } }) }, async () => "policy"),
+  account: query({ input: jsonSchema({ type: "object", required: ["userId"], properties: { userId: { type: "string" }, user_id: { type: "string" }, count: { type: "number", minimum: 5, exclusiveMinimum: true } } }) }, async () => "account"),
+  user: query({ input: object({ userId: string(), user_id: string().optional() }) }, async () => "user"),
+  loose: query({ input: jsonSchema({ type: "object", required: ["ref", "closed", "strict", "either"], properties: { ref: { properties: { id: { type: "string" } }, required: ["id"] }, closed: { additionalProperties: false }, strict: { properties: { id: { type: "string" } }, required: ["id"], minLength: 5 }, either: { oneOf: [{ properties: { a: { type: "string" } }, required: ["a"] }, { properties: { b: { type: "string" } }, required: ["b"] }] } } }) }, async () => "loose"),
+  same: query({ input: jsonSchema({ type: "object", required: ["value"], properties: { value: { oneOf: [{ const: "x" }, { const: "x" }] } } }) }, async () => "same"),
+  overlap: query({ input: jsonSchema({ type: "object", required: ["value"], properties: { value: { oneOf: [{ enum: ["a", "b"] }, { enum: ["b", "c"] }] } } }) }, async () => "overlap"),
+  bounded: query({ input: jsonSchema({ type: "object", required: ["value"], properties: { value: { enum: ["a", "b", "c"], oneOf: [{ enum: ["a", "b"] }, { enum: ["b", "c"] }] } } }) }, async () => "bounded"),
 }) }));`;
 
 // `remove` declares a policy that denies every call, as an app that never lets agents delete.
@@ -685,6 +692,80 @@ return messages;`,
           'Input failed validation: input.version: Expected "v1"',
           'Input failed validation: input.color: Expected one of "red", "orange", "yellow", "green", "blue", "indigo", "violet", "black", "white", "gray" and 2 more',
         ]);
+        // A missing key states what it expects, and asks about a place where the input may have
+        // that key instead: under another spelling or nested one object too deep. A key the
+        // schema declares where the input has it is never suggested. A schema that fixes no type
+        // states no expected type. A constraint states the limit the validator applies.
+        const missing = yield* executeOnce(
+          client,
+          "Omit, misspell, misplace and exceed keys across native and imported schemas",
+          `const messages = [];
+for (const [tool, input] of [
+  ["find", {}],
+  ["find", {query: {query: {text: "fixture text"}}}],
+  ["policy", {policy_id: "fixture policy"}],
+  ["policy", {input: {policyId: "fixture policy"}}],
+  ["policy", {policyId: "fixture policy", limit: 0}],
+  ["policy", {policyId: "fixture policy", slug: "Fixture Slug"}],
+  ["account", {user_id: "fixture user"}],
+  ["user", {user_id: "fixture user"}],
+  ["tree", {child: {name: "fixture child"}}],
+  ["account", {userId: "fixture user", count: 5}],
+  ["account", {userId: "fixture user", count: 4}],
+  ["loose", {}],
+  ["loose", {ref: "fixture ref", closed: "fixture closed", strict: "x", either: {a: "fixture a"}}],
+  ["loose", {ref: "fixture ref", closed: "fixture closed", strict: "fixture strict", either: 1}],
+  ["loose", {ref: "fixture ref", closed: "fixture closed", strict: "fixture strict", either: {a: "fixture a"}}],
+  ["same", {}],
+  ["same", {value: "x"}],
+  ["same", {value: "y"}],
+  ["overlap", {}],
+  ["overlap", {value: "b"}],
+  ["overlap", {value: "d"}],
+  ["overlap", {value: "a"}],
+  ["bounded", {}],
+]) {
+  try { await tools[${JSON.stringify(slug)}][tool](input); messages.push("accepted"); } catch (error) { messages.push(JSON.parse(error.message).message); }
+}
+return messages;`,
+          "input-shape-missing-result.json",
+        );
+        const messages = (yield* Schema.decodeUnknownEffect(Completed)(missing.structured))
+          .execution.value;
+        expect(messages).toEqual([
+          "Input failed validation: input.query: Missing key. Expected object {text, limit?}",
+          "Input failed validation: input.query.text: Missing key. Expected string. The input has text at input.query.query.text; did you mean input.query.text?",
+          "Input failed validation: input.policyId: Missing key. Expected string. The input has policy_id at input.policy_id; did you mean input.policyId?",
+          "Input failed validation: input.policyId: Missing key. Expected string. The input has policyId at input.input.policyId; did you mean input.policyId?",
+          "Input failed validation: input.limit: Expected a number of at least 1",
+          'Input failed validation: input.slug: Expected a string matching the pattern "^[a-z-]+$"',
+          // user_id and the child's name are declared where the input has them.
+          "Input failed validation: input.userId: Missing key. Expected string",
+          "Input failed validation: input.userId: Missing key. Expected string",
+          "Input failed validation: input: Expected object {child?, name, ...} or object {child?, id, ...}. Closest is alternative 1, whose problems follow; input.name: Missing key",
+          // The validator applies minimum inclusively, whatever a draft 4 exclusiveMinimum says.
+          "accepted",
+          "Input failed validation: input.count: Expected a number of at least 5",
+          // A schema without a type promises none: object keywords alone accept other values,
+          // and other keywords or alternatives may still reject them.
+          "Input failed validation: input.ref: Missing key; input.closed: Missing key; input.strict: Missing key; input.either: Missing key",
+          "Input failed validation: input.strict: Expected a string of at least 5 characters",
+          "Input failed validation: input.either: Expected object {a, ...} or object {b, ...}. Exactly one may match, but 2 do",
+          "accepted",
+          // A oneOf's alternatives may overlap, so a missing key promises none of their values,
+          // even beside the key's own enum, a value more than one alternative allows is rejected
+          // as such, and a value none allows keeps the alternatives apart.
+          "Input failed validation: input.value: Missing key",
+          'Input failed validation: input.value: Expected "x" or "x". Exactly one may match, but 2 do',
+          'Input failed validation: input.value: Expected "x" or "x". Exactly one alternative must match',
+          "Input failed validation: input.value: Missing key",
+          'Input failed validation: input.value: Expected one of "a", "b" or one of "b", "c". Exactly one may match, but 2 do',
+          'Input failed validation: input.value: Expected one of "a", "b" or one of "b", "c". Exactly one alternative must match',
+          "accepted",
+          "Input failed validation: input.value: Missing key",
+        ]);
+        // Supplied values are never echoed, only the schema's keys, limits and patterns.
+        expect(JSON.stringify(messages)).not.toContain("fixture");
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

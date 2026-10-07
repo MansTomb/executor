@@ -376,7 +376,7 @@ return { items: found.items, results };`,
         expect(incomplete.status, JSON.stringify(incomplete.body)).toBe(502);
         const rejected = yield* body(OutputRejected, incomplete);
         expect(rejected.failure.message).toContain(
-          'Missing key\n  at ["structuredContent"]["child"]["name"]',
+          'Missing key. Expected string\n  at ["structuredContent"]["child"]["name"]',
         );
       }),
     ),

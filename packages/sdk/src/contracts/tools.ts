@@ -771,7 +771,10 @@ export const ToolKindMismatch = ApiError.define({
 });
 export type ToolKindMismatch = typeof ToolKindMismatch.Type;
 
-/** The tool input did not match its declared schema. */
+/**
+ * The tool input did not match its declared schema. The app states its problems, which name the
+ * caller's keys and paths and the schema's keys, values and patterns; only the caller reads them.
+ */
 export const InputInvalid = ApiError.define({
   tag: "InputInvalid",
   status: 422,
@@ -782,6 +785,7 @@ export const InputInvalid = ApiError.define({
     problems: Schema.Array(Schema.String),
   },
   message: ({ problems }) => `Input failed validation: ${problems.join("; ")}`.slice(0, 4096),
+  recorded: () => "The tool's input did not match its schema; the problems are not recorded",
 });
 export type InputInvalid = typeof InputInvalid.Type;
 

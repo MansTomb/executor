@@ -708,7 +708,7 @@ function dispatch(
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
             ? Effect.interrupt
-            : Effect.fail(inputInvalid(Cause.squash(cause))),
+            : Effect.fail(inputInvalid(Cause.squash(cause), request.input)),
         ),
       );
       if (context.approval !== undefined) {

@@ -2,8 +2,10 @@
  * An app can fail with any text: in its own error's name, code, fields, message and stack, outside
  * its error handling, in a reply the host cannot read, and in the spans and logs its isolate
  * returns, which its code can rewrite, in a reply naming an MCP status that is no HTTP status,
- * and in a workflow step. The app's own error reaches its caller. Executor's spans, logs and
- * incident reports record only fixed descriptions and closed kinds, never the app's text.
+ * and in a workflow step. A caller's invalid input is described with its keys and paths and the
+ * schema's keys and patterns. The app's own error and the input's problems reach the caller.
+ * Executor's spans, logs and incident reports record only fixed descriptions and closed kinds,
+ * never the app's or the caller's text.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schedule, Schema } from "effect";
@@ -153,7 +155,7 @@ JSON.stringify = function (value, ...rest) {
 const source = (marker: string, status: number, rewritesTelemetry: boolean) => [
   {
     path: "index.ts",
-    content: `import { defineApp, query, object, string, router, workflow, NonRetryableError } from "apps";
+    content: `import { defineApp, query, object, string, jsonSchema, router, workflow, NonRetryableError } from "apps";
 ${failing(marker, status)}
 ${rewritesTelemetry ? hostile : ""}
 export default defineApp({ accounts: {} }, {
@@ -164,6 +166,7 @@ export default defineApp({ accounts: {} }, {
     unanswered: query({ input: object({}), output: string() }, async () => "reply-" + "unanswered"),
     mcp: query({ input: object({}), output: string() }, async () => "reply-" + "mcp"),
     released: query({ input: object({}), output: string() }, released),
+    invalid: query({ input: jsonSchema({ type: "object", required: [marker], properties: { [marker]: { type: "string" }, slug: { type: "string", pattern: "^" + marker + "$" } } }) }, async () => "invalid"),
   }),
   workflows: {
     failing: workflow({ input: object({}) }, async (ctx) =>
@@ -203,6 +206,11 @@ const WorkflowRun = Schema.Struct({
       message: Schema.optionalKey(Schema.String),
     }),
   ),
+});
+const InputRejected = Schema.Struct({
+  _tag: Schema.Literal("InputInvalid"),
+  problems: Schema.Array(Schema.String),
+  message: Schema.String,
 });
 const EvaluationFailed = Schema.Struct({
   _tag: Schema.Literal("AppEvaluationFailed"),
@@ -277,7 +285,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
          * Call a tool, then read its trace once the host has recorded the failed call and has
          * forwarded the app isolate's spans and logs for it.
          */
-        const call = (app: string, tool: string) =>
+        const call = (app: string, tool: string, input: object = {}) =>
           Effect.gen(function* () {
             const response = yield* api.request(
               actors.owner,
@@ -286,7 +294,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
               {
                 tool,
                 kind: "query",
-                input: {},
+                input,
               },
             );
             const trace = (yield* evidence.requests).at(-1)?.traceId;
@@ -310,6 +318,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
                 (!cloud || has("runtime.app.invoke")) &&
                 // A rejected or unreadable reply carries no telemetry from the isolate.
                 (tool !== "thrown" || has("app.call")) &&
+                (tool !== "invalid" || has("app.dispatch")) &&
                 (tool !== "unanswered" || (has("app.dispatch") && appLogs.length > 0));
               return ready
                 ? { spans, logs, appLogs }
@@ -332,6 +341,13 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         const unanswered = yield* call(ordinary.id, "unanswered");
         const mcp = yield* call(ordinary.id, "mcp");
         const released = yield* call(ordinary.id, "released");
+        // The input nests the schema's key in a caller's key, which its problem names as a
+        // place the key may have come from, and misses the schema's pattern.
+        const callerKey = `in_${marker}`;
+        const invalid = yield* call(ordinary.id, "invalid", {
+          [callerKey]: { [marker]: "value" },
+          slug: "value",
+        });
         const rewriting = yield* deploy(true);
         const rewritten = yield* call(rewriting.id, "thrown");
         const rewrittenLog = yield* call(rewriting.id, "unanswered");
@@ -380,6 +396,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           unanswered,
           mcp,
           released,
+          invalid,
           rewritten,
           rewrittenLog,
           ...(workflowRun === undefined ? {} : { workflowRun }),
@@ -387,7 +404,10 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         const sentry = cloud
           ? yield* awaitSentryEvents((events) =>
               Object.entries(calls).every(
-                ([name, { trace }]) => name === "released" || traceEvents(events, trace).length > 0,
+                ([name, { trace }]) =>
+                  name === "released" ||
+                  name === "invalid" ||
+                  traceEvents(events, trace).length > 0,
               ),
             ).pipe(
               Effect.flatMap((events) =>
@@ -406,6 +426,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
               unanswered,
               mcp,
               released,
+              invalid,
               rewritten,
               rewrittenLog,
             }).map(([name, { response }]) => [
@@ -451,6 +472,17 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         const mcpFailure = yield* body(McpCallFailed, mcp.response);
         expect(mcpFailure.mcp).toEqual({ phase: "call", reason: "request", status });
         expect(mcpFailure.reason).toContain(`(HTTP ${status})`);
+        // The caller reads the input's problems, with its own key and the schema's pattern.
+        expect(invalid.response.status, JSON.stringify(invalid.response.body)).toBe(422);
+        const inputProblems = [
+          `input.${marker}: Missing key. Expected string. The input has ${marker} at input.${callerKey}.${marker}; did you mean input.${marker}?`,
+          `input.slug: Expected a string matching the pattern "^${marker}$"`,
+        ];
+        expect(yield* body(InputRejected, invalid.response)).toEqual({
+          _tag: "InputInvalid",
+          problems: inputProblems,
+          message: `Input failed validation: ${inputProblems.join("; ")}`,
+        });
         // A call whose release failed has already answered its caller.
         expect(released.response.status, JSON.stringify(released.response.body)).toBe(200);
         // The run's owner reads the failing step and the app's own error.
@@ -481,9 +513,11 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
               ? "ToolCallFailed: The tool failed: the app's code raised an error"
               : name === "mcp"
                 ? "ToolCallFailed: The tool failed: the app's MCP server failed during call (request)"
-                : name === "workflowRun"
-                  ? "WorkflowFailure: The workflow failed (execution); the app's error is not recorded"
-                  : "AppEvaluationFailed: Tools could not be loaded: the app's definition could not be evaluated";
+                : name === "invalid"
+                  ? "InputInvalid: The tool's input did not match its schema; the problems are not recorded"
+                  : name === "workflowRun"
+                    ? "WorkflowFailure: The workflow failed (execution); the app's error is not recorded"
+                    : "AppEvaluationFailed: Tools could not be loaded: the app's definition could not be evaluated";
           expect(
             `${event?.attributes["exception.type"]}: ${event?.attributes["exception.message"]}`,
           ).toBe(description);
@@ -625,6 +659,8 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
               type: "WorkflowFailure",
               value: "The workflow failed (execution); the app's error is not recorded",
             });
+          // Invalid input is the caller's to correct, so it is not reported as an incident.
+          expect(traceEvents(sentry.events, invalid.trace)).toEqual([]);
           expect(sentry.raw, "incident reports omit the app's text").not.toContain(marker);
           expect(sentry.raw, "incident reports omit the app's status").not.toContain(
             String(status),
