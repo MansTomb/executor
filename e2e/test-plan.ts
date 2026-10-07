@@ -4405,6 +4405,18 @@ export const scenarios = {
       ),
     },
   },
+  telemetryBackpressure: {
+    file: "telemetry-backpressure.spec.ts",
+    title:
+      "Crash reports a shedding collector refuses are resent after its Retry-After, within budget",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud's Worker reads its collector address at start; only self-host starts a scenario-owned server.",
+      ),
+      local: na("Local uses the same relay; only self-host starts a scenario-owned server."),
+    },
+  },
   selfHostOnboarding: {
     file: "self-host-onboarding.spec.ts",
     title: "Self-host administrator setup opens the agent handoff before Apps",

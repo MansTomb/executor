@@ -207,6 +207,8 @@ scenarios on Linux instead of moving them to a Mac.
   Postgres. It starts the local Cloud Worker, a throwaway Postgres container and the service
   emulators, so it needs Docker but no credentials. Scenarios that hold row locks to pause the
   server's own statements get a second local Cloud, so their locks cannot stall other scenarios.
+  The job builds the apps package and Motel once before its runs; runs only serve that Motel
+  bundle, because every target in a run shares it.
 
 Cloud scenarios verify
 API/MCP outcomes, workflow correlation, browser failures, app traces and analytics.

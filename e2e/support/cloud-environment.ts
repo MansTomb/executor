@@ -2,7 +2,7 @@ import { Effect, FileSystem, Path, Redacted, Schedule, Schema, Stream } from "ef
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient } from "effect/http";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
-import { startOtlpCollector } from "./otlp-collector.ts";
+import { serveOtlpCollector } from "./otlp-collector.ts";
 import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, emulatorRequest } from "./emulators.ts";
 import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
@@ -47,7 +47,7 @@ export const startCloudEnvironment = (input: {
     yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
     const analyticsPort = yield* startAnalyticsCollector(directory);
-    const collector = yield* startOtlpCollector(directory);
+    const collector = yield* serveOtlpCollector(directory);
     const databasePassword = randomBytes(24).toString("hex");
     const ssoDatabase = `${directory}/sso-database.json`;
     yield* fs.writeFileString(

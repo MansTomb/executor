@@ -3,7 +3,7 @@ import { Effect, FiberSet, Option, Redacted, Schema, Semaphore, Tracer } from "e
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { CurrentTelemetryConfig } from "./config.ts";
 import { telemetryLayer } from "./layer.ts";
-import { telemetryHttpClient } from "./transport.ts";
+import { retryTelemetryExport, telemetryHttpClient } from "./transport.ts";
 import { recordExportFailure } from "./measurements.ts";
 import { appLog, appSpan } from "./app-records.ts";
 
@@ -196,7 +196,8 @@ export const forwardTelemetry = (
           : [{ key: "executor.build.id", value: { stringValue: build } }]),
       ],
     };
-    const client = yield* HttpClient.HttpClient;
+    // A collector that refuses an export for now gets it again inside the three-second budget.
+    const client = retryTelemetryExport(yield* HttpClient.HttpClient);
     if (batch.dropped > 0) yield* recordExportFailure("app", "capacity", batch.dropped);
     for (const signal of ["traces", "logs"] as const) {
       const target = config[signal];
@@ -253,16 +254,14 @@ export const forwardTelemetry = (
                 ],
               })),
             );
-      yield* client
-        .pipe(HttpClient.filterStatusOk)
-        .execute(
-          HttpClientRequest.post(target.url).pipe(
-            HttpClientRequest.setHeaders(
-              target.headers === undefined ? {} : Redacted.value(target.headers),
-            ),
-            HttpClientRequest.bodyJsonUnsafe(data),
+      yield* client.execute(
+        HttpClientRequest.post(target.url).pipe(
+          HttpClientRequest.setHeaders(
+            target.headers === undefined ? {} : Redacted.value(target.headers),
           ),
-        );
+          HttpClientRequest.bodyJsonUnsafe(data),
+        ),
+      );
     }
   }).pipe(
     Effect.provide(telemetryHttpClient),
