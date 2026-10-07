@@ -36,6 +36,19 @@ import {
 import { appDomainControlSecret } from "./src/infrastructure/app-domain-control.ts";
 import { cloudOrigin } from "./src/infrastructure/stage.ts";
 
+/** Every Worker the stack deploys. `scripts/worker-sizes.ts` builds the same layers. */
+export const cloudWorkers = Layer.mergeAll(
+  ApiLive,
+  AppCompilerLive,
+  DashboardLive,
+  FormatterLive,
+  AppDataLive,
+  ArtifactsCredentialsLive,
+  McpServerLive,
+  AppDomainControllerLive,
+  InvocationTelemetryLive,
+);
+
 export default Alchemy.Stack(
   "executor-next-hosted",
   {
@@ -88,19 +101,5 @@ export default Alchemy.Stack(
     yield* uploadCloudSourceMaps("api", api.hash).pipe(Effect.orDie);
     yield* uploadCloudSourceMaps("mcp-server", (yield* McpServer).hash).pipe(Effect.orDie);
     return { url: (yield* AlchemyContext).dev ? yield* developmentWeb(api.url) : api.url };
-  }).pipe(
-    Effect.provide(
-      Layer.mergeAll(
-        ApiLive,
-        AppCompilerLive,
-        DashboardLive,
-        FormatterLive,
-        AppDataLive,
-        ArtifactsCredentialsLive,
-        McpServerLive,
-        AppDomainControllerLive,
-        InvocationTelemetryLive,
-      ),
-    ),
-  ),
+  }).pipe(Effect.provide(cloudWorkers)),
 );

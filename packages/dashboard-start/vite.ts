@@ -42,6 +42,24 @@ const serverBundle = (runtime: "workerd" | "node"): PluginOption => ({
   }),
 });
 
+/**
+ * Start's server manifest records each route's absolute source path, which the server never
+ * reads. Recording it relative to the app keeps the server build identical wherever the
+ * repository is checked out, so a size measured in one checkout holds in every other.
+ */
+const relativeRouteFiles = (): PluginOption => {
+  let root = "";
+  return {
+    name: "executor-relative-route-files",
+    enforce: "post",
+    configResolved: (config) => {
+      root = `${config.root}/`;
+    },
+    transform: (code, id) =>
+      id.includes("tanstack-start-manifest:v") ? code.replaceAll(root, "") : undefined,
+  };
+};
+
 /** Start owns routing, code splitting, the browser entry and the server document handler. */
 export const dashboardStartPlugins = ({
   runtime,
@@ -65,6 +83,7 @@ export const dashboardStartPlugins = ({
     client: { entry: "client.tsx" },
     server: { entry: "server.ts" },
   }),
+  relativeRouteFiles(),
   react(),
   tailwind,
 ];

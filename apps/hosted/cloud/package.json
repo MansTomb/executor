@@ -9,7 +9,8 @@
     "deploy": "bun run framework:build && alchemy deploy",
     "destroy": "alchemy destroy",
     "test-stage": "node scripts/test-stage.ts",
-    "framework:build": "node scripts/build-framework.ts"
+    "framework:build": "node scripts/build-framework.ts",
+    "worker-sizes": "bun run framework:build && bun scripts/worker-sizes.ts"
   },
   "dependencies": {
     "@alchemy.run/better-auth": "2.0.0-beta.80",
