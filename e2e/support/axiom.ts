@@ -100,15 +100,23 @@ const standard = `pack(${recognizedAttributes
   .map((name) => `'${name}', column_ifexists('attributes.${name}', dynamic(null))`)
   .join(", ")})`;
 
-/** Queries remain limited to one validated trace and the current run's time window. */
-export const axiomTraceQuery = Effect.gen(function* () {
+/** Span names, attribute names and attribute values a search may put into its query. */
+const Term = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.:-]+$/));
+/** The column that holds a delivered attribute, see `recognizedAttributes`. */
+const attributeColumn = (name: string) =>
+  (recognizedAttributes as ReadonlyArray<string>).includes(name)
+    ? `['attributes.${name}']`
+    : `['attributes.custom']['${name}']`;
+
+/**
+ * Queries remain limited to the current run's time window and to filters built from validated
+ * terms: one trace, or one operation whose attributes match exactly.
+ */
+export const axiomSpans = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const start = yield* Clock.currentTimeMillis;
-  return (traceId: string) =>
+  const query = (filter: string) =>
     Effect.gen(function* () {
-      const id = yield* Schema.decodeUnknownEffect(
-        Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/)),
-      )(traceId);
       const token = yield* Config.Redacted("E2E_AXIOM_TOKEN");
       const organization = yield* Config.option(Config.NonEmptyString("E2E_AXIOM_ORG_ID"));
       const dataset = yield* Config.String("E2E_AXIOM_DATASET").pipe(
@@ -125,7 +133,7 @@ export const axiomTraceQuery = Effect.gen(function* () {
           Option.isSome(organization) ? { "x-axiom-org-id": organization.value } : {},
         ),
         HttpClientRequest.bodyJson({
-          apl: `['${dataset}'] | where trace_id == '${id}' | project traceId=trace_id, spanId=span_id, parentSpanId=parent_span_id, operationName=name, serviceName=['service.name'], startTime=_time, durationMs=duration/1ms, status=['status.code'], tags=['attributes.custom'], build=['resource.custom']['executor.build.id'], links, events=column_ifexists('events', dynamic(null)), statusMessage=column_ifexists('status.message', ''), standard=${standard} | take 5000`,
+          apl: `['${dataset}'] | where ${filter} | project traceId=trace_id, spanId=span_id, parentSpanId=parent_span_id, operationName=name, serviceName=['service.name'], startTime=_time, durationMs=duration/1ms, status=['status.code'], tags=['attributes.custom'], build=['resource.custom']['executor.build.id'], links, events=column_ifexists('events', dynamic(null)), statusMessage=column_ifexists('status.message', ''), standard=${standard} | take 5000`,
           startTime: new Date(start - 60_000).toISOString(),
           endTime: new Date(now + 60_000).toISOString(),
         }),
@@ -142,7 +150,7 @@ export const axiomTraceQuery = Effect.gen(function* () {
           return yield* Effect.fail(new Error("Axiom returned inconsistent columns"));
         const count = table.columns[0]?.length ?? 0;
         if (count === 5000 || table.columns.some((column) => column.length !== count))
-          return yield* Effect.fail(new Error("Axiom trace result is incomplete"));
+          return yield* Effect.fail(new Error("Axiom span result is incomplete"));
         for (let row = 0; row < count; row++) {
           const value = Object.fromEntries(
             table.fields.map((field, index) => [field.name, table.columns[index]?.[row]]),
@@ -180,4 +188,25 @@ export const axiomTraceQuery = Effect.gen(function* () {
         })),
       });
     }).pipe(Effect.scoped, Effect.timeout("10 seconds"));
+  return {
+    trace: (traceId: string) =>
+      Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/)))(
+        traceId,
+      ).pipe(Effect.flatMap((id) => query(`trace_id == '${id}'`))),
+    search: (operation: string, attributes: Readonly<Record<string, string>>) =>
+      Effect.forEach([operation, ...Object.entries(attributes).flat()], (term) =>
+        Schema.decodeUnknownEffect(Term)(term),
+      ).pipe(
+        Effect.flatMap(() =>
+          query(
+            [
+              `name == '${operation}'`,
+              ...Object.entries(attributes).map(
+                ([name, value]) => `tostring(${attributeColumn(name)}) == '${value}'`,
+              ),
+            ].join(" and "),
+          ),
+        ),
+      ),
+  };
 });

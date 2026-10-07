@@ -188,6 +188,26 @@ export default defineApp({ accounts: {} }, {});`,
         expect(declared.stage).toBe("declaration");
         expect(declared.message).toContain(declarationMarker);
 
+        // A frozen error keeps its own name, message and location: reporting it changes nothing on it.
+        const frozen = yield* deploy([
+          {
+            path: "index.ts",
+            content: `import { defineApp } from "apps";
+throw Object.freeze(new TypeError(${JSON.stringify(declarationMarker)}));
+export default defineApp({ accounts: {} }, {});`,
+          },
+        ]);
+        yield* evidence.json("frozen-declaration-failure.json", frozen.body);
+        expect(frozen.status).toBe(422);
+        const kept = yield* body(BuildFailed, frozen);
+        expect(kept).toMatchObject({
+          stage: "declaration",
+          location: { file: "index.ts", line: 2, column: 21 },
+        });
+        expect(kept.message).toContain(`TypeError: ${declarationMarker}`);
+        expect(kept.message).toContain("at index.ts:2:21");
+        expect(kept.message).not.toContain("read only");
+
         // The Executor app's deploy tool carries the same detail to an MCP caller.
         const { client, profile } = yield* frameworkSession;
         const deployed = yield* client.use("Deploy a failing app through MCP", (client, signal) =>

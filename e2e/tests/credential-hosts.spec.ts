@@ -313,20 +313,45 @@ const synthetic = () => ({
   signing: `synthetic-signing-${randomUUID()}`,
 });
 
+/**
+ * The hosts the refusal checks name. On self-host the declared and the undeclared name both reach
+ * a loopback receiver, which shows that a refused request sends nothing. Cloud app Workers refuse
+ * private addresses before the credential check, so there the hosts are under the reserved
+ * `.invalid` suffix: Executor treats them as public, and nothing could answer a request that
+ * escaped the checks.
+ */
+const refusalHosts = Effect.gen(function* () {
+  if ((yield* Target).metadata.target === "cloud")
+    return {
+      declaredHost: "api.credential-hosts.invalid",
+      declaredOrigin: "https://api.credential-hosts.invalid",
+      undeclaredOrigin: "https://undeclared.credential-hosts.invalid",
+      received: null,
+    };
+  const upstream = yield* credentialUpstream;
+  return {
+    declaredHost: `127.0.0.1:${upstream.port}`,
+    declaredOrigin: upstream.origin,
+    undeclaredOrigin: upstream.undeclaredOrigin,
+    received: upstream.received,
+  };
+});
+
 layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
   /**
-   * Deploy an app whose provider declares the upstream's host, connect an account, and check that
-   * app code reads handles and that an undeclared host is refused.
+   * Deploy an app whose provider declares one host, connect an account, and check that app code
+   * reads handles and that an undeclared host is refused.
    */
   const sealedApp = (database: boolean) =>
     Effect.gen(function* () {
       const { deploy, connect, call, callFailure } = yield* scenario;
-      const upstream = yield* credentialUpstream;
+      const hosts = yield* refusalHosts;
+      const { declaredHost, undeclaredOrigin } = hosts;
       const name = `Credential hosts ${randomUUID().slice(0, 8)}`;
       const values = synthetic();
       const { path } = yield* deploy(
         name,
-        credentialApp({ name, host: `127.0.0.1:${upstream.port}`, health: null, database }),
+        credentialApp({ name, host: declaredHost, health: null, database }),
       );
       const { profile, account } = yield* connect(path, name, values);
 
@@ -337,23 +362,23 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
       expect(fields.token).toMatch(handle);
       expect(JSON.stringify(fields)).not.toContain(values.token);
 
-      // The same service under a name the provider does not declare never receives the token.
+      // A host the provider does not declare is refused before anything is sent.
       const undeclared = yield* call(
         path,
         Sent,
         "send",
-        { url: `${upstream.undeclaredOrigin}/undeclared` },
+        { url: `${undeclaredOrigin}/undeclared` },
         profile,
       );
       expect(undeclared.status).toBe(421);
-      const refusal = `Executor refused this request: ${name} credentials cannot be sent to localhost:${upstream.port}. The provider allows: 127.0.0.1:${upstream.port}.`;
+      const refusal = `Executor refused this request: ${name} credentials cannot be sent to ${new URL(undeclaredOrigin).host}. The provider allows: ${declaredHost}.`;
       expect(Schema.decodeUnknownSync(Refusal)(undeclared.text)).toEqual({
         _tag: "NetworkRefused",
-        host: `localhost:${upstream.port}`,
+        host: new URL(undeclaredOrigin).host,
         refusal: {
           reason: "credential_host",
           provider: name,
-          allowedHosts: [`127.0.0.1:${upstream.port}`],
+          allowedHosts: [declaredHost],
         },
         message: refusal,
       });
@@ -361,7 +386,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
       const fetched = yield* callFailure(
         path,
         "fetchSend",
-        { url: `${upstream.undeclaredOrigin}/fetched` },
+        { url: `${undeclaredOrigin}/fetched` },
         profile,
       );
       expect(fetched.failure).toEqual({
@@ -371,7 +396,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         message: refusal,
       });
       expect(fetched.reason).toBe(`The app threw NetworkRefused (credential_host): ${refusal}`);
-      return { upstream, values, name, path, profile, account, refusal, sealed: fields.token };
+      return { hosts, values, name, path, profile, account, refusal, sealed: fields.token };
     });
 
   it.effect(scenarios.credentialHostsRefused.title, (context) =>
@@ -381,7 +406,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         const { deploy, call, runWorkflow, select } = yield* scenario;
         const api = yield* Api,
           actors = yield* Actors;
-        const { upstream, values, name, path, profile, account, refusal, sealed } =
+        const { hosts, values, name, path, profile, account, refusal, sealed } =
           yield* sealedApp(false);
 
         // Workflow steps receive the same handles, never the stored value.
@@ -394,7 +419,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         // Another app cannot send this app's handle, even to the declared host.
         const replay = yield* deploy(`Credential replay ${randomUUID().slice(0, 8)}`, replayApp);
         const replayed = yield* call(replay.path, Sent, "send", {
-          url: `${upstream.origin}/replayed`,
+          url: `${hosts.declaredOrigin}/replayed`,
           credential: sealed,
         });
         expect(replayed.status).toBe(421);
@@ -405,8 +430,8 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
           `Credential MCP ${randomUUID().slice(0, 8)}`,
           mcpApp({
             name,
-            host: `127.0.0.1:${upstream.port}`,
-            url: `${upstream.undeclaredOrigin}/mcp`,
+            host: hosts.declaredHost,
+            url: `${hosts.undeclaredOrigin}/mcp`,
           }),
           {
             path: "package.json",
@@ -432,11 +457,13 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
           },
         });
 
-        const received = yield* upstream.received;
-        expect(
-          received.filter((entry) => /undeclared|replayed|fetched|mcp/.test(entry.url)),
-        ).toEqual([]);
-        expect(JSON.stringify(received)).not.toContain(values.token);
+        if (hosts.received !== null) {
+          const received = yield* hosts.received;
+          expect(
+            received.filter((entry) => /undeclared|replayed|fetched|mcp/.test(entry.url)),
+          ).toEqual([]);
+          expect(JSON.stringify(received)).not.toContain(values.token);
+        }
       }),
     ),
   );
@@ -446,10 +473,12 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
       context,
       Effect.gen(function* () {
         // Queries of an app with a database run in its data facet, which has its own outbound.
-        const { upstream, values } = yield* sealedApp(true);
-        const received = yield* upstream.received;
-        expect(received.filter((entry) => entry.url.includes("/undeclared"))).toEqual([]);
-        expect(JSON.stringify(received)).not.toContain(values.token);
+        const { hosts, values } = yield* sealedApp(true);
+        if (hosts.received !== null) {
+          const received = yield* hosts.received;
+          expect(received.filter((entry) => /undeclared|fetched/.test(entry.url))).toEqual([]);
+          expect(JSON.stringify(received)).not.toContain(values.token);
+        }
       }),
     ),
   );

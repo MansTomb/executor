@@ -50,9 +50,35 @@ export const nodeAppEntry = (protocol: number) => (files: readonly SourceFile[])
     "export default (request, context, accounts) => handler(request, { ...context, ...host.hostContext(accounts, context.approval), files });",
   ].join("\n");
 
-/** Runtime-owned RPC entrypoint. Retained fetch bridges continue to work and only new bridges use the callback. */
-export const appRpcBridge = (module: string) => `
-import bridge from ${JSON.stringify(`./${module}`)};
+/**
+ * Runtime-owned RPC entrypoint. Retained fetch bridges continue to work and only new bridges use
+ * the callback.
+ *
+ * `load: "call"` imports the app inside `start`, for a Worker that only declares a new build. A
+ * module that throws while it loads then fails in this isolate, which still holds its stack; the
+ * Worker Loader reports a failed static import without positions. RPC carries an error's name and
+ * message but not its stack, so a new error with the same name carries the positions in its
+ * message. The app's error is never changed: it may be frozen or have a read-only message, and
+ * anything unexpected while reading it sends the original on unchanged.
+ */
+export const appRpcBridge = (module: string, load: "module" | "call" = "module") => `
+${
+  load === "module"
+    ? `import app from ${JSON.stringify(`./${module}`)};`
+    : `const located = (error) => {
+  try {
+    const head = String(error);
+    const stack = error instanceof Error ? error.stack : undefined;
+    if (typeof stack !== "string" || !stack.startsWith(head)) return error;
+    const diagnostic = new Error(String(error.message) + stack.slice(head.length));
+    diagnostic.name = String(error.name);
+    return diagnostic;
+  } catch {
+    return error;
+  }
+};
+const loadApp = () => import(${JSON.stringify(`./${module}`)}).then((loaded) => loaded.default, (error) => { throw located(error); });`
+}
 import { WorkerEntrypoint, RpcTarget } from "cloudflare:workers";
 import * as workers from "cloudflare:workers";
 class Invocation extends RpcTarget {
@@ -60,7 +86,7 @@ class Invocation extends RpcTarget {
   #result;
   #cache;
   #cacheCallback;
-  constructor(body, headers, elicitation, workflow, controls, cache) {
+  constructor(bridge, body, headers, elicitation, workflow, controls, cache) {
     super();
     this.#cacheCallback = cache == null ? null : cache.dup();
     this.#cache = this.#cacheCallback == null ? undefined : bridge.cacheSession?.(this.#cacheCallback);
@@ -77,7 +103,11 @@ class Invocation extends RpcTarget {
   [Symbol.dispose]() { this.#controller.abort(); }
 }
 export default class extends WorkerEntrypoint {
-  start(body, headers, elicitation, workflow = null, controls = null, cache = null) { return new Invocation(body, headers, elicitation, workflow, controls, cache); }
+  ${
+    load === "module"
+      ? "start(body, headers, elicitation, workflow = null, controls = null, cache = null) { return new Invocation(app, body, headers, elicitation, workflow, controls, cache); }"
+      : "async start(body, headers, elicitation, workflow = null, controls = null, cache = null) { return new Invocation(await loadApp(), body, headers, elicitation, workflow, controls, cache); }"
+  }
   ${retireMethod}
 }`;
 

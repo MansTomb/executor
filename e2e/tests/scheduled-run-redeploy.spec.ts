@@ -124,7 +124,11 @@ layer(HostedLive, { excludeTestServices: true })("Scheduled runs after a redeplo
           Effect.flatMap((tags) =>
             tags.length > 0 ? Effect.succeed(tags) : Effect.fail(new Pending()),
           ),
-          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+          Effect.retry({
+            schedule: Schedule.spaced("500 millis"),
+            times: 60,
+            while: (error) => error instanceof Pending,
+          }),
         );
         const first = yield* loads(firstRun?.id);
         yield* evidence.json("scheduled-run-build-loads.json", { first, second });

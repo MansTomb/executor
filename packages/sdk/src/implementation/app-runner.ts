@@ -332,7 +332,11 @@ export const makeAppRunner = (host: AppRunnerHost) => {
               Effect.map((bundle) =>
                 loadedModules("__executor_rpc.js", {
                   ...workerModules(bundle.modules),
-                  "__executor_rpc.js": appRpcBridge(bundle.mainModule),
+                  // A declaration's Worker loads the app inside the call to keep a failure's stack.
+                  "__executor_rpc.js": appRpcBridge(
+                    bundle.mainModule,
+                    name === null ? "call" : "module",
+                  ),
                 }),
               ),
               Effect.tap(annotateLoaded),

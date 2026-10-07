@@ -10,22 +10,30 @@ import {
   type frameworkApi,
 } from "../contracts/framework.ts";
 
-/** Decode the packaged `framework-reference.json` from a host's authoring assets, once. */
+/**
+ * Decode the packaged `framework-reference.json` from a host's authoring assets and keep it.
+ * Concurrent first lookups each decode their own copy instead of waiting on one another: on
+ * Workers a waiter resumed by another request's fiber runs in that request's I/O context, and
+ * its response then fails.
+ */
 export const frameworkDocumentation = (
   files: Effect.Effect<readonly { readonly path: string; readonly content: string }[]>,
 ) =>
-  Layer.effect(
-    FrameworkDocumentation,
-    Effect.cached(
-      Effect.gen(function* () {
-        const file = (yield* files).find((item) => item.path === "framework-reference.json");
-        if (file === undefined) return yield* Effect.die(new Error("Framework reference missing"));
-        return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(FrameworkReference))(
-          file.content,
-        ).pipe(Effect.orDie);
-      }),
-    ),
-  );
+  Layer.sync(FrameworkDocumentation, () => {
+    let kept: FrameworkReference | undefined;
+    const load = Effect.gen(function* () {
+      const file = (yield* files).find((item) => item.path === "framework-reference.json");
+      if (file === undefined) return yield* Effect.die(new Error("Framework reference missing"));
+      return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(FrameworkReference))(
+        file.content,
+      ).pipe(Effect.orDie);
+    });
+    return Effect.suspend(() =>
+      kept === undefined
+        ? Effect.map(load, (reference) => (kept ??= reference))
+        : Effect.succeed(kept),
+    );
+  });
 
 const identity = (reference: FrameworkReference) => ({
   version: reference.version,

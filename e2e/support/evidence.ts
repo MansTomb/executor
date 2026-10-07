@@ -7,7 +7,7 @@ import { EvidenceEntries } from "../report-model.ts";
 import { Target } from "./platform.ts";
 import { Collector, SpanQuery } from "./contracts.ts";
 import { RecordingFocus } from "./recording-focus.ts";
-import { axiomTraceQuery } from "./axiom.ts";
+import { axiomSpans } from "./axiom.ts";
 
 /** Public request measurements contain no request bodies, cookies or credentials. */
 export interface RequestEvidence {
@@ -77,7 +77,7 @@ export class Telemetry extends Context.Service<
       const target = yield* Target;
       const fs = yield* FileSystem.FileSystem;
       const http = yield* HttpClient.HttpClient;
-      const cloudQuery = yield* axiomTraceQuery;
+      const cloud = yield* axiomSpans;
       const origin = fs.readFileString(`${target.directory}/data/diagnostics/collector.json`).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Collector))),
         Effect.map((collector) => collector.url),
@@ -93,7 +93,10 @@ export class Telemetry extends Context.Service<
         schema: Schema.Codec<A>,
       ) =>
         target.metadata.target === "cloud" && target.metadata.mode === "attached"
-          ? Effect.fail(new TelemetryUnavailable())
+          ? cloud.search(operation, attributes).pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(schema)),
+              Effect.mapError(() => new TelemetryUnavailable()),
+            )
           : safe(
               Effect.scoped(
                 Effect.gen(function* () {
@@ -114,7 +117,7 @@ export class Telemetry extends Context.Service<
       return {
         query: (id) =>
           target.metadata.target === "cloud" && target.metadata.mode === "attached"
-            ? cloudQuery(id).pipe(Effect.mapError(() => new TelemetryUnavailable()))
+            ? cloud.trace(id).pipe(Effect.mapError(() => new TelemetryUnavailable()))
             : safe(
                 Effect.scoped(
                   Effect.gen(function* () {

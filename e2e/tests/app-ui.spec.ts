@@ -376,7 +376,7 @@ return { items };`,
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { url } = yield* appFixture;
+        const { url, target } = yield* appFixture;
         const http = yield* HttpClient.HttpClient;
         const known = new URL(url);
         const missingApp = new URL(url);
@@ -428,8 +428,29 @@ return { items };`,
         expect(yield* fetchAnonymously(known, "/")).toEqual(probe);
         expect(yield* fetchAnonymously(missingApp, "/.env")).toEqual(probe);
         expect(yield* fetchAnonymously(missingApp, "/admin")).toEqual(probe);
-        expect(yield* fetchAnonymously(missingOrganization, "/.env")).toEqual(probe);
-        expect((yield* read(missingOrganization, "/", "text/html")).status).toBe(403);
+        if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
+          // Cloudflare holds one wildcard certificate per team, so a host under an unknown
+          // organization fails the TLS handshake at the edge and never reaches the Worker.
+          for (const [path, accept] of [
+            ["/.env", "*/*"],
+            ["/", "text/html"],
+          ] as const) {
+            const refused = yield* HttpClientRequest.get(
+              new URL(path, missingOrganization).href,
+            ).pipe(HttpClientRequest.setHeader("accept", accept), http.execute, Effect.flip);
+            const codes: Array<unknown> = [];
+            for (let cause: unknown = refused; typeof cause === "object" && cause !== null;) {
+              codes.push("code" in cause ? cause.code : undefined);
+              cause = "cause" in cause ? cause.cause : "reason" in cause ? cause.reason : undefined;
+            }
+            expect(codes, "An unknown organization's host has no certificate").toContain(
+              "ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE",
+            );
+          }
+        } else {
+          expect(yield* fetchAnonymously(missingOrganization, "/.env")).toEqual(probe);
+          expect((yield* read(missingOrganization, "/", "text/html")).status).toBe(403);
+        }
         expect((yield* fetchAnonymously(known, "/index.html", "HEAD")).status).toBe(403);
         const document = yield* read(known, "/report.json", "text/html");
         expect(document.status).toBe(302);
