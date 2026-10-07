@@ -77,6 +77,7 @@
     "e2e:apps": "node scripts/pack-test-apps.ts",
     "testing": "node e2e/cli.ts",
     "e2e": "node e2e/check-boundary.ts && node e2e/run.ts",
+    "selfhost:verify": "node e2e/selfhost/verify.ts",
     "e2e:inspect": "E2E_INTERACTIVE=1 bun run e2e",
     "e2e:check": "node scripts/check-no-unit-tests.ts && node e2e/check-boundary.ts && tsc --noEmit -p e2e",
     "e2e:viewer:build": "bun run --cwd e2e/viewer build:styles && bun build e2e/viewer/main.tsx --target browser --minify --outdir .local/e2e-viewer",

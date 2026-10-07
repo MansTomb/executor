@@ -35,6 +35,13 @@ writers. Smaller runs use the same assertions. `--test-name` is a regular expres
 matched against scenario titles, without the enclosing Vitest suite name.
 Filtered cases are not counted as executed cases in the evidence view.
 
+## Self-host release verification
+
+`bun run selfhost:verify --evidence <new directory> --previous <immutable image>`
+checks a merged tree end to end: static checks, the fork's focused scenarios, native
+Go tests, a persisted upgrade from the previous image with a shutdown drain, and the
+4 GiB soak. `FORK.md` describes the steps and when to run it.
+
 ## Dependency injection
 
 `support/platform.ts` supplies target configuration and native platform services.
