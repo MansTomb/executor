@@ -402,7 +402,11 @@ return { items };`,
                 };
                 expect(server.traceId, "The response names its server trace").not.toBe("");
                 expect(server.spanId, "The response names its server span").not.toBe("");
-                return { server, outcome: { status: response.status, body } };
+                return {
+                  server,
+                  outcome: { status: response.status, body },
+                  headers: response.headers,
+                };
               }),
             ),
             Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
@@ -412,47 +416,43 @@ return { items };`,
             Effect.map(({ outcome }) => outcome),
           );
         const probes: Array<{ path: string; server: ServerSpan }> = [];
-        /** A cookie-less fetch, whose trace must show no database work. */
-        const fetchAnonymously = (origin: URL, path: string, method: "GET" | "HEAD" = "GET") =>
-          send(
-            (method === "GET" ? HttpClientRequest.get : HttpClientRequest.head)(
-              new URL(path, origin).href,
-            ),
-            "*/*",
-          ).pipe(
+        /** A cookie-less request, whose trace must show no database work. */
+        const sendAnonymously = (
+          origin: URL,
+          path: string,
+          method: "GET" | "HEAD" | "POST" | "PUT" | "OPTIONS" = "GET",
+        ) =>
+          send(HttpClientRequest.make(method)(new URL(path, origin).href), "*/*").pipe(
             Effect.tap(({ server }) =>
               Effect.sync(() => probes.push({ path: `${method} ${path}`, server })),
             ),
-            Effect.map(({ outcome }) => outcome),
           );
+        const fetchAnonymously = (
+          origin: URL,
+          path: string,
+          method?: "GET" | "HEAD" | "POST" | "PUT" | "OPTIONS",
+        ) => sendAnonymously(origin, path, method).pipe(Effect.map(({ outcome }) => outcome));
         const probe = yield* fetchAnonymously(known, "/.env");
         expect(probe).toEqual({ status: 403, body: "App unavailable." });
         expect(yield* fetchAnonymously(known, "/%2eenv")).toEqual(probe);
         expect(yield* fetchAnonymously(known, "/")).toEqual(probe);
         expect(yield* fetchAnonymously(missingApp, "/.env")).toEqual(probe);
         expect(yield* fetchAnonymously(missingApp, "/admin")).toEqual(probe);
-        if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
-          // Cloudflare holds one wildcard certificate per team, so a host under an unknown
-          // organization fails the TLS handshake at the edge and never reaches the Worker.
-          for (const [path, accept] of [
-            ["/.env", "*/*"],
-            ["/", "text/html"],
-          ] as const) {
-            const refused = yield* HttpClientRequest.get(
-              new URL(path, missingOrganization).href,
-            ).pipe(HttpClientRequest.setHeader("accept", accept), http.execute, Effect.flip);
-            const codes: Array<unknown> = [];
-            for (let cause: unknown = refused; typeof cause === "object" && cause !== null;) {
-              codes.push("code" in cause ? cause.code : undefined);
-              cause = "cause" in cause ? cause.cause : "reason" in cause ? cause.reason : undefined;
-            }
-            expect(codes, "An unknown organization's host has no certificate").toContain(
-              "ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE",
-            );
+        // Scanners send other methods to paths no app route accepts. They are not found, not a
+        // server failure (previously Cloud answered 503 "App unavailable.").
+        for (const [origin, path, method] of [
+          [known, "/wp-json/batch/v1", "POST"],
+          [known, "/", "POST"],
+          [known, "/index.php", "PUT"],
+          [known, "/", "OPTIONS"],
+          [missingApp, "/", "POST"],
+        ] as const) {
+          const missing = yield* sendAnonymously(origin, path, method);
+          expect(missing.outcome, `${method} ${path}`).toEqual({ status: 404, body: "" });
+          // Cloud's app-origin Worker answers with the app's private headers.
+          if (target.metadata.target === "cloud") {
+            expect(missing.headers["cache-control"], `${method} ${path}`).toBe("no-store");
           }
-        } else {
-          expect(yield* fetchAnonymously(missingOrganization, "/.env")).toEqual(probe);
-          expect((yield* read(missingOrganization, "/", "text/html")).status).toBe(403);
         }
         expect((yield* fetchAnonymously(known, "/index.html", "HEAD")).status).toBe(403);
         const document = yield* read(known, "/report.json", "text/html");
@@ -509,25 +509,58 @@ return { items };`,
             spans.some((span) => span.operationName === name),
           ),
         );
-        for (const [index, { path, server }] of probes.entries()) {
-          const spans = yield* served(server, () => true);
-          yield* evidence.json(`anonymous-fetch-${index}.json`, {
-            path,
-            spans: spans.map((span) => span.operationName),
-          });
-          expect(
-            spans
-              .filter(
-                (span) =>
-                  databaseWork.has(span.operationName) || span.operationName.startsWith("FumaDB."),
-              )
-              .map((span) => span.operationName),
-            `${path} is refused before any organization, app or SQL work`,
-          ).toEqual([]);
-        }
+        /** Reads back the probes from `first` on and requires no database work in any of them. */
+        const expectNoDatabaseWork = Effect.fn(function* (first: number) {
+          for (const [index, { path, server }] of probes.entries()) {
+            if (index < first) continue;
+            const spans = yield* served(server, () => true);
+            yield* evidence.json(`anonymous-fetch-${index}.json`, {
+              path,
+              spans: spans.map((span) => span.operationName),
+            });
+            expect(
+              spans
+                .filter(
+                  (span) =>
+                    databaseWork.has(span.operationName) ||
+                    span.operationName.startsWith("FumaDB."),
+                )
+                .map((span) => span.operationName),
+              `${path} is refused before any organization, app or SQL work`,
+            ).toEqual([]);
+          }
+        });
+        const checked = probes.length;
+        yield* expectNoDatabaseWork(0);
         yield* evidence.json("signed-out-navigation.json", {
           spans: control.map((span) => span.operationName),
         });
+        // A nonexistent team's hostname is refused too. These run last, after the trace checks
+        // above.
+        if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
+          // Cloudflare holds one wildcard certificate per team, so a host under an unknown
+          // organization fails the TLS handshake at the edge and never reaches the Worker.
+          for (const [path, accept] of [
+            ["/.env", "*/*"],
+            ["/", "text/html"],
+          ] as const) {
+            const refused = yield* HttpClientRequest.get(
+              new URL(path, missingOrganization).href,
+            ).pipe(HttpClientRequest.setHeader("accept", accept), http.execute, Effect.flip);
+            const codes: Array<unknown> = [];
+            for (let cause: unknown = refused; typeof cause === "object" && cause !== null;) {
+              codes.push("code" in cause ? cause.code : undefined);
+              cause = "cause" in cause ? cause.cause : "reason" in cause ? cause.reason : undefined;
+            }
+            expect(codes, "An unknown organization's host has no certificate").toContain(
+              "ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE",
+            );
+          }
+        } else {
+          expect(yield* fetchAnonymously(missingOrganization, "/.env")).toEqual(probe);
+          expect((yield* read(missingOrganization, "/", "text/html")).status).toBe(403);
+        }
+        yield* expectNoDatabaseWork(checked);
       }),
     ),
   );
