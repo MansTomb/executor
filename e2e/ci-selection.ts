@@ -53,7 +53,7 @@ const jobs = {
   cloud: {
     target: "cloud",
     pattern:
-      "Cloud onboarding|Cloud OAuth callbacks|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser decode and startup|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud MCP session objects|database failure while verifying an API key|Cloud cron wakes the schedule coordinator|app evaluation failures explain the likely cause|client request rejections are recorded on their request span|failure text reaches its caller",
+      "Cloud onboarding|Cloud OAuth callbacks|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser decode and startup|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud MCP session objects (?:hold|make)|database failure while verifying an API key|Cloud cron wakes the schedule coordinator|app evaluation failures explain the likely cause|client request rejections are recorded on their request span|failure text reaches its caller",
   },
   "cloud-workers": {
     target: "cloud",
@@ -62,6 +62,9 @@ const jobs = {
   },
   // These hold row locks in the shared Cloud database, which would stall other scenarios' SQL.
   "cloud-locks": { target: "cloud", pattern: "A Better Auth query" },
+  // This counts every request in local Cloud's single session object isolate, so another
+  // scenario's MCP request in flight would change its count.
+  "cloud-isolate": { target: "cloud", pattern: "Cloud MCP session objects report" },
 } as const satisfies Record<string, { target: typeof Target.Type; pattern: string }>;
 
 const plan = scenariosForSuite("all", "managed");

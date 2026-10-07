@@ -12,6 +12,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, type Layer } from "effect";
 import { HttpServer, HttpServerRequest } from "effect/http";
 import { cloudSentry } from "../implementation/error-reporting.ts";
+import { makeAnswer } from "../implementation/mcp-session-timing.ts";
 import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
 import { cloudAnalytics } from "../implementation/product-analytics.ts";
 import type { cloudProduct } from "./product.ts";
@@ -37,6 +38,7 @@ export const makeMcpSession = Effect.fn(function* ({ executor, identity }: McpSe
     // Opaque object identity is stable across activations; the random activation
     // identifies a fresh in-memory MCP registry without recording session tokens.
     const activation = yield* Effect.sync(() => crypto.randomUUID());
+    const answer = makeAnswer();
     const handler = yield* makeHostedMcp().pipe(Effect.provide(HttpServer.layerServices));
     const browser = browserMcpRequest((access, address) =>
       hostedMcpApproval(handler.approvals, access, address).pipe(
@@ -66,6 +68,7 @@ export const makeMcpSession = Effect.fn(function* ({ executor, identity }: McpSe
         Effect.tap((response) =>
           Effect.annotateCurrentSpan("http.response.status_code", response.status),
         ),
+        answer,
         Effect.withSpan("mcp.session.request", {
           attributes: {
             "executor.mcp.object_id": state.id.toString(),

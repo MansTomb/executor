@@ -1103,6 +1103,17 @@ export const scenarios = {
       local: na("Local MCP sessions use the local database."),
     },
   },
+  cloudMcpSessionTiming: {
+    fixtures: "actors",
+    file: "cloud-mcp-session-timing.spec.ts",
+    title:
+      "Cloud MCP session objects report their own handling time and the requests they were already answering",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host serves MCP sessions in its server process, with no gateway hop."),
+      local: na("Local serves MCP sessions in its server process, with no gateway hop."),
+    },
+  },
   cloudAppFrameworkPin: {
     fixtures: "actors",
     file: "app-framework-pin.spec.ts",

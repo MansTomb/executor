@@ -5,6 +5,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { forwardMcpRequest } from "../implementation/mcp-forward.ts";
+import { timedForward } from "../implementation/mcp-session-timing.ts";
 import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
 import type { McpSessionObject } from "./mcp-session.ts";
 import { McpServer } from "./mcp-server-worker.ts";
@@ -27,7 +28,7 @@ export const cloudMcp = Effect.gen(function* () {
       const headers = yield* traceHeaders;
       const traced = request.modify({ headers: { ...request.headers, ...headers } });
       return yield* forwardMcpRequest(traced, (attempt) =>
-        sessions.getByName(mcpSessionKey(access)).fetch(attempt),
+        timedForward(sessions.getByName(mcpSessionKey(access)).fetch(attempt)),
       );
     }).pipe(Effect.flatMap(observeMcpStream("gateway")), Effect.withSpan("mcp.session.forward"));
   return {
