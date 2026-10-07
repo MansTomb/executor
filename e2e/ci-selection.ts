@@ -18,10 +18,26 @@
  *
  * The block may also say `skip` on the lower layer of a stack: another open pull request must
  * build on its branch. Every check then skips, and the layer above tests the combined change.
+ *
+ * The description is read when the job runs. `gh stack submit` opens each pull request before
+ * its author writes the description, and opens a stack's layers one at a time, so the job waits
+ * a few minutes for an e2e block, and for a pull request above a `skip` layer, before it fails.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Console, Effect, FileSystem, Option, Path, Schema } from "effect";
+import {
+  Clock,
+  Config,
+  Console,
+  Duration,
+  Effect,
+  FileSystem,
+  Option,
+  Path,
+  Schema,
+  Stream,
+} from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Target } from "./report-model.ts";
 import { scenariosForSuite } from "./test-plan.ts";
 
@@ -194,32 +210,155 @@ const runsElsewhere = (file: string, suite: Suite | undefined) => {
     : `- ${file} runs with ${suite.config} in ${suite.workflows.join(" and ")}. Locally: ${command}.`;
 };
 
-/** The full suite with its reason, `skip`, or the names written in the single `e2e` block. */
-const requested = (body: string) =>
+/** The trimmed text of each `e2e` block in a description. */
+const blocksIn = (body: string) =>
+  [...body.matchAll(/^```e2e[ \t]*\r?\n([\s\S]*?)^```/gm)].map((match) => match[1]!.trim());
+
+/** A wait as written in a sentence, such as "3 minutes". */
+const spoken = (duration: Duration.Duration) => {
+  const seconds = Duration.toSeconds(duration);
+  return seconds % 60 === 0 && seconds > 0
+    ? `${seconds / 60} minute${seconds === 60 ? "" : "s"}`
+    : `${seconds} second${seconds === 1 ? "" : "s"}`;
+};
+
+/** Runs `gh` with the job's token and returns what it prints. */
+const gh = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
-    const blocks = [...body.matchAll(/^```e2e[ \t]*\r?\n([\s\S]*?)^```/gm)];
-    if (blocks.length === 0)
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const child = yield* processes.spawn(ChildProcess.make("gh", args));
+    const [output, error, exitCode] = yield* Effect.all(
+      [
+        child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+        child.stderr.pipe(Stream.decodeText(), Stream.mkString),
+        child.exitCode,
+      ],
+      { concurrency: "unbounded" },
+    );
+    if (exitCode !== 0)
       return yield* new SelectionFailed({
-        message: `The pull request description has no e2e block. Name the spec files that exercise the change, for example:\n${example}\nWrite none when no scenario can observe it, or all with a reason for a cross-cutting change. See AGENTS.md, "Choosing a PR's E2E scenarios".`,
+        message: `gh ${args.join(" ")} failed: ${error.trim()}`,
       });
-    if (blocks.length > 1)
-      return yield* new SelectionFailed({
-        message: "The pull request description has more than one e2e block. Keep one.",
-      });
-    const text = blocks[0]![1]!.trim();
-    const all = /^all\b:?\s*([\s\S]*)$/.exec(text);
-    if (all !== null) {
-      const reason = all[1]!.replace(/\s+/g, " ").trim();
-      if (reason === "")
+    return output;
+  }).pipe(Effect.scoped);
+
+/**
+ * The pull request's description and the open pull requests based on its branch, read again
+ * every `poll` while the description lacks an e2e block, or says `skip` with nothing above it,
+ * until `wait` has passed. Edits are not reread once the description is complete: a later
+ * change to the block takes a push or a rerun.
+ */
+const readPullRequest = (input: {
+  readonly repository: string;
+  readonly number: string;
+  readonly headRef: string;
+  readonly wait: Duration.Duration;
+  readonly poll: Duration.Duration;
+}) =>
+  Effect.gen(function* () {
+    const start = yield* Clock.currentTimeMillis;
+    const waitedFor: Array<string> = [];
+    for (;;) {
+      const body = yield* gh([
+        "api",
+        `repos/${input.repository}/pulls/${input.number}`,
+        "--jq",
+        '.body // ""',
+      ]);
+      const parsed = parseRequested(body);
+      const skip = parsed._tag === "Skip";
+      const above = skip
+        ? (yield* gh([
+            "pr",
+            "list",
+            "--repo",
+            input.repository,
+            "--base",
+            input.headRef,
+            "--state",
+            "open",
+            "--json",
+            "number",
+            "--jq",
+            ".[].number",
+          ]))
+            .split(/\s+/)
+            .filter((number) => number.length > 0)
+        : [];
+      const missing =
+        parsed._tag === "Missing"
+          ? "an e2e block in the description"
+          : skip && above.length === 0
+            ? "an open pull request based on this branch"
+            : undefined;
+      const elapsed = Duration.millis((yield* Clock.currentTimeMillis) - start);
+      if (missing === undefined || Duration.isGreaterThanOrEqualTo(elapsed, input.wait)) {
+        if (waitedFor.length > 0)
+          yield* Console.log(
+            `Waited ${Math.round(Duration.toSeconds(elapsed))} s for ${waitedFor.join(", then ")}${missing === undefined ? "." : `; there is still no ${missing.replace(/^an? /, "")}.`}`,
+          );
+        return { parsed, above };
+      }
+      if (waitedFor.at(-1) !== missing) {
+        waitedFor.push(missing);
+        yield* Console.log(`Waiting up to ${spoken(input.wait)} for ${missing}.`);
+      }
+      yield* Effect.sleep(input.poll);
+    }
+  });
+
+/** What the description's e2e block asks for, parsed once for both the wait and the selection. */
+type Requested =
+  | { readonly _tag: "Missing" }
+  | { readonly _tag: "Several" }
+  | { readonly _tag: "AllWithoutReason" }
+  | { readonly _tag: "All"; readonly reason: string }
+  | { readonly _tag: "Skip" }
+  | { readonly _tag: "Named"; readonly tokens: ReadonlyArray<string> };
+
+/** The full suite with its reason, `skip`, or the names written in the single `e2e` block. */
+const parseRequested = (body: string): Requested => {
+  const blocks = blocksIn(body);
+  if (blocks.length === 0) return { _tag: "Missing" };
+  if (blocks.length > 1) return { _tag: "Several" };
+  const text = blocks[0]!;
+  const all = /^all\b:?\s*([\s\S]*)$/.exec(text);
+  if (all !== null) {
+    const reason = all[1]!.replace(/\s+/g, " ").trim();
+    return reason === "" ? { _tag: "AllWithoutReason" } : { _tag: "All", reason };
+  }
+  const tokens = text.split(/[\s,]+/).filter((token) => token.length > 0);
+  if (tokens.length === 1 && tokens[0] === "none") return { _tag: "Named", tokens: [] };
+  if (tokens.length === 1 && tokens[0] === "skip") return { _tag: "Skip" };
+  return { _tag: "Named", tokens };
+};
+
+/**
+ * The selection a parsed block makes, or why it makes none. `retry` says how long the job waited
+ * for the description and how to run it again.
+ */
+const requested = (parsed: Requested, retry: string) =>
+  Effect.gen(function* () {
+    switch (parsed._tag) {
+      case "Missing":
+        return yield* new SelectionFailed({
+          message: `The pull request description has no e2e block. Name the spec files that exercise the change, for example:\n${example}\nWrite none when no scenario can observe it, or all with a reason for a cross-cutting change. ${retry} See AGENTS.md, "Choosing a PR's E2E scenarios".`,
+        });
+      case "Several":
+        return yield* new SelectionFailed({
+          message: "The pull request description has more than one e2e block. Keep one.",
+        });
+      case "AllWithoutReason":
         return yield* new SelectionFailed({
           message: `The e2e block says all without a reason. The full suite takes about three times as long as a selection. Name the spec files that exercise the change, for example:\n${example}\nor keep all and say why every scenario is needed, for example "all: changes the lockfile".`,
         });
-      return { all: reason };
+      case "All":
+        return { all: parsed.reason };
+      case "Skip":
+        return "skip" as const;
+      case "Named":
+        return parsed.tokens;
     }
-    const tokens = text.split(/[\s,]+/).filter((token) => token.length > 0);
-    if (tokens.length === 1 && tokens[0] === "none") return [];
-    if (tokens.length === 1 && tokens[0] === "skip") return "skip" as const;
-    return tokens;
   });
 
 /**
@@ -255,21 +394,33 @@ NodeRuntime.runMain(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const pullRequest = yield* Config.String("E2E_PULL_REQUEST").pipe(Config.withDefault(""));
-    const body = yield* Config.String("E2E_SELECTION_BODY").pipe(Config.withDefault(""));
-    const changed = yield* Config.String("E2E_CHANGED_FILES").pipe(Config.withDefault(""));
-    const stackedAbove = yield* Config.String("E2E_STACKED_ABOVE").pipe(Config.withDefault(""));
+    const headRef = yield* Config.String("E2E_HEAD_REF").pipe(Config.withDefault(""));
+    const repository = yield* Config.String("GITHUB_REPOSITORY").pipe(Config.withDefault(""));
+    const runId = yield* Config.String("GITHUB_RUN_ID").pipe(Config.withDefault("<run-id>"));
+    // In a week, 118 pull requests gained their block, or the layer above their skip, within an
+    // hour of select first reading the description. 117 of them took under 3 minutes.
+    const wait = Duration.seconds(
+      yield* Config.Number("E2E_DESCRIPTION_WAIT_SECONDS").pipe(Config.withDefault(180)),
+    );
+    const poll = Duration.seconds(
+      yield* Config.Number("E2E_DESCRIPTION_POLL_SECONDS").pipe(Config.withDefault(15)),
+    );
     const output = yield* Config.String("GITHUB_OUTPUT").pipe(Config.option);
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
 
-    const block = pullRequest === "" ? undefined : yield* requested(body);
+    const retry = `CI waited ${spoken(wait)} for the description. Once it is fixed, rerun the whole workflow: gh run rerun ${runId}`;
+    const read =
+      pullRequest === ""
+        ? undefined
+        : yield* readPullRequest({ repository, number: pullRequest, headRef, wait, poll });
+    const block = read === undefined ? undefined : yield* requested(read.parsed, `${retry}.`);
+    const above = read === undefined ? [] : read.above;
     // A skipped layer runs nothing, so it decides before the suites are read: the layer above
     // reads them for the combined change.
     if (block === "skip") {
-      const above = stackedAbove.split(/\s+/).filter((number) => number.length > 0);
       if (above.length === 0)
         return yield* new SelectionFailed({
-          message:
-            "The e2e block says skip, but no open pull request builds on this branch. Only the lower layers of a stack may skip; select scenarios instead.",
+          message: `The e2e block says skip, but no open pull request builds on this branch. Only the lower layers of a stack may skip: open the layer above, or select scenarios instead. ${retry}.`,
         });
       const report = [
         "## E2E selection",
@@ -284,6 +435,16 @@ NodeRuntime.runMain(
         yield* fs.writeFileString(summary.value, `${report}\n`, { flag: "a" });
       return;
     }
+    const changed =
+      read === undefined
+        ? ""
+        : yield* gh([
+            "api",
+            "--paginate",
+            `repos/${repository}/pulls/${pullRequest}/files`,
+            "--jq",
+            ".[].filename",
+          ]);
     const suites = yield* separateSuites;
     const named = Array.isArray(block) ? yield* checkNamed(block, suites) : block;
     // The pull request files list holds the new name of a renamed file and the old name of a

@@ -137,7 +137,9 @@ tests PR. Every job in that run skips, the static checks included. The top layer
 checks the combined change: its static checks run against the whole tree,
 `apps-version` compares it with `main`, and its `e2e` block must select the
 scenarios for every layer's changes. `skip` fails the `select` job unless another
-open PR targets the layer's branch, so a lone PR or the top layer cannot skip.
+open PR targets the layer's branch, so a lone PR or the top layer cannot skip. The
+`select` job waits up to 3 minutes for that PR to open, so open the stack's layers together
+(`gh stack submit` does).
 After changing a lower layer, rebase the layers above it so the top runs again.
 Merge the stack only when the top layer passes, bottom first, without pausing between
 layers: each merge deploys production.
@@ -147,7 +149,9 @@ routes, tools and UI the change touches, and include every file that exercises t
 on any target. A tests PR on top of a stack gets its own new or changed spec files
 for free; add the existing files that cover the code layers below it. `main` runs the
 full suite after merge, so a missed scenario is still caught there. The `select`
-job reads the live description, so after editing it, rerun the whole workflow
+job reads the live description when it runs. If it has no `e2e` block yet, the job
+waits up to 3 minutes for one, so write the block right after opening the PR. After
+changing the block once CI has read it, push or rerun the whole workflow
 (`gh run rerun <run-id>`), not only failed jobs.
 
 A failure on `main` is a regression or a flake that a PR selection missed. Fixing

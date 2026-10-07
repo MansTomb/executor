@@ -1,7 +1,8 @@
 /**
  * The select job turns a pull request's `e2e` block into each E2E job's `--test-name` pattern.
  * These cases run `node e2e/ci-selection.ts` as a process with the environment the job gives it,
- * and read the outputs file and step summary it writes, as GitHub Actions does.
+ * and read the outputs file and step summary it writes, as GitHub Actions does. A stub `gh` first
+ * on its PATH answers the job's reads of the pull request.
  */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -23,13 +24,35 @@ const block = (...lines: ReadonlyArray<string>) =>
   ["Description.", "", "```e2e", ...lines, "```", ""].join("\n");
 
 /**
- * One select run: a pull request run when `body` is given, otherwise a push to main. It runs the
- * checkout's selector unless `root` names a fixture tree.
+ * A `gh` that answers the select job's three reads from files beside it: the description
+ * (`body.<n>`), the open pull requests based on the branch (`above.<n>`) and the changed files.
+ * The nth read of a kind returns its nth answer, and the last answer once they run out, so a case
+ * can edit the description while the job waits.
+ */
+const stubGh = `#!/bin/sh
+dir=$(dirname "$0")
+case "$*" in
+  "pr list "*) kind=above ;;
+  *"/files "*) cat "$dir/files"; exit ;;
+  *) kind=body ;;
+esac
+read=$(cat "$dir/$kind.reads" 2>/dev/null || echo 0)
+echo $((read + 1)) > "$dir/$kind.reads"
+while [ ! -f "$dir/$kind.$read" ]; do read=$((read - 1)); done
+cat "$dir/$kind.$read"
+`;
+
+/**
+ * One select run: a pull request run when `body` is given, otherwise a push to main. A list of
+ * bodies, or of `stackedAbove` answers, is what successive reads return. The job waits `wait`
+ * seconds, none by default, for an incomplete description. It runs the checkout's selector unless
+ * `root` names a fixture tree.
  */
 const select = (input: {
-  readonly body?: string;
+  readonly body?: string | ReadonlyArray<string>;
   readonly changed?: ReadonlyArray<string>;
-  readonly stackedAbove?: string;
+  readonly stackedAbove?: string | ReadonlyArray<string>;
+  readonly wait?: number;
   readonly root?: string;
 }) =>
   Effect.gen(function* () {
@@ -41,14 +64,30 @@ const select = (input: {
     const summary = path.join(directory, "summary");
     yield* fs.writeFileString(output, "");
     yield* fs.writeFileString(summary, "");
+    const bin = path.join(directory, "bin");
+    yield* fs.makeDirectory(bin);
+    yield* fs.writeFileString(path.join(bin, "gh"), stubGh);
+    yield* fs.chmod(path.join(bin, "gh"), 0o755);
+    const answers = (kind: string, values: string | ReadonlyArray<string>) =>
+      Effect.forEach(
+        typeof values === "string" ? [values] : values,
+        (value, index) => fs.writeFileString(path.join(bin, `${kind}.${index}`), value),
+        { discard: true },
+      );
+    yield* answers("body", input.body ?? "");
+    yield* answers("above", input.stackedAbove ?? "");
+    yield* fs.writeFileString(path.join(bin, "files"), (input.changed ?? []).join("\n"));
     const child = yield* processes.spawn(
       ChildProcess.make("node", ["e2e/ci-selection.ts"], {
         cwd: input.root,
         env: {
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
           E2E_PULL_REQUEST: input.body === undefined ? "" : "1",
-          E2E_SELECTION_BODY: input.body ?? "",
-          E2E_CHANGED_FILES: (input.changed ?? []).join("\n"),
-          E2E_STACKED_ABOVE: input.stackedAbove ?? "",
+          E2E_HEAD_REF: "layer",
+          E2E_DESCRIPTION_WAIT_SECONDS: String(input.wait ?? 0),
+          E2E_DESCRIPTION_POLL_SECONDS: "0.05",
+          GITHUB_REPOSITORY: "owner/repository",
+          GITHUB_RUN_ID: "123456",
           GITHUB_OUTPUT: output,
           GITHUB_STEP_SUMMARY: summary,
         },
@@ -330,6 +369,86 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(loneSkip.exitCode).toBe(1);
       expect(missing.exitCode).toBe(1);
       expect(twice.exitCode).toBe(1);
+    }),
+  );
+
+  it.effect("the job waits for an e2e block written after the pull request opened", () =>
+    Effect.gen(function* () {
+      const footer = "Stack created with GitHub Stacks CLI";
+      const run = yield* select({ body: [footer, footer, block("none")], wait: 30 });
+      expect(run.exitCode, run.log).toBe(0);
+      expect(run.log).toContain("Waiting up to 30 seconds for an e2e block in the description.");
+      expect(run.log).toMatch(/Waited \d+ s for an e2e block in the description\./);
+      for (const job of jobs) expect(run.outputs[job], job).toBe("");
+    }),
+  );
+
+  it.effect("a skipped layer waits for the pull request above it, even after its block", () =>
+    Effect.gen(function* () {
+      const run = yield* select({
+        body: ["", block("skip")],
+        stackedAbove: ["", "", "124"],
+        wait: 30,
+      });
+      expect(run.exitCode, run.log).toBe(0);
+      expect(run.outputs).toEqual({ skip: "true" });
+      expect(run.log).toMatch(
+        /Waited \d+ s for an e2e block in the description, then an open pull request based on this branch\./,
+      );
+      expect(run.summary).toContain("a lower stack layer under #124");
+    }),
+  );
+
+  it.effect("the wait reads skip as the selection does, however the block writes it", () =>
+    Effect.gen(function* () {
+      // The block splits on whitespace and commas, so each of these is skip and waits for the
+      // layer above. Names are compared as written, so SKIP is a file name and waits for nothing.
+      const skips = ["skip,", " skip ", ",skip,\n"];
+      const [waited, upper, named] = yield* Effect.all(
+        [
+          Effect.forEach(
+            skips,
+            (text) => select({ body: block(text), stackedAbove: ["", "124"], wait: 30 }),
+            { concurrency: "unbounded" },
+          ),
+          select({ body: block("SKIP"), stackedAbove: ["", "124"], wait: 30 }),
+          select({ body: block("groups.spec.ts"), stackedAbove: ["", "124"], wait: 30 }),
+        ],
+        { concurrency: "unbounded" },
+      );
+      for (const [index, run] of waited.entries()) {
+        expect(run.exitCode, `${skips[index]}: ${run.log}`).toBe(0);
+        expect(run.outputs, skips[index]).toEqual({ skip: "true" });
+        expect(run.log, skips[index]).toMatch(
+          /Waited \d+ s for an open pull request based on this branch\./,
+        );
+      }
+      expect(upper.exitCode).toBe(1);
+      expect(upper.log).toContain('not spec files in e2e/tests/: "SKIP"');
+      expect(upper.log).not.toContain("Waiting");
+      expect(named.exitCode, named.log).toBe(0);
+      expect(named.outputs["self-host"]).toMatch(/^\^\(\?:/);
+      expect(named.log).not.toContain("Waiting");
+    }),
+  );
+
+  it.effect("a description still incomplete after the wait fails with how to rerun", () =>
+    Effect.gen(function* () {
+      const [missing, loneSkip] = yield* Effect.all(
+        [select({ body: "No block.", wait: 1 }), select({ body: block("skip"), wait: 1 })],
+        { concurrency: "unbounded" },
+      );
+      expect(missing.exitCode).toBe(1);
+      expect(missing.log).toMatch(
+        /Waited \d+ s for an e2e block in the description; there is still no e2e block in the description\./,
+      );
+      expect(missing.log).toContain("The pull request description has no e2e block.");
+      expect(missing.log).toContain(
+        "CI waited 1 second for the description. Once it is fixed, rerun the whole workflow: gh run rerun 123456.",
+      );
+      expect(loneSkip.exitCode).toBe(1);
+      expect(loneSkip.log).toContain("no open pull request builds on this branch");
+      expect(loneSkip.log).toContain("gh run rerun 123456.");
     }),
   );
 });
