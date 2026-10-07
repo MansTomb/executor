@@ -122,6 +122,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "docker-release.config.ts": () => import("./docker-release.config.ts"),
   "local-bootstrap.config.ts": () => import("./local-bootstrap.config.ts"),
   "pglite.config.ts": () => import("./pglite.config.ts"),
+  "typecheck-runner.config.ts": () => import("./typecheck-runner.config.ts"),
   "welcome-email.config.ts": () => import("./welcome-email.config.ts"),
 };
 /** The part of a config module's default export that says which files Vitest runs. */

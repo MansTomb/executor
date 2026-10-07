@@ -5,6 +5,7 @@ import { startAnalyticsCollector } from "./analytics-collector.ts";
 import { serveOtlpCollector } from "./otlp-collector.ts";
 import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, emulatorRequest } from "./emulators.ts";
+import { startCloudPostgres } from "./cloud-postgres.ts";
 import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
 
 class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStartFailed", {
@@ -174,84 +175,13 @@ export const startCloudEnvironment = (input: {
         ),
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
       );
-    const docker = yield* processes.spawn(
-      ChildProcess.make(
-        "docker",
-        [
-          "run",
-          "--rm",
-          "--name",
-          container,
-          "--publish",
-          `127.0.0.1:${input.databasePort}:5432`,
-          "--env",
-          "POSTGRES_USER=executor",
-          "--env",
-          "POSTGRES_DB=executor",
-          "--env",
-          "POSTGRES_PASSWORD",
-          "postgres:17",
-          // The local Worker connects straight to Postgres, without PgBouncer.
-          // Parallel browser requests and their background jobs each own SQL
-          // connections; PostgreSQL's default 100 slots rejects startup bursts.
-          "-c",
-          "max_connections=512",
-        ],
-        {
-          env: {
-            ...dockerEnv,
-            POSTGRES_PASSWORD: databasePassword,
-          },
-          extendEnv: false,
-          stdout: "pipe",
-          stderr: "pipe",
-          forceKillAfter: "10 seconds",
-        },
-      ),
-    );
-    yield* capture(docker, "postgres.log");
-    yield* Effect.addFinalizer(() =>
-      processes
-        .exitCode(
-          ChildProcess.make("docker", ["rm", "--force", "--volumes", container], {
-            stdout: "ignore",
-            stderr: "ignore",
-            env: dockerEnv,
-            extendEnv: false,
-          }),
-        )
-        .pipe(
-          Effect.flatMap((code) =>
-            code === 0
-              ? Effect.void
-              : Effect.die(new Error("Cannot remove disposable Cloud test database")),
-          ),
-          Effect.orDie,
-        ),
-    );
-    // The image starts a temporary Unix-only server during initdb. Wait for its
-    // final TCP listener before migrations and fixture setup compete to use it.
-    yield* processes
-      .exitCode(
-        ChildProcess.make(
-          "docker",
-          ["exec", container, "pg_isready", "-h", "127.0.0.1", "-U", "executor", "-d", "executor"],
-          {
-            env: dockerEnv,
-            extendEnv: false,
-            stdout: "ignore",
-            stderr: "ignore",
-          },
-        ),
-      )
-      .pipe(
-        Effect.flatMap((code) =>
-          code === 0
-            ? Effect.void
-            : Effect.fail(new CloudStartFailed({ operation: "Postgres TCP readiness" })),
-        ),
-        Effect.retry({ schedule: Schedule.spaced("1 second"), times: 90 }),
-      );
+    yield* startCloudPostgres({
+      container,
+      databasePort: input.databasePort,
+      databasePassword,
+      dockerEnv,
+      log: `${directory}/postgres.log`,
+    });
     const built = yield* processes.exitCode(
       ChildProcess.make("bun", ["run", "framework:build"], {
         cwd: cloud,

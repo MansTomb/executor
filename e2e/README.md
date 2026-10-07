@@ -294,6 +294,19 @@ Cloudflare, PlanetScale, Google, GitHub, Context.dev, or 1Password credentials
 are needed. Docker must be running; Bun, Playwright Chromium and ffmpeg are
 normal tool prerequisites.
 
+The run removes its Postgres container when it ends, including after a failed or
+interrupted start; under load Docker can finish creating a container long after
+the run has stopped waiting for it. Each container is labelled with
+`executor.e2e.role=cloud-postgres` and the process ID of the run that owns it,
+with the process namespace that ID belongs to (`executor.e2e.pid-namespace`: the
+boot and PID namespace on Linux, the boot session on macOS). A run killed before
+its cleanup leaves the container behind; the next Cloud run in the same namespace
+removes containers whose owning process has exited and that are more than five
+minutes old. Containers of live runs, of other namespaces (such as another
+devcontainer sharing the Docker socket) and unlabelled containers are never
+touched. A run that cannot determine its namespace records none and removes
+nothing.
+
 The disposable Postgres server allows 512 connections. The local Worker connects
 directly, so concurrent requests and background jobs cannot share a pooler's
 backend connections. PostgreSQL's default 100 slots can reject parallel
