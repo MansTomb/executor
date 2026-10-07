@@ -26,9 +26,11 @@ const Catalog = Schema.Struct({
   dynamic: Schema.optionalKey(Schema.Boolean),
   cached: Schema.optionalKey(Schema.Boolean),
 });
+/** A catalog whose loader read a publisher through the app cache, which can change it. */
+const Published = Schema.Struct({ skills: Schema.Unknown, cached: Schema.Literal(true) });
 const Reusable = Schema.Union([
   Schema.Struct({ skills: Schema.Unknown, dynamic: Schema.Literal(false) }),
-  Schema.Struct({ skills: Schema.Unknown, cached: Schema.Literal(true) }),
+  Published,
 ]);
 
 /** Sorted catalog digest; equal content has equal revisions. */
@@ -47,7 +49,10 @@ const sorted = (skills: typeof AppSkills.Type) =>
 
 /**
  * Bind skill reads to the app's code lineage. Builds with the skills capability are evaluated
- * with the selected profile; their catalog is served stale-while-revalidate within its bound.
+ * with the selected profile. A read pinned to a revision is served a kept catalog with that
+ * revision, stale-while-revalidate within its bound. A read without one gets the publisher's
+ * current catalog: a stale kept catalog that reflects a publisher is evaluated again first, so
+ * the revision it returns is not replaced by a background refresh moments later.
  */
 export const makeSkills = (
   db: Query,
@@ -103,6 +108,7 @@ export const makeSkills = (
                     ),
                 {
                   retain: (value) => Schema.is(Reusable)(value),
+                  revalidate: (value) => known === undefined && Schema.is(Published)(value),
                   // A caller holding another revision rereads rather than receive an older one.
                   current: (value) =>
                     known === undefined

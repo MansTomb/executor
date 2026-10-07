@@ -30,6 +30,7 @@ export const authorCache = (
         schema: decoderOf(options.schema),
         freshFor: options.freshFor,
         ...(options.staleFor === undefined ? {} : { staleFor: options.staleFor }),
+        ...(options.stale === undefined ? {} : { stale: options.stale }),
         load: Effect.acquireUseRelease(
           Effect.sync(() => new AbortController()),
           (controller) =>

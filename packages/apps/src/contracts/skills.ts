@@ -136,6 +136,8 @@ export const skillLoadLimits = {
   fileBytes: 2_000_000,
   totalBytes: 20_000_000,
   concurrency: 8,
+  /** The request that checks whether a kept catalog's publication changed. */
+  checkMillis: 5_000,
 } as const;
 /** Invocation-owned transport and cancellation, supplied by the app context. */
 export interface SkillTransport {
@@ -147,14 +149,19 @@ export interface SkillReaderOptions extends SkillTransport {
   readonly service: string;
 }
 /**
- * Catalog reuse shared by remote skill loaders, with the same policy as MCP tool catalogs. Pass
- * `ctx.cache` to keep the loaded catalog; without it every read fetches the source again.
+ * Catalog reuse shared by remote skill loaders. Pass `ctx.cache` to keep the loaded catalog;
+ * without it every read fetches the source again. Unlike an MCP tool catalog, a skill catalog
+ * past `freshFor` is not served while it refreshes: the read first asks the source whether its
+ * publication changed, so agents never read skills that a refresh replaces moments later.
  */
 export interface SkillCacheOptions {
   readonly cache?: import("./cache.ts").AppCache;
-  /** Reuse the catalog for this duration. Defaults to five minutes. */
+  /** Reuse the catalog without asking the source for this duration. Defaults to five minutes. */
   readonly freshFor?: import("effect").Duration.Input;
-  /** Serve the retained catalog while refreshing. Defaults to one day. */
+  /**
+   * Keep the catalog this long after `freshFor`. A read then confirms it with one request and
+   * loads the files again only when the publication changed. Defaults to one day.
+   */
   readonly staleFor?: import("effect").Duration.Input;
 }
 /**
@@ -171,7 +178,7 @@ export type GitHubSkillsAccount = import("./cache.ts").AccountCredential<{
 }>;
 /**
  * A GitHub repository and an optional immutable commit, tag or branch. With a cache, a branch or
- * tag is resolved again when the catalog refreshes, and each commit's file list is kept.
+ * tag is resolved again once the catalog is past `freshFor`, and each commit's file list is kept.
  */
 export type GitHubSkillsOptions = SkillTransport &
   SkillCacheOptions &

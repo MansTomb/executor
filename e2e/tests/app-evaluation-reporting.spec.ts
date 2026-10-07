@@ -229,8 +229,8 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
           },
           appsManifest,
         ]);
-        // The app's fetch replaces a request Executor's network could not complete, which rejects
-        // here and answers HTTP 500 on Cloud, with the 404 a missing repository gets.
+        // The app's fetch replaces a request Executor's network could not complete, which rejects,
+        // with the 404 a missing repository gets.
         const replaced = yield* deploy("Replaced skill failure", [
           {
             path: "index.ts",
@@ -263,7 +263,7 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
           },
           appsManifest,
         ]);
-        // Executor's network cannot send this request; on Cloud it answers HTTP 500 in its place.
+        // Executor's network cannot send this request, so the app's fetch rejects.
         const closedSkills = yield* deploy("Unanswered skill source", [
           {
             path: "index.ts",
@@ -504,18 +504,27 @@ export default defineApp({ accounts: {} }, async () => {
           { label: "MCP client failure", trace: unattributed.trace },
           { label: "refused MCP egress", trace: refusedEgress.trace },
           { label: "thrown factory error", trace: thrown.trace },
-          { label: "unanswered skill source", trace: closed.trace },
+          { label: "unanswered skill source", trace: closed.trace, unsent: true },
           { label: "refused skill egress", trace: refusedSkill.trace },
           { label: "skill 404 the app's fetch made up", trace: madeUpAnswer.trace },
-          { label: "skill failure the app's fetch replaced", trace: replacedFailure.trace },
+          {
+            label: "skill failure the app's fetch replaced",
+            trace: replacedFailure.trace,
+            unsent: true,
+          },
           { label: "MCP error the app threw", trace: thrownMcp.trace },
         ];
+        // Cloud also reports a request Executor's network could not send as its own egress failure,
+        // on the same trace and before the app hears back.
+        const expectedTypes = ({ unsent }: { readonly unsent?: boolean }) =>
+          unsent === true ? ["AppEgressFailed", "AppEvaluationFailed"] : ["AppEvaluationFailed"];
         // These reports arrive after every checked request finished. A missing one fails below,
         // naming the request.
         const events = cloud
           ? yield* awaitSentryEvents((events) =>
-              reported.every(({ trace }) =>
-                events.some((event) => event.contexts?.trace?.trace_id === trace),
+              reported.every(
+                (entry) =>
+                  traceExceptionTypes(events, entry.trace).length >= expectedTypes(entry).length,
               ),
             ).pipe(Effect.catchTag("TimeoutError", () => sentryEvents))
           : [];
@@ -548,8 +557,10 @@ export default defineApp({ accounts: {} }, async () => {
             : {}),
         });
         if (!cloud) return;
-        for (const { label, trace } of reported)
-          expect(traceExceptionTypes(events, trace), label).toEqual(["AppEvaluationFailed"]);
+        for (const entry of reported)
+          expect(traceExceptionTypes(events, entry.trace), entry.label).toEqual(
+            expectedTypes(entry),
+          );
         // The MCP traces completed above and carry no report: the known gap, asserted so a change
         // to it is noticed. Closing it is separate work.
         for (const { label, trace } of unreported)

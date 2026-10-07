@@ -4651,7 +4651,20 @@ export const scenarios = {
   cachedSkillsRefresh: {
     fixtures: "actors",
     file: "cached-skills.spec.ts",
-    title: "a stale remote skill catalog is refreshed in the background with the author's fetch",
+    title: "a stale remote skill catalog is checked with one request before it is served",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na(
+        "Shared runtime and HTTP behavior are covered on hosted targets; local MCP has its own skill scenario.",
+      ),
+    },
+  },
+  revalidatedSkills: {
+    fixtures: "actors",
+    file: "cached-skills.spec.ts",
+    title:
+      "a skill read without a revision gets a new publication at once and pinned reads keep theirs",
     targets: {
       "self-host": scheduled,
       cloud: managedCloud,

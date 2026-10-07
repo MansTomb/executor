@@ -1,6 +1,6 @@
 /** Remote skill readers return complete portable bundles, never installed host files. */
 import { Effect, Ref, Schema, Stream } from "effect";
-import { Base64 } from "effect/encoding";
+import { Base64, Hex } from "effect/encoding";
 import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
 import { skillFromFiles } from "./skill-files.ts";
 import { wrap } from "./schema.ts";
@@ -375,31 +375,66 @@ const cachedSkillDirectories = (
   });
 
 /**
- * Keep a loaded catalog in the app cache, paged and refreshed like an MCP tool catalog. A refresh
- * keeps the author's fetch and uses the cache's signal, never the finished request's.
+ * What one request says about a source's current publication, and how to load its skills. Equal
+ * `id`s have equal skills, so a kept catalog with the same `id` is still current. A source that
+ * cannot tell from that request has no `id`.
+ */
+interface Publication {
+  readonly id: string | undefined;
+  readonly load: Effect.Effect<typeof AppSkills.Type, SkillLoadFailed | NetworkRefused>;
+}
+/** Hex SHA-256 of a value's JSON. */
+const digest = (value: unknown) =>
+  Effect.promise(() =>
+    crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(value))),
+  ).pipe(Effect.map((bytes) => Hex.encode(new Uint8Array(bytes))));
+/** The one request that checks a publication, bounded so a slow source fails the read promptly. */
+const checked = <A, E>(request: Effect.Effect<A, E>) =>
+  request.pipe(
+    Effect.timeoutOrElse({
+      duration: skillLoadLimits.checkMillis,
+      orElse: () => Effect.fail(failed("request")),
+    }),
+  );
+
+/**
+ * Keep a loaded catalog in the app cache, paged like an MCP tool catalog. Past `freshFor` it is
+ * never served unchecked: the read awaits one request for the source's publication and loads the
+ * source again only when that changed, so a read never answers with a catalog that a background
+ * refresh replaces moments later. A failed check fails the read; the kept catalog stays for the
+ * next one. The check keeps the author's fetch and uses the cache's signal.
  */
 const cachedCatalog = (
   options: SkillCacheOptions & SkillTransport,
   prefix: readonly JsonValue[],
-  load: (
+  publication: (
     transport: SkillTransport,
     cache: AppCache | undefined,
-  ) => Effect.Effect<typeof AppSkills.Type, SkillLoadFailed | NetworkRefused>,
+  ) => Effect.Effect<Publication, SkillLoadFailed | NetworkRefused>,
 ) =>
   options.cache === undefined
-    ? load(options, undefined)
+    ? publication(options, undefined).pipe(Effect.flatMap((source) => source.load))
     : catalogCache({
         cache: options.cache,
         ...(options.freshFor === undefined ? {} : { freshFor: options.freshFor }),
         ...(options.staleFor === undefined ? {} : { staleFor: options.staleFor }),
+        stale: "revalidate",
         prefix,
         schema: AppSkillSource,
         summary: { schema: AppSkillMetadata, of: ({ files: _files, ...metadata }) => metadata },
-        load: (context) =>
-          (context === undefined
-            ? load(options, options.cache)
-            : load({ fetch: options.fetch, signal: context.signal }, context.cache)
-          ).pipe(Effect.map((tools) => ({ tools }))),
+        load: (context, kept) =>
+          Effect.gen(function* () {
+            const source = yield* context === undefined
+              ? publication(options, options.cache)
+              : publication({ fetch: options.fetch, signal: context.signal }, context.cache);
+            if (source.id === undefined) return { tools: yield* source.load };
+            const previous = kept === undefined ? undefined : yield* kept;
+            const tools =
+              previous?.header?.["publication"] === source.id
+                ? yield* previous.tools
+                : yield* source.load;
+            return { tools, header: { publication: source.id } };
+          }),
       }).pipe(
         Effect.flatMap((catalog) => catalog.list()),
         Effect.mapError((error) =>
@@ -470,18 +505,33 @@ export const githubSkillsEffect = (
     return yield* cachedCatalog(
       cache === undefined ? options : { ...options, cache },
       ["apps/githubSkills/catalog", 1, options.repo, options.ref ?? null, options.path ?? null],
-      (transport, cache) => githubCatalog(options, transport, cache),
+      (transport, cache) => githubPublication(options, transport, cache),
     );
   }).pipe(withService("GitHub"), Effect.mapError(attributed(options.account)));
 
-const githubCatalog = (
+/** A branch or tag resolves to its commit with one request; the commit identifies the files. */
+const githubPublication = (
   options: GitHubSkillsOptions,
   transport: SkillTransport,
   cache: AppCache | undefined,
 ) =>
   Effect.gen(function* () {
     const github = githubRequests(yield* reader(transport), options.repo, options.token);
-    const commit = yield* resolveCommit(github, options.ref);
+    const commit = yield* checked(resolveCommit(github, options.ref));
+    return {
+      id: commit,
+      load: githubCatalog(options, github, commit, transport, cache),
+    } satisfies Publication;
+  });
+
+const githubCatalog = (
+  options: GitHubSkillsOptions,
+  github: GitHub,
+  commit: string,
+  transport: SkillTransport,
+  cache: AppCache | undefined,
+) =>
+  Effect.gen(function* () {
     const resources = yield* cache === undefined
       ? skillDirectories(github, commit, options.path)
       : cachedSkillDirectories(cache, transport, options, commit);
@@ -533,15 +583,28 @@ export const wellKnownSkillsEffect = (options: WellKnownSkillsOptions) =>
     return yield* cachedCatalog(
       options,
       ["apps/wellKnownSkills/catalog", 1, url.href],
-      (transport) => wellKnownCatalog(url, transport),
+      (transport) => wellKnownPublication(url, transport),
     );
   }).pipe(withService(URL.canParse(options.url) ? new URL(options.url).hostname : undefined));
 
-const wellKnownCatalog = (url: URL, transport: SkillTransport) =>
+/**
+ * Read the index once. Publishers change an entry's `version` whenever its files change, so an
+ * index whose every entry has one identifies its publication. Without versions only the files can
+ * show a change, and every check loads them.
+ */
+const wellKnownPublication = (url: URL, transport: SkillTransport) =>
   Effect.gen(function* () {
     const remote = yield* reader(transport);
-    const first = yield* remote.read(url.href);
+    const first = yield* checked(remote.read(url.href));
     const index = yield* parse(Schema.fromJsonString(Index), first);
+    const id = index.skills.every((skill) => skill.version !== undefined)
+      ? yield* digest(index.skills.map(({ name, version, files }) => [name, version, files]))
+      : undefined;
+    return { id, load: wellKnownCatalog(url, remote, first, index) } satisfies Publication;
+  });
+
+const wellKnownCatalog = (url: URL, remote: Remote, first: string, index: typeof Index.Type) =>
+  Effect.gen(function* () {
     if (
       index.skills.reduce((count, skill) => count + skill.files.length, 0) > skillLoadLimits.files
     )

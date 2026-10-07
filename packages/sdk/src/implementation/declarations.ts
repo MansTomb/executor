@@ -219,7 +219,9 @@ export const makeDeclarations = (options: {
      * Read `command` for this invocation state. `retain` keeps only results determined by these
      * inputs; a result that reflects a live publisher is never reused. `current` rejects a cached
      * value the caller knows is outdated, such as a skill revision it has already seen replaced.
-     * `live` evaluates without reading or writing kept results, for callers that act on the
+     * `revalidate` marks a kept value that is not served once stale, even with background work:
+     * the read evaluates first instead, so its caller never gets a value a refresh replaces moments
+     * later. `live` evaluates without reading or writing kept results, for callers that act on the
      * result, such as reconciling upstream webhook registrations.
      */
     read: <E>(
@@ -229,6 +231,7 @@ export const makeDeclarations = (options: {
       policy: {
         readonly retain?: (value: unknown) => boolean;
         readonly current?: (value: unknown) => Effect.Effect<boolean>;
+        readonly revalidate?: (value: unknown) => boolean;
         readonly live?: boolean;
       } = {},
     ) =>
@@ -298,6 +301,13 @@ export const makeDeclarations = (options: {
             const background = options.background;
             if (stale && background === undefined) {
               yield* Effect.annotateCurrentSpan("executor.declarations.cache", "expired");
+              return yield* load;
+            }
+            if (stale && policy.revalidate?.(value) === true) {
+              yield* Effect.annotateCurrentSpan({
+                "executor.declarations.cache": "revalidated",
+                "executor.declarations.age_ms": age,
+              });
               return yield* load;
             }
             yield* authorize(state);

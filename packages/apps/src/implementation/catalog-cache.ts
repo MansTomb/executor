@@ -64,6 +64,11 @@ export interface CatalogLoad<A> {
   readonly tools: readonly A[];
   readonly header?: JsonObject;
 }
+/** The catalog a refresh replaces, read only when its loader asks for it. */
+export interface KeptCatalog<A> {
+  readonly header: JsonObject | undefined;
+  readonly tools: Effect.Effect<readonly A[], unknown>;
+}
 const invoke = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({ try: work, catch: (error) => error });
 
@@ -75,7 +80,16 @@ export const catalogCache = <A extends { readonly name: string }, S>(
     readonly schema: Schema.Decoder<A>;
     /** Schema-free projection stored beside the full pages, so browsing never reads schemas. */
     readonly summary: { readonly schema: Schema.Decoder<S>; readonly of: (tool: A) => S };
-    readonly load: (context?: CacheLoadContext) => Effect.Effect<CatalogLoad<A>, unknown>;
+    /** Past `freshFor`, serve the kept catalog while refreshing, or refresh first. */
+    readonly stale?: "serve" | "revalidate";
+    /**
+     * Load the catalog. A refresh also gets the catalog it replaces, if one is kept, so a source
+     * that can confirm it is unchanged need not load it again.
+     */
+    readonly load: (
+      context?: CacheLoadContext,
+      kept?: Effect.Effect<KeptCatalog<A> | undefined, unknown>,
+    ) => Effect.Effect<CatalogLoad<A>, unknown>;
   },
 ) =>
   Effect.gen(function* () {
@@ -94,9 +108,50 @@ export const catalogCache = <A extends { readonly name: string }, S>(
       Duration.toMillis(Duration.fromInputUnsafe(staleFor)) +
       300_000;
     const local = yield* Effect.cached(options.load());
+    const pages = <B>(
+      cache: NonNullable<CatalogCacheOptions["cache"]>,
+      revision: string,
+      kind: "page" | "summary",
+      count: number,
+      decoder: Schema.Decoder<B>,
+    ) =>
+      Effect.gen(function* () {
+        // Four pages fit the RPC byte budget even when a single tool is near the entry limit.
+        const batches = yield* Effect.forEach(
+          Array.from({ length: Math.ceil(count / 4) }, (_, batch) => batch * 4),
+          (offset) =>
+            invoke(() =>
+              cache.readMany(
+                Array.from({ length: Math.min(4, count - offset) }, (_, index) =>
+                  part(revision, kind, offset + index),
+                ),
+                schema(Schema.Array(decoder)),
+              ),
+            ),
+          { concurrency: "unbounded" },
+        );
+        const values: B[] = [];
+        for (const page of batches.flat()) {
+          if (page === undefined) return yield* new CacheError({ reason: "unavailable" });
+          values.push(...page);
+        }
+        return values;
+      });
+    /** The catalog a refresh replaces, from the scope that refresh writes. */
+    const kept = (cache: AppCache) =>
+      invoke(() => cache.read(key, schema(Manifest))).pipe(
+        Effect.map((manifest) =>
+          manifest === undefined
+            ? undefined
+            : {
+                header: manifest.header,
+                tools: pages(cache, manifest.revision, "page", manifest.pages, options.schema),
+              },
+        ),
+      );
     const refresh = (context: CacheLoadContext) =>
       Effect.gen(function* () {
-        const { tools, header } = yield* options.load(context);
+        const { tools, header } = yield* options.load(context, kept(context.cache));
         // Content-addressed, so refreshing an unchanged catalog renews the same parts.
         const digest = yield* invoke(() =>
           crypto.subtle.digest(
@@ -187,6 +242,7 @@ export const catalogCache = <A extends { readonly name: string }, S>(
       schema: schema(Manifest),
       freshFor,
       staleFor,
+      ...(options.stale === undefined ? {} : { stale: options.stale }),
       load: (context: CacheLoadContext) =>
         Effect.runPromise(refresh(context), { signal: context.signal }),
     };
@@ -206,35 +262,6 @@ export const catalogCache = <A extends { readonly name: string }, S>(
       if (cache === undefined) yield* local;
       else yield* invoke(() => cache.revalidate(getOptions));
     }
-    const pages = <B>(
-      cache: NonNullable<CatalogCacheOptions["cache"]>,
-      revision: string,
-      kind: "page" | "summary",
-      count: number,
-      decoder: Schema.Decoder<B>,
-    ) =>
-      Effect.gen(function* () {
-        // Four pages fit the RPC byte budget even when a single tool is near the entry limit.
-        const batches = yield* Effect.forEach(
-          Array.from({ length: Math.ceil(count / 4) }, (_, batch) => batch * 4),
-          (offset) =>
-            invoke(() =>
-              cache.readMany(
-                Array.from({ length: Math.min(4, count - offset) }, (_, index) =>
-                  part(revision, kind, offset + index),
-                ),
-                schema(Schema.Array(decoder)),
-              ),
-            ),
-          { concurrency: "unbounded" },
-        );
-        const values: B[] = [];
-        for (const page of batches.flat()) {
-          if (page === undefined) return yield* new CacheError({ reason: "unavailable" });
-          values.push(...page);
-        }
-        return values;
-      });
     const metadata = () =>
       Effect.gen(function* () {
         if (cache === undefined) return (yield* local).tools;
