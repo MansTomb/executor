@@ -5,11 +5,13 @@ import { cloudSentry } from "../implementation/error-reporting.ts";
 import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product-analytics.ts";
 import { ScheduleObservation } from "@executor-js/sdk/scheduling";
 import { previewLifetime } from "./test-stage-expiry.ts";
+import { EventCleanup } from "./event-cleanup.ts";
 import { ProfileHost } from "@executor-js/sdk/core";
 import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
 /** Native alarms wake one coordinator; authoritative schedule/run state remains in Postgres. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
+import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Config, Clock, Effect, Exit, Layer, Schema, Semaphore } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { HostedExecutor, ScheduledAuthority, ScheduleWakeup } from "@executor-js/hosted-server";
@@ -377,17 +379,32 @@ export const cloudSchedules = Effect.gen(function* () {
   const coordinator = yield* PlacedScheduleCoordinator;
   const report = yield* cloudSentry;
   const lifetime = yield* previewLifetime;
+  const cleanup = yield* EventCleanup;
   // The namespace binding only exists at runtime, so resolve the stub when the wake runs.
   const wake = (source: WakeSource) =>
     Effect.scoped(report(Effect.suspend(() => coordinator.getByName(coordinatorName).wake()))).pipe(
       Effect.withSpan("schedule.wake", { attributes: { "executor.schedule.wake": source } }),
       Effect.provide(RuntimeContext.phantom),
     );
+  const change = wake("change").pipe(
+    Effect.catch(() => Effect.logError("Schedule coordinator wake failed")),
+  );
+  // A request answers once its change is committed, and wakes the coordinator after the
+  // response, once per event however many of its writes ask. A busy coordinator answers wakes
+  // late: while many new organizations were set up at once, waiting for it held a connection
+  // submit for 12 s, and a profile write past its client's minute.
+  const afterResponse = yield* makeExecutionMemo(
+    Effect.gen(function* () {
+      const deadline = yield* cleanup.deadline;
+      yield* Effect.addFinalizer(() =>
+        deadline.within(change, { max: "5 seconds" }).pipe(Effect.asVoid),
+      );
+    }),
+  );
   return {
-    layer: Layer.succeed(
-      ScheduleWakeup,
-      wake("change").pipe(Effect.catch(() => Effect.logError("Schedule coordinator wake failed"))),
-    ),
+    layer: Layer.succeed(ScheduleWakeup, afterResponse),
+    /** Wakes before returning, for work that already runs after its event's response. */
+    immediateLayer: Layer.succeed(ScheduleWakeup, change),
     /** The `schedule-wake` job. Its failure fails the job, so a forwarding caller retries. */
     wake: wake("job").pipe(lifetime.background),
   };
