@@ -24,8 +24,8 @@ export const SentryEvent = Schema.Struct({
 export type SentryEvent = typeof SentryEvent.Type;
 const EventLine = Schema.fromJsonString(SentryEvent);
 
-/** Every event captured so far. The two envelope header lines precede each event item. */
-export const sentryEvents = Effect.gen(function* () {
+/** Every event item captured so far. The two envelope header lines precede each event item. */
+const eventLines = Effect.gen(function* () {
   const target = yield* Target,
     fs = yield* FileSystem.FileSystem;
   const text = yield* fs.readFileString(`${target.directory}/sentry.ndjson`);
@@ -34,13 +34,42 @@ export const sentryEvents = Effect.gen(function* () {
     .split("\n")
     .filter(Boolean)
     .flatMap((line) =>
-      Schema.decodeUnknownSync(Envelope)(line)
-        .envelope.split("\n")
-        .slice(2)
-        .filter(Boolean)
-        .map((value) => Schema.decodeUnknownSync(EventLine)(value)),
+      Schema.decodeUnknownSync(Envelope)(line).envelope.split("\n").slice(2).filter(Boolean),
     );
 });
+
+/** Every event captured so far, as sent, for scenarios that check what no event may contain. */
+export const sentryEventText = eventLines;
+
+/** Every event captured so far. */
+export const sentryEvents = eventLines.pipe(
+  Effect.map((lines) => lines.map((value) => Schema.decodeUnknownSync(EventLine)(value))),
+);
+
+const ExceptionLine = Schema.fromJsonString(
+  Schema.Struct({
+    exception: Schema.optional(
+      Schema.Struct({
+        values: Schema.Array(
+          Schema.Struct({ type: Schema.String, value: Schema.optional(Schema.String) }),
+        ),
+      }),
+    ),
+    contexts: SentryEvent.fields.contexts,
+  }),
+);
+/** Every captured exception with its message and trace, for scenarios that check the message. */
+export const sentryExceptions = eventLines.pipe(
+  Effect.map((lines) =>
+    lines.flatMap((line) => {
+      const event = Schema.decodeUnknownSync(ExceptionLine)(line);
+      return (event.exception?.values ?? []).map((exception) => ({
+        ...exception,
+        trace: event.contexts?.trace?.trace_id,
+      }));
+    }),
+  ),
+);
 
 /** Poll the collector until the captured events satisfy `until`. */
 export const awaitSentryEvents = (until: (events: ReadonlyArray<SentryEvent>) => boolean) =>

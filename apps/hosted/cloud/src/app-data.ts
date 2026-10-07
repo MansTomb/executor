@@ -21,6 +21,7 @@ import { cloudOrigin } from "./infrastructure/stage.ts";
 import { loadCloudBuildRecord, loadCloudFramework } from "./implementation/build-storage.ts";
 import { cachedRuntimeBuilds } from "./implementation/runtime-build-cache.ts";
 import { appCredentialOutbound, appOutboundBindings } from "./infrastructure/app-outbound.ts";
+import { sentryBindings } from "./infrastructure/sentry.ts";
 import { HttpServerResponse } from "effect/http";
 import {
   cloudObservability,
@@ -86,6 +87,8 @@ export default AppData.make(
         ...(yield* telemetryBindings),
         ...(yield* appOutboundBindings),
         [runnerReadsBuilds.name]: runnerReadsBuilds.value,
+        // App requests Executor's network could not send are reported.
+        ...(yield* sentryBindings).env,
       },
     };
   }),

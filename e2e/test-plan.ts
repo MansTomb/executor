@@ -1733,6 +1733,20 @@ export const scenarios = {
       local: na("Local lets app code reach private addresses by design."),
     },
   },
+  appEgressFailures: {
+    fixtures: "actors",
+    file: "app-egress-failures.spec.ts",
+    title:
+      "an app request Executor's network failed to send fails every fetch the app can reach, and only Executor's own failures are reported",
+    targets: {
+      "self-host": scheduled,
+      // Reads the local Sentry collector; the scenario reaches loopback fixtures.
+      cloud: managedCloud,
+      local: na(
+        "Hosted app routes; local runs apps with the same runner and has no outbound network in front of it.",
+      ),
+    },
+  },
   appFetchUnsupportedOption: {
     fixtures: "actors",
     file: "app-fetch-errors.spec.ts",

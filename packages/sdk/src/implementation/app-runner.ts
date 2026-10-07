@@ -44,7 +44,8 @@ import {
 } from "../contracts/runtime.ts";
 import type { LoadedWorkerBuild, WorkerBundle } from "../contracts/worker-build.ts";
 import { appProtocol, type AppProtocol } from "./app-protocols.ts";
-import { appFacetBridge, appRpcBridge } from "./worker-bridge.ts";
+import { appFacetBridge, appNetworkModuleName, appRpcBridge } from "./worker-bridge.ts";
+import { appNetworkModule } from "./app-network.ts";
 import { sealAccounts } from "./credential-handles.ts";
 import { AppRpcEntrypoint, AppRpcInvocation } from "./worker-elicitation.ts";
 import { invocationWorkflow } from "./worker-workflow-rpc.ts";
@@ -407,6 +408,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
                     bundle.mainModule,
                     name === null ? "call" : "module",
                   ),
+                  [appNetworkModuleName]: appNetworkModule,
                 }),
               ),
               Effect.tap(annotateLoaded),
@@ -580,6 +582,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
               modules: reachableModules("__executor_facet.js", {
                 ...bundle.modules,
                 "__executor_facet.js": appFacetBridge(bundle.mainModule),
+                [appNetworkModuleName]: appNetworkModule,
               }),
             };
           },

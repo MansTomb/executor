@@ -51,6 +51,13 @@ export const nodeAppEntry = (protocol: number) => (files: readonly SourceFile[])
   ].join("\n");
 
 /**
+ * The runtime's network module. Each bridge imports it before the app, so it evaluates first and
+ * app code only ever sees the global `fetch` it installs; see app-network.ts.
+ */
+export const appNetworkModuleName = "__executor_network.js";
+const networkImport = `import "./${appNetworkModuleName}";`;
+
+/**
  * Runtime-owned RPC entrypoint. Retained fetch bridges continue to work and only new bridges use
  * the callback.
  *
@@ -62,6 +69,7 @@ export const nodeAppEntry = (protocol: number) => (files: readonly SourceFile[])
  * anything unexpected while reading it sends the original on unchanged.
  */
 export const appRpcBridge = (module: string, load: "module" | "call" = "module") => `
+${networkImport}
 ${
   load === "module"
     ? `import app from ${JSON.stringify(`./${module}`)};`
@@ -113,6 +121,7 @@ export default class extends WorkerEntrypoint {
 
 /** A dynamic class receives only its own SQLite storage, with no platform bindings. */
 export const appFacetBridge = (module: string) => `
+${networkImport}
 import bridge from ${JSON.stringify(`./${module}`)};
 import { DurableObject } from "cloudflare:workers";
 import * as workers from "cloudflare:workers";
