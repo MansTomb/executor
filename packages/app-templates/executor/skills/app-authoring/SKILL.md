@@ -49,6 +49,9 @@ Load files through the MCP `skills` tool using the returned app slug, profile, d
 }
 ```
 
+The management app's `skills.list` and `skills.read` take the profile as
+`query.profile` and need it for any app that requires accounts.
+
 ## Discover exact contracts
 
 Use `tools.search` inside `execute` to find callable app tools. It returns their
@@ -61,6 +64,8 @@ Framework functions are imports or methods used in app source, not MCP tools.
 
 Call `framework.search({ query: { text } })`, then `framework.describe({ query: { symbol, version, digest } })`
 with a symbol it returns. Start with `apps.defineApp`, `apps.query`, `DatabaseTable.insert`, or `apps/react.useAppQuery`.
+Both take their input under `query`, unlike `tools.search({ query: "send email" })`,
+whose `query` is a plain string.
 The reference identifies its exact framework version and content digest. Keep
 that identity on subsequent reads. Do not assume a host reference describes a
 different pinned `apps` package; that package ships `framework-reference.json`.

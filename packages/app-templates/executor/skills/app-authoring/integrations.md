@@ -17,6 +17,31 @@ MCP server, use [`mcpHealth`](#check-an-mcp-account). Look up exact helper optio
 | GraphQL endpoint            | `graphqlRouter` from `apps/graphql`                       |
 | Anything else               | Queries and mutations with `fetch` ([tools.md](tools.md)) |
 
+## OAuth apps the user registers
+
+Every `oauth2` method needs an OAuth client. Executor gets one itself when the
+authorization server advertises a `registration_endpoint`, or accepts client ID
+metadata documents and the host publishes one: Executor Cloud does, and
+self-host does when its operator turns it on. Otherwise the method needs a
+client from the user: the connect page asks them to create an OAuth app in the
+service's developer settings, add Executor's redirect URI to it, and enter its
+client ID and client secret. Public PKCE clients, declared
+with `tokenEndpointAuthMethod: "none"`, have no secret. Executor saves the
+client after a successful connection and reuses it. Give the user the connect
+link as usual; never ask for a client ID or secret in chat.
+
+The redirect URI belongs to the host. The connect page shows it. On hosted
+Executor, `accounts.connection` also returns it as `redirectUri`, so you can tell
+the user what to register before they open the link. The local server uses
+`/api/oauth/callback` on its own origin.
+
+Expect to need a user's client for Google, GitHub and Slack, which offer no
+registration, and for services such as Fastmail that accept only clients and
+redirect URIs registered in advance. When a service advertises registration but
+refuses it, the first connect attempt fails and the page opens the same client
+form. Client-credentials methods always take the user's client
+([accounts.md](accounts.md#oauth-sign-in)).
+
 ## Approvals for imported tools
 
 Helpers attach no approval. Wrap the router with `withApprovals` from `apps`
@@ -221,16 +246,22 @@ inside the app, caching each revision; no extra dependency is needed. Pass the
 settings the definition cannot be trusted to decide:
 
 - `source`: `{ url }` for a public definition (up to 40 MB), or `{ document }`:
-  Swagger 2.0 or OpenAPI 3.0, 3.1 or 3.2.
+  Swagger 2.0 or OpenAPI 3.0, 3.1 or 3.2. The `url` is fetched without account
+  credentials; see [private definitions](#private-definitions).
 - `allowedOrigin`: the one origin that may receive credentials. `baseUrl`
   overrides the definition's server.
 - `securitySchemes`: usually `components.securitySchemes` from the definition.
 - `methods`: which account fields fill each scheme for each `secrets` method,
   e.g. `{ apiKey: [{ scheme: "bearerAuth", field: "token", part: "value", prefix: "" }] }`.
   Basic auth binds `username` and `password` parts.
+  An `oauth2` method can fill a scheme here too, through its `access_token`
+  field. Use this when the definition declares only an http bearer scheme:
+  `{ oauth: [{ scheme: "bearerAuth", field: "access_token", part: "value", prefix: "" }] }`.
+  List such a method in `methods` only, not in `oauth`.
 - `oauth`: names of `oauth2` provider methods, each named like the OpenAPI
-  `oauth2` scheme it fills. Declare those methods as in
-  [accounts.md](accounts.md#oauth-sign-in), preferring `discover`.
+  `oauth2` scheme it fills. This fills only `oauth2` and OpenID Connect schemes.
+  Declare those methods as in [accounts.md](accounts.md#oauth-sign-in),
+  preferring `discover`.
 - Optional `fallbackSecurity` when the definition declares no security, and
   `patches` for mistakes in a definition you do not control.
 - Optional `pathPrefix`, such as `/projects/{project}`, when the definition's
@@ -242,10 +273,16 @@ settings the definition cannot be trusted to decide:
 Tools are grouped by the operation's first tag, or its first path segment:
 operationId `listProjects` tagged `projects` becomes
 `projects.listProjects`, and `accounts_connect` tagged `accounts`
-becomes `accounts.connect`. Without an operationId the name comes from the
-method and path, and operations that would share one add the path segments
-that differ: `GET /builds` and `GET /builds/{build_num}` become
-`builds.getBuilds` and `builds.getBuildsByBuildNum`. Discover the exact names
+becomes `accounts.connect`. Both parts are camelCased from their words: tag
+`Team Members` with operationId `list_team_members` becomes
+`teamMembers.listTeamMembers`, and `GetUserByID` becomes `getUserById`.
+Without an operationId the name comes from the method and path. Names that
+collide, whether or not they come from operationIds, are told apart in this
+order: first the path's version segment, as in `users.v2.listUsers`; then the
+path segments that differ, so `GET /builds` and `GET /builds/{build_num}` become
+`builds.getBuilds` and `builds.getBuildsByBuildNum`; then the whole path; then
+the HTTP method; then a stable hash. Each step applies only to names that still
+collide. `kinds` still uses the original operationId. Discover the exact names
 with search.
 
 Operations the helper cannot represent, and operations whose security needs
@@ -262,6 +299,13 @@ strings. Binary responses return `{ base64, contentType }`; text and JSON
 sequences (NDJSON, JSON Lines, `json-seq`) return text. Success responses have
 a 16 MiB / 30-second read bound. Live SSE
 requires an authored subscription.
+
+A call resolves to the response body itself, never `{ status, body }`: parsed
+JSON, text, the binary object above, or `null` for 204 and `HEAD`. A failure
+status rejects the call instead. The output type comes from the definition's
+success responses. When one declares no content, or JSON content without a
+schema, the signature says `Promise<unknown>`. Results are not checked against
+the declared schema, so check the fields you use.
 
 OpenAPI apps return documented errors with an exact HTTP status, a required
 literal `_tag`, and either a declared string `message` or a schema description.
@@ -283,6 +327,107 @@ For these declared API errors it contains JSON with `code`, `status`,
 `message`, and an optional `recovery`; parse it with `JSON.parse`. Other failures are ordinary diagnostic
 strings, so guard that parse. A failed mutation may already have made changes;
 inspect its state before retrying.
+
+### Custom tools beside generated ones
+
+Mount the generated router under a key next to hand-written queries and
+mutations ([tools.md](tools.md)):
+
+```ts
+tools: router({
+  weeklySummary,
+  api: await accountRouter(
+    accounts.service,
+    async (account) => liveOpenapiRouter({ ...options, cache, fetch, signal, account }),
+    { signal },
+  ),
+}),
+```
+
+The key renames every generated tool: `projects.listProjects` becomes
+`api.projects.listProjects`. Update skills and callers that use the old names.
+
+### Private definitions
+
+When the definition itself needs the account's credentials, load it in a cache
+scoped to the account and pass it as `source: { document }`. `record(json())`
+from `apps` accepts any JSON object:
+
+```ts
+async (account) => {
+  const url = "https://api.example.com/openapi.json";
+  const document = await cache.forAccount(account).get({
+    key: ["openapi-definition", url],
+    schema: record(json()),
+    freshFor: "1 hour",
+    load: async ({ fetch, signal }) =>
+      decodeJson(
+        await fetch(url, { signal, headers: { Authorization: `Bearer ${account.fields.token}` } }),
+        record(json()),
+      ),
+  });
+  return liveOpenapiRouter({ ...options, source: { document }, cache, fetch, signal, account });
+};
+```
+
+A cache entry holds up to 2 MB. Reconnecting the account starts an empty scope.
+
+### Session cookies
+
+For a service that exchanges a username and password for a session cookie,
+declare both as `secrets` fields with the service's `hosts`. Sign in from a
+cache loader, then pass `liveOpenapiRouter` a `fetch` that adds the cookie.
+Clear the definition's security so operations need no declared scheme:
+
+```ts
+async (account) => {
+  const sessions = cache.forAccount(account);
+  const session = () =>
+    sessions.get({
+      key: ["session"],
+      schema: string(),
+      freshFor: "20 minutes", // shorter than the service's session lifetime
+      load: async ({ fetch, signal }) => {
+        const response = await fetch("https://app.example.com/api/login", {
+          method: "POST",
+          signal,
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            username: account.fields.username,
+            password: account.fields.password,
+          }),
+        });
+        if (!response.ok) throw new Error(`Sign-in failed with status ${response.status}.`);
+        const cookies = response.headers.getSetCookie().map((cookie) => cookie.split(";")[0]);
+        if (cookies.length === 0) throw new Error("Sign-in returned no session cookie.");
+        return cookies.join("; ");
+      },
+    });
+  return liveOpenapiRouter({
+    source: { url: "https://app.example.com/openapi.json" },
+    allowedOrigin: "https://app.example.com",
+    securitySchemes: {},
+    methods: {},
+    oauth: [],
+    patches: [{ op: "add", path: "/security", value: [] }],
+    cache,
+    signal,
+    account,
+    fetch: async (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("cookie", await session());
+      const response = await fetch(input, { ...init, headers });
+      // An expired session signs in again on the next call.
+      if (response.status === 401) await sessions.invalidate(["session"]);
+      return response;
+    },
+  });
+};
+```
+
+The patch replaces only the document's top-level `security`; patch any
+operation that declares its own. Give the provider a `health` check that signs
+in the same way, so the account form reports refused credentials.
 
 ## GraphQL APIs
 
