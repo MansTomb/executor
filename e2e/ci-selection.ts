@@ -95,6 +95,7 @@ const PackageScripts = Schema.Struct({ scripts: Schema.Record(Schema.String, Sch
  * literal so e2e/check-boundary.ts can check it; a config missing here fails the selection.
  */
 const suiteConfigs: Record<string, () => Promise<unknown>> = {
+  "apps-published.config.ts": () => import("./apps-published.config.ts"),
   "billing.config.ts": () => import("./billing.config.ts"),
   "ci-selection.config.ts": () => import("./ci-selection.config.ts"),
   "desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts"),
