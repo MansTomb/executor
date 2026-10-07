@@ -8,7 +8,7 @@ import {
   maxApiErrorInstructionsLength,
   maxApiErrorMessageLength,
 } from "apps/contracts";
-import { CodeMode } from "@opencode-ai/codemode";
+import type { CodeMode } from "@opencode-ai/codemode";
 
 const encodeResponse = Schema.encodeSync(Schema.fromJsonString(ApiErrorResponse));
 
