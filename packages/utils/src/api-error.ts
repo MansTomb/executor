@@ -1,5 +1,6 @@
 import { Schema, SchemaGetter, type Cause } from "effect";
 import "effect/http-api";
+import { RecordedMessage } from "./recorded-message.ts";
 
 /**
  * Encode the class's `message` getter as a required wire string. Decoding validates the field,
@@ -29,6 +30,11 @@ type Definition<Tag extends string, Fields extends Schema.Struct.Fields> = Heade
    * record, so it never includes credentials, upstream response text or submitted values.
    */
   readonly message: string | ((fields: Schema.Struct.Type<Fields>) => string);
+  /**
+   * What traces and error reports record instead of `message`, when the message quotes an app's
+   * own error or a service's stated error for its caller. Only fixed text and typed fields.
+   */
+  readonly recorded?: (fields: Schema.Struct.Type<Fields>) => string;
 };
 // The derived message cannot be supplied by constructor callers.
 type ErrorFields<Tag extends string, Fields extends Schema.Struct.Fields> = Omit<
@@ -58,10 +64,22 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
     ),
     { httpApiStatus: definition.status, ...documentation },
   );
-  Object.defineProperty(DefinedError.prototype, "message", {
-    get(this: Self) {
-      return typeof message === "string" ? message : message(this);
+  const recorded = definition.recorded;
+  Object.defineProperties(DefinedError.prototype, {
+    message: {
+      get(this: Self) {
+        return typeof message === "string" ? message : message(this);
+      },
     },
+    ...(recorded === undefined
+      ? {}
+      : {
+          [RecordedMessage]: {
+            get(this: Self) {
+              return recorded(this);
+            },
+          },
+        }),
   });
   // SAFETY: Schema.Error and TaggedStruct construct and decode the fields and literal tag. The
   // message getter is defined on that same constructor before it escapes. The message is derived,

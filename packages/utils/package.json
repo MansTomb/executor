@@ -8,6 +8,7 @@
     "./safe-fetch": "./src/safe-fetch.ts",
     "./user-facing-error": "./src/user-facing-error.ts",
     "./api-error": "./src/api-error.ts",
+    "./recorded-message": "./src/recorded-message.ts",
     "./safe-fetch/bun": "./src/safe-fetch-bun.ts",
     "./release-version": "./src/release-version.ts"
   },

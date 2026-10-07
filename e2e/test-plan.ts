@@ -3119,6 +3119,17 @@ export const scenarios = {
       local: na("The shared browser client is exercised through hosted app authentication."),
     },
   },
+  appFailureTelemetry: {
+    fixtures: "actors",
+    file: "app-failure-telemetry.spec.ts",
+    title:
+      "an app's failure text reaches its caller but not Executor's spans, logs or incident reports",
+    targets: {
+      cloud: managedCloud,
+      "self-host": scheduled,
+      local: na("Hosted app routes; local shares the runtime and telemetry paths."),
+    },
+  },
   deferredServerPaths: {
     fixtures: "actors",
     file: "deferred-server-paths.spec.ts",

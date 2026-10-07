@@ -5,6 +5,7 @@ import { CurrentTelemetryConfig } from "./config.ts";
 import { telemetryLayer } from "./layer.ts";
 import { telemetryHttpClient } from "./transport.ts";
 import { recordExportFailure } from "./measurements.ts";
+import { appLog, appSpan } from "./app-records.ts";
 
 /**
  * Forward app telemetry in the host scope without delaying an app result.
@@ -218,7 +219,13 @@ export const forwardTelemetry = (
                         spans: payloads
                           .flatMap((payload) => payload.resourceSpans)
                           .flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))
-                          .filter((span) => traceId === undefined || span.traceId === traceId),
+                          .filter((span) => traceId === undefined || span.traceId === traceId)
+                          // An app isolate's records are rebuilt from the host's vocabulary.
+                          .flatMap((span) => {
+                            if (service !== "executor-app") return [span];
+                            const kept = appSpan(span);
+                            return kept === undefined ? [] : [kept];
+                          }),
                       },
                     ],
                   },
@@ -238,7 +245,8 @@ export const forwardTelemetry = (
                         logRecords: payloads
                           .flatMap((payload) => payload.resourceLogs)
                           .flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords))
-                          .filter((log) => traceId === undefined || log.traceId === traceId),
+                          .filter((log) => traceId === undefined || log.traceId === traceId)
+                          .map((log) => (service === "executor-app" ? appLog(log) : log)),
                       },
                     ],
                   },

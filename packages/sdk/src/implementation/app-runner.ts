@@ -18,6 +18,7 @@ import {
   type WorkflowExecution,
   type WorkflowReplay,
 } from "apps/contracts";
+import { AppDatabaseError } from "@executor-js/app-data/contracts";
 import {
   facetIdentity,
   failedColdStart,
@@ -35,7 +36,12 @@ import {
 } from "@executor-js/app-cache/contracts";
 import { holdLeases } from "@executor-js/app-cache";
 import { discardsEvaluated } from "@executor-js/app-cache/changes";
-import { describeBuildCause, RuntimeProtocolFailed } from "../contracts/runtime.ts";
+import {
+  describeBuildCause,
+  RuntimeProtocolFailed,
+  runtimeFailures,
+  type RuntimeFailure,
+} from "../contracts/runtime.ts";
 import type { LoadedWorkerBuild, WorkerBundle } from "../contracts/worker-build.ts";
 import { appProtocol, type AppProtocol } from "./app-protocols.ts";
 import { appFacetBridge, appRpcBridge } from "./worker-bridge.ts";
@@ -153,14 +159,71 @@ interface CacheSession {
   readonly close: Effect.Effect<void>;
 }
 
-const failed = (cause: unknown) => {
-  const message = describeBuildCause(cause);
-  return Effect.annotateCurrentSpan("executor.runtime.cause", message).pipe(
-    Effect.andThen(Effect.fail(new RuntimeProtocolFailed({ message }))),
-  );
+/** Platform failures by the text the runtime reports them with, most specific first. */
+const platformFailures: ReadonlyArray<readonly [RegExp, RuntimeFailure]> = [
+  [/exceeded (its )?memory limit/i, "memory"],
+  [/exceeded (its )?CPU time limit/i, "cpu"],
+  [/timed out|exceeded (a |its )?(time limit|timeout|wall)/i, "timeout"],
+  [/overloaded/i, "overloaded"],
+  [/Durable Object reset|object to be reset|code (was|has been) updated/i, "reset"],
+  [/Network connection lost/i, "disconnected"],
+  [/will never generate a response|Promise will never complete/i, "hung"],
+  [/^(\w+: )?internal error/i, "internal"],
+];
+/**
+ * The kind of a failed call. App code can throw anything, a rejected call carries it, and a decode
+ * failure names paths in the app's output, so a cause's text is matched here and goes no further.
+ */
+const classify = (cause: unknown): RuntimeFailure => {
+  if (Schema.isSchemaError(cause)) return "invalid-reply";
+  if (failedColdStart(cause)) return "cold-start";
+  const text = describeBuildCause(cause);
+  // A reply the Worker's framework could not decode crosses Workers RPC as a plain Error.
+  if (/^(\w+: )?SchemaError\b/.test(text)) return "invalid-reply";
+  return platformFailures.find(([pattern]) => pattern.test(text))?.[1] ?? "unrecognized";
 };
-const attempt = <A>(work: () => Promise<A>) =>
-  Effect.tryPromise({ try: work, catch: (cause) => cause }).pipe(Effect.catch(failed));
+/**
+ * Fail a call with its kind, the only part telemetry records. `explain` keeps the cause in the
+ * app's own terms for a deploy's declaration step, whose caller is the app's deployer.
+ */
+const failed = (reason: RuntimeFailure, cause?: unknown, explain = false) =>
+  Effect.annotateCurrentSpan({
+    "executor.runtime.failure": reason,
+    "executor.runtime.cause": runtimeFailures[reason],
+  }).pipe(
+    Effect.andThen(
+      Effect.fail(
+        new RuntimeProtocolFailed({
+          reason,
+          ...(explain && cause !== undefined ? { message: describeBuildCause(cause) } : {}),
+        }),
+      ),
+    ),
+  );
+const failedFrom = (explain: boolean) => (cause: unknown) =>
+  failed(classify(cause), cause, explain);
+/** Reading a build is the host's own work; its failure is Executor's text and recorded as it is. */
+const failedBuild = (cause: unknown) =>
+  Effect.annotateCurrentSpan({
+    "executor.runtime.failure": "build",
+    "executor.runtime.cause": describeBuildCause(cause),
+  }).pipe(Effect.andThen(Effect.fail(new RuntimeProtocolFailed({ reason: "build" }))));
+/**
+ * A data supervisor failure. Its own typed failures are Executor's text and recorded as they are;
+ * anything else is classified like an app Worker's failure.
+ */
+const SupervisorFailure = AppDatabaseError;
+const failedData = (cause: unknown) =>
+  Option.match(Schema.decodeUnknownOption(SupervisorFailure)(cause), {
+    onNone: () => failedFrom(false)(cause),
+    onSome: (failure) =>
+      Effect.annotateCurrentSpan({
+        "executor.runtime.failure": "data",
+        "executor.runtime.cause": JSON.stringify(Schema.encodeSync(SupervisorFailure)(failure)),
+      }).pipe(Effect.andThen(Effect.fail(new RuntimeProtocolFailed({ reason: "data" })))),
+  });
+const attempt = <A>(work: () => Promise<A>, explain = false) =>
+  Effect.tryPromise({ try: work, catch: (cause) => cause }).pipe(Effect.catch(failedFrom(explain)));
 /**
  * The protocol of each build this process has loaded, least recently used first. Builds are
  * immutable, so a build's protocol is learned from the load of its first cold start and warm calls
@@ -192,7 +255,7 @@ const readWait = 10_000;
 /** Record a build's protocol from its read. */
 const learn = (build: string, loaded: LoadedWorkerBuild) =>
   appProtocol(loaded.protocol).pipe(
-    Effect.catch(failed),
+    Effect.catch(() => failed("unsupported")),
     Effect.map((protocol) => {
       protocols.set(build, protocol);
       if (protocols.size > protocolLimit) {
@@ -241,16 +304,19 @@ const protocolOf = (
     const read = (async () => load())();
     // Keep this request alive until the read settles, so the calls waiting on it are released.
     waitUntil(read.catch(() => undefined));
-    const loaded = yield* attempt(() => read);
+    const loaded = yield* Effect.tryPromise({ try: () => read, catch: (cause) => cause }).pipe(
+      Effect.catch(failedBuild),
+    );
     const protocol = yield* learn(build, loaded);
     entry.loaded = loaded;
     return { protocol, load: async () => loaded };
   });
 
-/** A call whose Worker failed to load in this isolate. No authored code ran for it. */
-class ColdStartFailed extends Schema.TaggedError<ColdStartFailed>()("ColdStartFailed", {
-  cause: Schema.Unknown,
-}) {}
+/**
+ * A call whose Worker failed to load in this isolate. No authored code ran for it. The load's own
+ * failure is not kept: an app's module initialization can throw any text.
+ */
+class ColdStartFailed extends Schema.TaggedError<ColdStartFailed>()("ColdStartFailed", {}) {}
 
 /**
  * The runtime an invocation uses and its name. A call that uses an app's database runs in its data
@@ -307,6 +373,8 @@ export const makeAppRunner = (host: AppRunnerHost) => {
       readonly controls: Callback | null;
       readonly workflow?: WorkflowExecution;
       readonly cache: Effect.Effect<CacheSession> | null;
+      /** Keep a failure's text for the deployer; see `failed`. */
+      readonly explain: boolean;
     },
   ) =>
     Effect.scoped(
@@ -358,7 +426,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           name === null ? host.loader.get(null, load) : loadWorker(host.loader, name, load).worker;
         const entry = yield* Schema.decodeUnknownEffect(AppRpcEntrypoint)(
           worker.getEntrypoint(),
-        ).pipe(Effect.catch(failed));
+        ).pipe(Effect.catch(() => failed("internal")));
         const workflow =
           options.workflow === undefined
             ? null
@@ -388,19 +456,22 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           }).pipe(
             Effect.catch((cause): Effect.Effect<never, RuntimeProtocolFailed | ColdStartFailed> =>
               name !== null && failedColdStart(cause)
-                ? Effect.fail(new ColdStartFailed({ cause }))
-                : failed(cause),
+                ? Effect.fail(new ColdStartFailed())
+                : failedFrom(options.explain)(cause),
             ),
             Effect.flatMap((value) =>
-              Schema.decodeUnknownEffect(AppRpcInvocation)(value).pipe(Effect.catch(failed)),
+              Schema.decodeUnknownEffect(AppRpcInvocation)(value).pipe(
+                Effect.catch(failedFrom(options.explain)),
+              ),
             ),
             Effect.withSpan("runtime.app.rpc.start"),
             Effect.onError(() => closeCache),
           ),
           (call, exit) => {
             let released: Promise<void> | undefined;
-            // Bounded, so a release RPC that never settles cannot hold its owner open.
-            const release = Effect.promise(
+            // Bounded, so a release RPC that never settles cannot hold its owner open. The app's
+            // bridge runs drain and cancel, so a rejection is classified like start's and result's.
+            const release = attempt(
               () =>
                 (released ??= (async () => {
                   try {
@@ -450,7 +521,9 @@ export const makeAppRunner = (host: AppRunnerHost) => {
             );
           },
         );
-        return yield* attempt(() => call.result()).pipe(Effect.withSpan("runtime.app.rpc.result"));
+        return yield* attempt(() => call.result(), options.explain).pipe(
+          Effect.withSpan("runtime.app.rpc.result"),
+        );
       }),
     );
   /**
@@ -465,7 +538,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
       Effect.catchTag("ColdStartFailed", () =>
         startOnce(...args).pipe(
           Effect.withSpan("runtime.app.cold_start.retry"),
-          Effect.catchTag("ColdStartFailed", ({ cause }) => failed(cause)),
+          Effect.catchTag("ColdStartFailed", () => failed("cold-start")),
         ),
       ),
     );
@@ -511,18 +584,18 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           capabilities.controls,
         )
         .pipe(
-          Effect.catch(failed),
+          Effect.catch(failedData),
           Effect.flatMap((value) =>
-            Schema.decodeUnknownEffect(FacetResult)(value).pipe(Effect.catch(failed)),
+            Schema.decodeUnknownEffect(FacetResult)(value).pipe(
+              Effect.catch(() => failed("invalid-reply")),
+            ),
           ),
           Effect.onInterrupt(() => target.cancel(id).pipe(Effect.catchCause(() => Effect.void))),
         );
-      const value = yield* protocol
-        .response(command, result.value)
-        .pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Json))),
-          Effect.catch(failed),
-        );
+      const value = yield* protocol.response(command, result.value).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Json))),
+        Effect.catch(() => failed("invalid-reply")),
+      );
       return {
         ...value,
         executorRevision: result.revision,
@@ -537,7 +610,9 @@ export const makeAppRunner = (host: AppRunnerHost) => {
      */
     invoke: (invocation: AppInvocation, capabilities: AppCapabilities) =>
       Effect.gen(function* () {
-        const { identity, mode, name } = yield* appWorker(invocation).pipe(Effect.catch(failed));
+        const { identity, mode, name } = yield* appWorker(invocation).pipe(
+          Effect.catch(() => failed("internal")),
+        );
         yield* Effect.annotateCurrentSpan({
           "executor.runtime.mode": mode,
           "executor.worker.identity": name,
@@ -623,6 +698,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
                 ),
               }),
           cache,
+          explain: false,
         });
         const result = yield* protocol.response(invocation.command, reply);
         return cacheChanged &&
@@ -638,7 +714,9 @@ export const makeAppRunner = (host: AppRunnerHost) => {
      */
     declare: (bundle: LoadedWorkerBuild, headers: Readonly<Record<string, string>>) =>
       Effect.gen(function* () {
-        const protocol = yield* appProtocol(bundle.protocol).pipe(Effect.catch(failed));
+        const protocol = yield* appProtocol(bundle.protocol).pipe(
+          Effect.catch((cause) => failed("unsupported", cause, true)),
+        );
         const command = { operation: "requirements" } as const;
         const reply = yield* start(null, async () => bundle, {
           body: protocol.invocation({ command, accounts: {} }),
@@ -647,6 +725,8 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           elicit: null,
           controls: null,
           cache: null,
+          // The deployer sees why the app's declarations failed, in the app's own terms.
+          explain: true,
         });
         return yield* protocol.response(command, reply);
       }).pipe(Effect.withSpan("runtime.app.declare")),

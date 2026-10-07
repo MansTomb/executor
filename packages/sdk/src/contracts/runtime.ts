@@ -16,6 +16,7 @@ import {
   type WorkflowCommand,
 } from "apps/contracts";
 import { DatabaseFieldReserved } from "@executor-js/app-data/contracts";
+import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { BuildStage, SourceFiles, SourceLocation, type BuildMemoryExceeded } from "./deployment.ts";
 import { BuildId, Json } from "./shared.ts";
 
@@ -99,20 +100,71 @@ export class RuntimeBuildFailed extends Schema.TaggedError<RuntimeBuildFailed>()
     message: Schema.optional(BuildMessage),
     location: Schema.optional(SourceLocation),
   },
-) {}
+) {
+  /** The message quotes the deployer's source or its errors; telemetry records only the stage. */
+  get [RecordedMessage]() {
+    return `The build failed at its ${this.stage} stage`;
+  }
+}
 /** The retained build was absent, invalid or could not load in this host. */
 export class RuntimeBuildUnavailable extends Schema.TaggedError<RuntimeBuildUnavailable>()(
   "RuntimeBuildUnavailable",
   {},
 ) {}
 /**
- * The framework handler returned an invalid protocol response, or its Worker failed to load.
- * `message` is the underlying runtime failure; tool callers never receive it.
+ * Each way an app's Worker or data facet can fail a call without an answer from the app's code.
+ * The platform kinds match the data facet's own: a call's runtime and its data facet fail alike.
+ */
+export const RuntimeFailure = Schema.Literals([
+  "cold-start",
+  "memory",
+  "cpu",
+  "timeout",
+  "overloaded",
+  "reset",
+  "disconnected",
+  "hung",
+  "internal",
+  "invalid-reply",
+  "data",
+  "build",
+  "unsupported",
+  "unrecognized",
+]);
+export type RuntimeFailure = typeof RuntimeFailure.Type;
+/** The fixed description of each runtime failure, for the host's diagnostics. */
+export const runtimeFailures: Record<RuntimeFailure, string> = {
+  "cold-start": "The app's Worker could not be loaded",
+  memory: "The app's Worker exceeded its memory limit",
+  cpu: "The app's Worker exceeded its CPU time limit",
+  timeout: "The app's Worker exceeded a time limit",
+  overloaded: "The app's Worker was overloaded",
+  reset: "The runtime reset the app's Worker",
+  disconnected: "The connection to the app's Worker was lost",
+  hung: "The app's Worker can never answer",
+  internal: "The runtime failed internally",
+  "invalid-reply": "The app's reply does not match its host protocol",
+  data: "The app's data supervisor failed the call",
+  build: "The app's build could not be read",
+  unsupported: "The app's build speaks a host protocol this host does not run",
+  unrecognized: "The app's Worker failed for a reason the runtime did not recognize",
+};
+/**
+ * The framework handler returned an invalid protocol response, or its Worker failed to load or
+ * run. `reason` is the kind of failure, the only part telemetry records. `message` is the failure
+ * in the app's own terms, which can quote the app's text; only a deploy's declaration step sets
+ * it, for the deployer. Tool callers never receive it.
  */
 export class RuntimeProtocolFailed extends Schema.TaggedError<RuntimeProtocolFailed>()(
   "RuntimeProtocolFailed",
-  { message: Schema.optional(BuildMessage) },
-) {}
+  { reason: Schema.optional(RuntimeFailure), message: Schema.optional(BuildMessage) },
+) {
+  get [RecordedMessage]() {
+    return this.reason === undefined && !this.message
+      ? undefined
+      : runtimeFailures[this.reason ?? "unrecognized"];
+  }
+}
 /**
  * The app's `apps` framework speaks a host protocol this host does not run. Builds fail before
  * compiling, and retained builds fail before loading, rather than at module link or decode time.

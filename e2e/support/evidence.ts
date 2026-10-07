@@ -66,6 +66,14 @@ export class Telemetry extends Context.Service<
       operation: string,
       attributes: Readonly<Record<string, string>>,
     ) => Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable>;
+    /**
+     * The delivered log records of one trace, and those whose body contains `text` in any trace,
+     * as the collector returns them. Only a collector this suite runs can be read.
+     */
+    readonly logs: (
+      traceId: string,
+      text: string,
+    ) => Effect.Effect<ReadonlyArray<string>, TelemetryUnavailable>;
     readonly export: (
       spans: ReadonlyArray<ClientSpan>,
     ) => Effect.Effect<number, TelemetryUnavailable>;
@@ -143,6 +151,29 @@ export class Telemetry extends Context.Service<
             }),
           ).pipe(Effect.map((found) => found.data.map(({ span }) => span.tags))),
         search: (operation, attributes) => search(operation, attributes, SpanQuery),
+        logs: (traceId, text) =>
+          target.metadata.target === "cloud" && target.metadata.mode === "attached"
+            ? Effect.fail(new TelemetryUnavailable())
+            : safe(
+                Effect.scoped(
+                  Effect.gen(function* () {
+                    const base = yield* origin;
+                    const byBody = new URL("/api/logs/search", base);
+                    byBody.searchParams.set("body", text);
+                    byBody.searchParams.set("lookback", "1d");
+                    const read = (url: URL) =>
+                      Effect.gen(function* () {
+                        const response = yield* http.get(url.href);
+                        if (response.status !== 200) return yield* new TelemetryUnavailable();
+                        return yield* response.text;
+                      });
+                    return [
+                      yield* read(new URL(`/api/traces/${traceId}/logs`, base)),
+                      yield* read(byBody),
+                    ];
+                  }),
+                ),
+              ),
         export: (spans) =>
           safe(
             Effect.scoped(

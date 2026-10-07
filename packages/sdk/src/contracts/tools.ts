@@ -311,6 +311,26 @@ const mcpFailure = ({ phase, reason, status, upstream, session }: McpError): Mcp
   ...(session === undefined ? {} : { session }),
 });
 
+/**
+ * What traces and error reports record for a failure an app or its MCP server stated: who failed,
+ * in Executor's words, with the typed reason, phase and status. Never the app's message, error
+ * name, code or fields, nor a service's stated error; those reach only the caller. Every value
+ * interpolated is a closed literal, except a status: released protocols accept any number for an
+ * MCP status, so only an HTTP status is recorded.
+ */
+const recordedStatus = (status: number | undefined) =>
+  status !== undefined && Number.isInteger(status) && status >= 100 && status <= 599
+    ? ` (HTTP ${status})`
+    : "";
+const recordedApp = ({ source }: AppFailure) =>
+  source === "storage"
+    ? "the app's data store failed"
+    : source === "service"
+      ? "the app's API call failed"
+      : "the app's code raised an error";
+const recordedMcp = ({ phase, reason, status }: McpFailure) =>
+  `the app's MCP server failed during ${phase} (${reason})${recordedStatus(status)}`;
+
 /** Present an MCP server failure from its safe phase, reason, HTTP status and JSON-RPC error. */
 export const mcpFailurePresentation = ({
   phase,
@@ -479,6 +499,16 @@ export const AppEvaluationFailed = UserFacingError.define({
      */
     mcp: Schema.optional(McpFailure),
   },
+  recorded: ({ skills, mcp, failure }) =>
+    `Tools could not be loaded: ${
+      mcp !== undefined
+        ? recordedMcp(mcp)
+        : failure !== undefined
+          ? recordedApp(failure)
+          : skills !== undefined
+            ? `the app's skill source failed (${skills.reason})${recordedStatus(skills.status)}`
+            : "the app's definition could not be evaluated"
+    }`,
   presentation: ({ skills, mcp, failure }) =>
     mcp !== undefined
       ? mcpFailurePresentation(mcp)
@@ -561,6 +591,8 @@ export const AppProviderFailed = UserFacingError.define({
      */
     credentialsRenewed: Schema.optional(Schema.Literal(true)),
   },
+  recorded: ({ reason, status, phase }) =>
+    `The connected service failed (${reason})${recordedStatus(status)}${phaseText(phase)}`,
   presentation: ({ reason, status, phase, upstream, account, credentialsRenewed }) => {
     const service = account === undefined ? "The connected service" : account.provider;
     const target = account === undefined ? "" : ` for account “${account.label}”`;
@@ -773,6 +805,12 @@ export const ToolCallFailed = ApiError.define({
     mcp: Schema.optional(McpFailure),
   },
   message: ({ reason }) => reason,
+  recorded: ({ failure, mcp }) =>
+    mcp !== undefined
+      ? `The tool failed: ${recordedMcp(mcp)}`
+      : failure !== undefined
+        ? `The tool failed: ${recordedApp(failure)}`
+        : "The tool failed after starting",
 });
 export type ToolCallFailed = typeof ToolCallFailed.Type;
 

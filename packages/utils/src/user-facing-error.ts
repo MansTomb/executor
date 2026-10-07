@@ -1,6 +1,7 @@
 import { Schema, SchemaGetter, type Cause } from "effect";
 import "effect/http-api";
 import { MessageField } from "./api-error.ts";
+import { RecordedMessage } from "./recorded-message.ts";
 
 /** Curated explanation and recovery. Never include raw diagnostics, credentials, or form values. */
 export interface ErrorPresentation {
@@ -45,6 +46,11 @@ type Definition<Tag extends string, Fields extends Schema.Struct.Fields> = Heade
   readonly fields: Fields & {
     readonly [Key in keyof PresentationProperties | "_tag" | "message"]?: never;
   };
+  /**
+   * What traces and error reports record instead of the description, when the description quotes
+   * an app's own error or a service's stated error for its caller. Only fixed text and typed fields.
+   */
+  readonly recorded?: (fields: Schema.Struct.Type<Fields>) => string;
 } & (
     | ErrorPresentation
     | {
@@ -160,6 +166,7 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
       get(this: Self): PresentationProperties[Key];
     };
   };
+  const recorded = definition.recorded;
   Object.defineProperties(DefinedError.prototype, {
     ...properties,
     [TypeId]: { value: TypeId },
@@ -168,6 +175,15 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
         return presentation(this).description;
       },
     },
+    ...(recorded === undefined
+      ? {}
+      : {
+          [RecordedMessage]: {
+            get(this: Self) {
+              return recorded(this);
+            },
+          },
+        }),
   });
   // SAFETY: Schema.Error and TaggedStruct construct and decode the fields and literal tag.
   // The complete, type-checked descriptor set above supplies the presentation on

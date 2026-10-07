@@ -12,7 +12,8 @@
     "./local": "./src/local.ts",
     "./files": "./src/files.ts",
     "./process": "./src/process.ts",
-    "./product-analytics": "./src/product-analytics.ts"
+    "./product-analytics": "./src/product-analytics.ts",
+    "./recorded-failure": "./src/recorded-failure.ts"
   },
   "scripts": {
     "build:motel": "bun scripts/build-motel.ts"

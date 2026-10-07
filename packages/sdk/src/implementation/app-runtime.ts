@@ -5,6 +5,7 @@
  */
 import { Effect, Option, Redacted, Result, Schema, type Scope, type Stream } from "effect";
 import { makeTelemetryForwarder, TelemetryBatch, traceHeaders } from "@executor-js/telemetry";
+import { recordAs } from "@executor-js/utils/recorded-message";
 import {
   AccountCheckResult,
   HostAccountCheckError,
@@ -39,6 +40,9 @@ import { appWorker, type AppCapabilities, type AppInvocation } from "./app-runne
 import { appProtocol } from "./app-protocols.ts";
 import { invocationElicitation } from "./worker-elicitation.ts";
 import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
+
+/** What telemetry records for an error an app's reply carried, beside the error's name. */
+const appErrorRecorded = "The app returned this error; its text is not recorded";
 
 /** The span recorded each time a host reads a build, to learn its protocol or cold-start it. */
 export const buildLoadSpan = "runtime.app.build.load";
@@ -192,9 +196,11 @@ export const appRuntime = (host: AppRuntimeHost) =>
           if (Result.isSuccess(collected) && collected.success.cacheChanged === true)
             yield* (yield* AppCacheChanges).changed(input.app);
           const reply = yield* Schema.decodeUnknownEffect(HostResponse)(body);
+          // The app wrote these errors. Their text reaches the caller each is for; telemetry
+          // records their names only.
           if (!reply.ok)
             return yield* Schema.decodeUnknownEffect(errors)(reply.error).pipe(
-              Effect.flatMap(Effect.fail),
+              Effect.flatMap((error) => Effect.fail(recordAs(error, appErrorRecorded))),
             );
           if (reply.toolError === true) {
             (yield* ToolResultObservation).failed();
@@ -211,7 +217,11 @@ export const appRuntime = (host: AppRuntimeHost) =>
             input.observeRevision?.(revision);
           return value;
         }),
-      ).pipe(Effect.catchTag("SchemaError", () => Effect.fail(new RuntimeProtocolFailed())));
+      ).pipe(
+        Effect.catchTag("SchemaError", () =>
+          Effect.fail(new RuntimeProtocolFailed({ reason: "invalid-reply" })),
+        ),
+      );
     const span = (operation: string) => `${host.name}.${operation}`;
     return {
       build: (input) => host.build(input).pipe(Effect.withSpan(span("build"))),

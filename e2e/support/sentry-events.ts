@@ -5,7 +5,15 @@ import { Target } from "./platform.ts";
 const Envelope = Schema.fromJsonString(Schema.Struct({ envelope: Schema.String }));
 export const SentryEvent = Schema.Struct({
   exception: Schema.optional(
-    Schema.Struct({ values: Schema.Array(Schema.Struct({ type: Schema.String })) }),
+    Schema.Struct({
+      values: Schema.Array(
+        Schema.Struct({
+          type: Schema.String,
+          value: Schema.optional(Schema.String),
+          stacktrace: Schema.optional(Schema.Struct({ frames: Schema.Array(Schema.Unknown) })),
+        }),
+      ),
+    }),
   ),
   user: Schema.optional(Schema.Struct({ id: Schema.String })),
   tags: Schema.optional(Schema.Record(Schema.String, Schema.Json)),

@@ -965,7 +965,8 @@ export const createAppHandler =
             toolError = true;
           },
         }),
-        // Name what failed on the span; the bounded message stays in the reply only.
+        // Name what failed on the span; the bounded message stays in the reply only. The host
+        // records an app's own error names and codes as `unrecognized` (telemetry `app-records`).
         Effect.tapError((error) =>
           (error._tag === "HostEvaluationFailed" ||
             error._tag === "HostOperationFailed" ||
@@ -998,7 +999,8 @@ export const createAppHandler =
       Effect.catchCause((cause) =>
         Cause.hasInterrupts(cause)
           ? Effect.interrupt
-          : Effect.logError(cause).pipe(
+          : // The cause can carry any text the app threw; its caller receives that, not the log.
+            Effect.logError("The app's request failed unexpectedly").pipe(
               Effect.andThen(
                 Schema.encodeEffect(HostError)(
                   declarationInvalid(
