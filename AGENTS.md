@@ -116,8 +116,12 @@ invitation-roles.spec.ts
 ````
 
 Spec files the PR adds or changes are always included. Write `none` for a change
-no scenario exercises, such as documentation. A description without the block, or an
-unknown file name, fails the `select` job.
+no scenario exercises, such as documentation. Write each name as it appears in
+`e2e/tests/`, optionally prefixed with `e2e/tests/`. The `select` job fails when the
+description has no block, a name is not a spec file there, or a named file is one these
+jobs never run: the release, desktop, billing and PGlite suites have their own
+`e2e/*.config.ts`, and the failure names the workflow or command that runs each one.
+A new spec file must have its scenarios in `e2e/test-plan.ts` or be included by such a config.
 
 Select specific files by default. A selection finishes in about five minutes; the full
 suite takes about fifteen and holds the runners other PRs wait for. Reserve `all` for
