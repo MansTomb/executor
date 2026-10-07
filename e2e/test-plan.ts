@@ -3894,6 +3894,18 @@ export const scenarios = {
       local: na("Hosted self-host covers the shared app runtime input formatting."),
     },
   },
+  mcpExecuteToolBlocked: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title: "MCP calls an app's approval policy denies say why and not to retry them unchanged",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na(
+        "Hosted self-host covers the shared MCP execute error presentation; the local tool runner covers the local dashboard.",
+      ),
+    },
+  },
   mcpExecuteServerRefused: {
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",

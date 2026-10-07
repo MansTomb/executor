@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
+import { Browser } from "../support/browser.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
@@ -225,6 +226,33 @@ export default defineApp({ accounts: {} }, async () => ({ tools: router({
   tree: query({ input: jsonSchema({ $schema: "https://json-schema.org/draft/2019-09/schema", $recursiveAnchor: true, type: "object", properties: { child: { $recursiveRef: "#" } }, anyOf: [{ required: ["name"] }, { required: ["id"] }] }) }, async () => "tree"),
   pick: query({ input: object({ version: literal("v1"), color: jsonSchema({ type: "string", enum: ${JSON.stringify(pickColors)} }) }) }, async (_, input) => input.color),
 }) }));`;
+
+// `remove` declares a policy that denies every call, as an app that never lets agents delete.
+const deniedAppSource = `import { defineApp, mutation, object, string, router } from "apps";
+export default defineApp({ accounts: {} }, async () => ({ tools: router({
+  remove: mutation({ input: object({ id: string() }), approval: () => "denied" }, async () => "removed"),
+}) }));`;
+
+/** The recovery a caught tool error carries as JSON, as an agent program reads it. */
+const CaughtRecovery = Schema.fromJsonString(
+  Schema.Struct({
+    code: Schema.String,
+    status: Schema.Number,
+    message: Schema.String,
+    recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
+  }),
+);
+
+/** The recovery an uncaught tool error carries in the execute response. */
+const UncaughtRecovery = Schema.Struct({
+  execution: Schema.Struct({
+    error: Schema.Struct({
+      response: Schema.Struct({
+        recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
+      }),
+    }),
+  }),
+});
 
 const Failed = Schema.Struct({
   status: Schema.Literal("completed"),
@@ -657,6 +685,72 @@ return messages;`,
           'Input failed validation: input.version: Expected "v1"',
           'Input failed validation: input.color: Expected one of "red", "orange", "yellow", "green", "blue", "indigo", "violet", "black", "white", "gray" and 2 more',
         ]);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.mcpExecuteToolBlocked.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { client, slug, id } = yield* hostedApp("Denied tool", deniedAppSource);
+        const app = `tools[${JSON.stringify(slug)}]`;
+        const blocked = yield* executeOnce(
+          client,
+          "Call a tool whose approval policy denies it",
+          `return await ${app}.remove({id: "fixture item"});`,
+          "tool-blocked-result.json",
+        );
+        const { error } = (yield* Schema.decodeUnknownEffect(Failed)(blocked.structured)).execution;
+        // The agent learns that the app's own policy refused the call and not to repeat it
+        // unchanged, not only the error's name.
+        expect(error.message).toBe(
+          "ToolBlocked (HTTP 403): The approval policy in the app’s code denied this call to “remove”. Recovery: Check what the app’s approval policy requires for this tool. If the call should be allowed, meet those requirements or, with the user’s agreement, change the policy and deploy it. Otherwise use a different tool.",
+        );
+        expect(error.response).toEqual({ code: "ToolBlocked", status: 403 });
+        const caught = yield* executeOnce(
+          client,
+          "Catch the denied call and read its recovery",
+          `try { await ${app}.remove({id: "fixture item"}); return "ran"; } catch (error) { return error.message; }`,
+          "tool-blocked-caught.json",
+        );
+        const completed = yield* Schema.decodeUnknownEffect(Completed)(caught.structured);
+        const recovery = yield* Schema.decodeUnknownEffect(CaughtRecovery)(
+          completed.execution.value,
+        );
+        expect(recovery.code).toBe("ToolBlocked");
+        expect(recovery.recovery.instructions).toContain("Do not retry the call unchanged.");
+        expect(recovery.recovery.instructions).toContain("Read the policy to see what it checks");
+        expect(recovery.recovery.instructions).toContain("user-approval");
+        // An uncaught failure carries the same recovery in its response.
+        const uncaught = yield* Schema.decodeUnknownEffect(UncaughtRecovery)(blocked.structured);
+        expect(uncaught.execution.error.response.recovery).toEqual(recovery.recovery);
+        // The dashboard's tool runner shows the same explanation and next step.
+        const actors = yield* Actors,
+          browser = yield* Browser;
+        yield* browser.login(actors.owner);
+        yield* browser.use("Open the denied tool in the Tools tab", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${id}?view=tools&tool=remove`),
+        );
+        yield* browser.use("Run the denied tool", (page) =>
+          page
+            .getByLabel("ID", { exact: true })
+            .fill("fixture item")
+            .then(() => page.getByRole("button", { name: "Run tool", exact: true }).click()),
+        );
+        expect(
+          yield* browser.use("The block is explained", (page) =>
+            page
+              .getByRole("alert")
+              .filter({ hasText: "approval policy" })
+              .waitFor()
+              .then(() =>
+                page.getByRole("alert").filter({ hasText: "approval policy" }).textContent(),
+              ),
+          ),
+        ).toBe(
+          "The approval policy in the app’s code denied this call to “remove”. Check what the app’s approval policy requires for this tool. If the call should be allowed, meet those requirements or, with the user’s agreement, change the policy and deploy it. Otherwise use a different tool.",
+        );
+        yield* browser.checkpoint("Denied tool call in the dashboard");
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

@@ -830,13 +830,23 @@ export const operationMcpFailure = (
       })
     : evaluationFailure(identity, error);
 
-/** The tool's approval policy blocked the call before its tool body ran. */
-export const ToolBlocked = ApiError.define({
+/**
+ * The tool's approval policy denied the call. The decision and the report of it come from the
+ * app's code, so the copy says whose decision it was without claiming what the app did.
+ */
+export const ToolBlocked = UserFacingError.define({
   tag: "ToolBlocked",
   status: 403,
   fields: { app: AppId, deployment: DeploymentId, tool: ToolName },
-  message: ({ tool }) =>
-    `The approval policy of “${tool}” blocked this call. The tool did not run.`,
+  presentation: ({ tool }) => ({
+    title: "Blocked by the app’s approval policy",
+    description: `The approval policy in the app’s code denied this call to “${tool}”.`,
+    recovery: {
+      action:
+        "Check what the app’s approval policy requires for this tool. If the call should be allowed, meet those requirements or, with the user’s agreement, change the policy and deploy it. Otherwise use a different tool.",
+      instructions: `The approval policy that “${tool}” declares in the app’s code returned \`denied\` for this call. Do not retry the call unchanged. Tell the user which tool was blocked. Read the policy to see what it checks: its input, the app’s configuration, or the user’s access. If the call should be allowed and a requirement is unmet, meet it (for example, ask the user to enable the setting or grant the access) and call the tool again. Change the app’s source only when the policy itself is wrong and the user agrees: find the tool’s \`approval\` option, or the \`withApprovals\` policy over its router, return \`user-approval\` to ask the user or \`approved\` to run it, then deploy. Otherwise reach the goal with a different tool.`,
+    },
+  }),
 });
 export type ToolBlocked = typeof ToolBlocked.Type;
 
