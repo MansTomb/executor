@@ -12,6 +12,7 @@ import { selfHostConfiguration } from "../self-host/src/implementation/bootstrap
 import { devAppName, freePort } from "../../../scripts/dev-host.ts";
 import { developmentSettings, developmentSignIn } from "./development.ts";
 import { accessCheckFixture } from "./access-check-fixture.ts";
+import { statementHoldFixture } from "./statement-hold-fixture.ts";
 
 /**
  * Zero-config defaults; explicit settings win. The hostname is per checkout so browser
@@ -48,10 +49,12 @@ const command = Command.make("test-self-host", {
       const server = Layer.unwrap(
         Effect.gen(function* () {
           const development = yield* developmentSignIn(target, organization);
-          const product = yield* selfHostRoutes;
+          const statementHold = yield* statementHoldFixture;
+          const product = yield* statementHold.provide(selfHostRoutes);
           const routes = Layer.mergeAll(
             HttpRouter.add("GET", "/api/devtools", development.status),
             HttpRouter.add("POST", "/api/devtools/operator", development.signIn),
+            statementHold.routes,
             product,
             accessCheckFixture,
           );

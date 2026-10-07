@@ -168,8 +168,6 @@ export function resolve(
   lifecycle?: ResourceLifecycle,
 ) {
   return Effect.gen(function* () {
-    if (state.profile !== undefined && lifecycle?.profileResolving)
-      yield* lifecycle.profileResolving(state.profile);
     const selections = new Map<string, ResolvedAccounts[string]>();
     // An account selected for several slots is resolved once per invocation, in selection
     // order. A token renewed for one slot is the token every slot uses, even when it already
@@ -179,7 +177,18 @@ export function resolve(
       for (const account of accounts)
         if (!distinct.has(account.id))
           distinct.set(account.id, { account, provider: required.definition });
-    const resolvedFields = yield* resolveAccount([...distinct.values()]);
+    const selected = [...distinct.values()];
+    // The profile's subject and its accounts are rechecked together, before any credential.
+    const resolvedFields =
+      state.profile !== undefined && lifecycle?.profileResolving
+        ? yield* resolveAccount(
+            selected,
+            lifecycle.profileResolving(
+              state.profile,
+              selected.map(({ account }) => account),
+            ),
+          )
+        : yield* resolveAccount(selected);
     const credentials = new Map(
       [...distinct.keys()].map((id, index) => [id, resolvedFields[index]] as const),
     );

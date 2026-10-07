@@ -1442,17 +1442,20 @@ export const makeOAuth = (
     );
   /**
    * Resolve each selected account's credentials in order. Product authority for all of them is
-   * checked in one read first, and refused in selection order. Once one account has waited for
-   * or performed a renewal, that read can be seconds old, so each later account is checked
-   * again immediately before it resolves.
+   * checked in one read first, and refused in selection order; a caller that checks it with the
+   * profile supplies that read. Once one account has waited for or performed a renewal, that read
+   * can be seconds old, so each later account is checked again immediately before it resolves.
    */
   const resolveSelected = (
     selected: ReadonlyArray<{
       readonly account: StoredAccount;
       readonly provider: ProviderDefinition;
     }>,
+    authority: Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError> = authorized(
+      selected.map(({ account }) => account),
+    ),
   ) =>
-    Effect.flatMap(authorized(selected.map(({ account }) => account)), (checked) => {
+    Effect.flatMap(authority, (checked) => {
       const batch: Resolution = { contested: false };
       return Effect.forEach(selected, ({ account, provider }) =>
         Effect.gen(function* () {

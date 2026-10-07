@@ -30,10 +30,15 @@ export interface AccountConnectionCompletion {
 }
 /** Product metadata participates in the resource transaction; hooks must perform no external I/O. */
 export interface ResourceLifecycle {
-  /** Recheck the saved subject before any profile-backed execution, including background work. */
+  /**
+   * Recheck the saved subject before any profile-backed execution, including background work,
+   * together with the selected accounts `accountsResolving` would check for that subject. Returns
+   * the IDs of the accounts the product still authorizes; the SDK refuses the others.
+   */
   readonly profileResolving?: (
     profile: import("./profiles.ts").Profile,
-  ) => Effect.Effect<void, StorageError>;
+    accounts: readonly Account[],
+  ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
   /**
    * Recheck product authority before acquiring account credentials, and again after any renewal.
    * Returns the IDs of the accounts the product still authorizes; the SDK refuses the others.

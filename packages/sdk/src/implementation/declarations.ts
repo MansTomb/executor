@@ -25,7 +25,7 @@ import {
 } from "../contracts/declarations.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import { CurrentProfile } from "../contracts/profiles.ts";
-import { StorageError } from "../contracts/shared.ts";
+import { type AccountId, StorageError } from "../contracts/shared.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { makeHandoff } from "./handoff.ts";
 import { resolve, type InvocationSnapshot } from "./tools.ts";
@@ -139,25 +139,27 @@ export const makeDeclarations = (options: {
   const authorize = (state: InvocationSnapshot) =>
     Effect.gen(function* () {
       const lifecycle = options.lifecycle;
-      if (state.profile !== undefined && lifecycle?.profileResolving)
-        yield* lifecycle.profileResolving(state.profile);
       const selected = state.selections.flatMap(({ required, accounts }) =>
         accounts.map((account) => ({ account, provider: required.definition })),
       );
       const accounts = selected.map(({ account }) => account);
-      // Product authority for every account is one read, alongside the grant checks.
-      const authorized =
-        lifecycle === undefined || !Arr.isReadonlyArrayNonEmpty(accounts)
+      const permitted = (allowed: ReadonlySet<AccountId>) =>
+        accounts.every((account) => allowed.has(account.id))
           ? Effect.void
-          : lifecycle
-              .accountsResolving(accounts)
-              .pipe(
-                Effect.flatMap((allowed) =>
-                  accounts.every((account) => allowed.has(account.id))
-                    ? Effect.void
-                    : Effect.fail(new StorageError()),
-                ),
-              );
+          : Effect.fail(new StorageError());
+      // The profile's subject and its accounts are rechecked together, before the grant checks.
+      const profileChecked =
+        state.profile !== undefined && lifecycle?.profileResolving !== undefined
+          ? lifecycle.profileResolving(state.profile, accounts).pipe(Effect.flatMap(permitted))
+          : undefined;
+      if (profileChecked !== undefined) yield* profileChecked;
+      // Otherwise product authority for every account is one read, alongside the grant checks.
+      const authorized =
+        profileChecked !== undefined ||
+        lifecycle === undefined ||
+        !Arr.isReadonlyArrayNonEmpty(accounts)
+          ? Effect.void
+          : lifecycle.accountsResolving(accounts).pipe(Effect.flatMap(permitted));
       yield* Effect.all(
         [
           authorized,

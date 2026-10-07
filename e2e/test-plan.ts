@@ -3764,6 +3764,40 @@ export const scenarios = {
       local: na("Local uses its instance credential."),
     },
   },
+  toolCallStatements: {
+    fixtures: "actors",
+    file: "tool-call-statements.spec.ts",
+    title: "An MCP tool call checks its access in one statement and its subject in one more",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      local: na("Local has no hosted organization policies."),
+    },
+  },
+  toolCallHeldCheck: {
+    fixtures: "actors",
+    file: "tool-call-held-check.spec.ts",
+    title:
+      "a tool call whose read-only check waits on the app runs the profile and credentials saved meanwhile",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Holds the app's listing on a loopback resource; Cloud app Workers fetch through one fixed service binding.",
+      ),
+      local: na("Local has no hosted organization policies."),
+    },
+  },
+  toolCallHeldAccess: {
+    fixtures: "actors",
+    file: "tool-call-held-check.spec.ts",
+    title:
+      "a tool call runs the profile and the key or OAuth account saved while its access check waits",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The statement hold is mounted by the self-host test entry point."),
+      local: na("Local has no hosted organization policies."),
+    },
+  },
   localMcpGrantRefusals: {
     file: "local-mcp-connections.spec.ts",
     title: "Local MCP names the tool, runs-as target or app a narrowed connection excludes",
