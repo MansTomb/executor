@@ -59,6 +59,8 @@ export const AccountAppHealth = Schema.Struct({
       status: AccountCheckStatus,
       checkedAt: Schema.Date,
       current: Schema.Boolean,
+      /** Why the check failed, as the app or host explained it. Absent when it gave no reason. */
+      message: Schema.optionalKey(Schema.String),
     }),
   ),
 });

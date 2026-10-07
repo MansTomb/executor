@@ -28,7 +28,12 @@ const Health = Schema.Struct({
       app: Schema.String,
       checkable: Schema.Boolean,
       check: Schema.NullOr(
-        Schema.Struct({ status: Schema.String, checkedAt: Schema.String, current: Schema.Boolean }),
+        Schema.Struct({
+          status: Schema.String,
+          checkedAt: Schema.String,
+          current: Schema.Boolean,
+          message: Schema.optionalKey(Schema.String),
+        }),
       ),
     }),
   ),
@@ -197,9 +202,11 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         expect(reportedAt).not.toBeNull();
 
         // Failures are classified per app. The plain app's check does not call the service, so it
-        // still passes, and the identity reported earlier is kept with its original time.
-        for (const [answer, status] of [
-          [{ kind: "status", status: 401 }, "credentials_rejected"],
+        // still passes, and the identity reported earlier is kept with its original time. A check
+        // that fails without a status naming the cause keeps the reason, including running out of
+        // time.
+        for (const [answer, status, message] of [
+          [{ kind: "status", status: 401 }, "credentials_rejected", undefined],
           [
             {
               kind: "status",
@@ -207,17 +214,22 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
               headers: { "www-authenticate": 'Bearer error="insufficient_scope"' },
             },
             "forbidden",
+            undefined,
           ],
-          [{ kind: "status", status: 403 }, "check_failed"],
-          [{ kind: "status", status: 503 }, "upstream_unavailable"],
-          [{ kind: "hang" }, "check_failed"],
+          [{ kind: "status", status: 403 }, "check_failed", "The service answered HTTP 403."],
+          [{ kind: "status", status: 503 }, "upstream_unavailable", undefined],
+          [{ kind: "hang" }, "check_failed", "The check did not finish within 15 seconds."],
         ] as const) {
           yield* upstream.answer(answer);
           const failed = yield* check();
-          expect(entry(failed, identity)?.check, JSON.stringify(answer)).toMatchObject({
+          expect(entry(failed, identity)?.check, JSON.stringify(answer)).toEqual({
             status,
+            checkedAt: expect.any(String),
             current: true,
+            ...(message === undefined ? {} : { message }),
           });
+          // The reason is kept with the result, not only returned by the check.
+          expect(entry(yield* read(), identity)?.check?.message).toBe(message);
           expect(entry(failed, plain)?.check?.status).toBe("healthy");
           expect(failed.info?.displayName).toBe("Synthetic Person");
           expect(failed.infoCheckedAt).toBe(reportedAt);
@@ -225,6 +237,29 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         const rejected = yield* read();
         expect(JSON.stringify(rejected)).not.toContain("synthetic failure");
         expect(JSON.stringify(rejected)).not.toContain(acceptedToken);
+
+        // The account's health shows why the last check failed.
+        yield* browser.login(actors.owner);
+        yield* browser.use("Open the accounts with a failed check", (page) =>
+          page
+            .goto(`/org/${actors.organization.slug}/accounts`)
+            .then(() => page.getByText("Synthetic Person").first().waitFor()),
+        );
+        yield* browser.use("Open the failed account's health", (page) =>
+          page
+            .getByRole("button", { name: "Manage Default" })
+            .click()
+            .then(() => page.getByRole("menuitem", { name: "Check health" }).click()),
+        );
+        expect(
+          yield* browser.use("The reason is shown with the failed check", (page) =>
+            page.getByRole("dialog").locator("[data-check-message]").first().innerText(),
+          ),
+        ).toBe("The check did not finish within 15 seconds.");
+        yield* browser.checkpoint("Failed check with its reason");
+        yield* browser.use("Close the failed account's health", (page) =>
+          page.getByRole("button", { name: "Close", exact: true }).first().click(),
+        );
 
         // New credentials make every earlier result outdated rather than current.
         yield* upstream.answer({ kind: "user" });
@@ -261,10 +296,10 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
             fields: { token: acceptedToken },
           })).status,
         ).toBe(200);
-        expect(entry(yield* check(), identity)?.check).toMatchObject({
-          status: "healthy",
-          current: true,
-        });
+        const recovered = entry(yield* check(), identity)?.check;
+        expect(recovered).toMatchObject({ status: "healthy", current: true });
+        // A passing check clears the earlier failure's reason.
+        expect(recovered?.message).toBeUndefined();
         const redeployed = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
           files: [
             {
@@ -281,7 +316,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         });
 
         // The account list marks the outdated result and shows the reported identity.
-        yield* browser.login(actors.owner);
         yield* browser.use("Open the accounts", (page) =>
           page
             .goto(`/org/${actors.organization.slug}/accounts`)

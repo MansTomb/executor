@@ -42,7 +42,7 @@ export function AccountCheckDot({ health }: { readonly health: AccountAppHealth 
   const check = health?.check;
   if (check === null || check === undefined) return null;
   const { label, tone } = describeAccountCheck(check.status);
-  const text = check.current ? label : `${label} (outdated)`;
+  const text = `${check.current ? label : `${label} (outdated)`}${check.message === undefined ? "" : `: ${check.message}`}`;
   return (
     <span
       className={`size-1.5 shrink-0 rounded-full ${check.current ? tones[tone] : tones.muted}`}
@@ -179,7 +179,7 @@ export function AccountHealthPanel<E>({
   );
 }
 
-/** One app's latest check, spelled out with its time. */
+/** One app's latest check, spelled out with its time and, when it failed, the reason given. */
 export function AccountCheckResult({ health }: { readonly health: AccountAppHealth | undefined }) {
   if (health === undefined || (!health.checkable && health.check === null))
     return <span className="text-[12px] text-muted-foreground">No check</span>;
@@ -187,15 +187,22 @@ export function AccountCheckResult({ health }: { readonly health: AccountAppHeal
     return <span className="text-[12px] text-muted-foreground">Not checked</span>;
   const { label, tone } = describeAccountCheck(health.check.status);
   return (
-    <span className="inline-flex items-center gap-2 text-[12px] text-muted-foreground">
-      <span
-        className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
-        data-check-status={health.check.status}
-        data-check-current={health.check.current}
-      >
-        {health.check.current ? label : `${label} · outdated`}
+    <span className="inline-flex min-w-0 flex-col items-end gap-1 text-[12px] text-muted-foreground">
+      <span className="inline-flex items-center gap-2">
+        <span
+          className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
+          data-check-status={health.check.status}
+          data-check-current={health.check.current}
+        >
+          {health.check.current ? label : `${label} · outdated`}
+        </span>
+        <LocalTime value={health.check.checkedAt} options={shortMoment} />
       </span>
-      <LocalTime value={health.check.checkedAt} options={shortMoment} />
+      {health.check.message !== undefined && (
+        <span className="max-w-[28rem] text-right wrap-anywhere" data-check-message>
+          {health.check.message}
+        </span>
+      )}
     </span>
   );
 }

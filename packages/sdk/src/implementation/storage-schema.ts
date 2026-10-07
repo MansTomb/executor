@@ -282,10 +282,22 @@ const grantedAccounts = table("executor_accounts", {
   allowedHosts: column("allowed_hosts", Schema.NullOr(Schema.Json)).default(null),
 });
 
+/** Tables of the 4.0.5 layout. */
+export const version405Tables = { ...version404Tables, accounts: grantedAccounts };
+
+/**
+ * Version 4.0.6 keeps why the latest check failed, as the app or host explained it, with account
+ * secrets already replaced. Null for passing checks and for checks recorded before this version.
+ */
+const explainedAccountChecks = table("executor_account_checks", {
+  ...accountChecks.columns,
+  message: column("message", Schema.NullOr(Schema.String)).default(null),
+});
+
 /** Current ORM layout. Profiles own account selections; apps declare requirements. */
 export const storageSchema = schema({
-  version: "4.0.5",
-  tables: { ...version404Tables, accounts: grantedAccounts },
+  version: "4.0.6",
+  tables: { ...version405Tables, accountChecks: explainedAccountChecks },
   relations: {
     accounts: ({ one }) => ({
       providerDefinition: one("providers", ["provider", "id"]).foreignKey(),

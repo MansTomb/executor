@@ -7,6 +7,7 @@ import {
   version402Tables,
   version403Tables,
   version404Tables,
+  version405Tables,
   version4Tables,
 } from "./storage-schema.ts";
 
@@ -83,6 +84,19 @@ export const storageSchemas = [
   }),
   // Additive: a nullable column the running server never names. Existing accounts read as
   // connected without hosts, which is how they behave before this version.
+  schema({
+    version: "4.0.5",
+    tables: version405Tables,
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+  }),
+  // Additive: a nullable check message the running server never names. Existing checks have none.
   storageSchema,
 ] as const;
 
