@@ -95,6 +95,7 @@ export const SkillDefinitionInvalid = ApiError.define({
     ]),
   },
   message: ({ file, reason }) => skillDefinitionFailures[reason](file),
+  recorded: ({ reason }) => `The app's skill definition is invalid (${reason})`,
 });
 export type SkillDefinitionInvalid = typeof SkillDefinitionInvalid.Type;
 

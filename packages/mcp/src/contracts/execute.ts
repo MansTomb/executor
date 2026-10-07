@@ -67,6 +67,7 @@ export const AppDiscoveryTimedOut = UserFacingError.define({
   tag: "AppDiscoveryTimedOut",
   status: 504,
   fields: { app: Schema.String, elapsedMs: Schema.Number },
+  recorded: ({ elapsedMs }) => `Listing the app's tools timed out after ${elapsedMs}ms`,
   presentation: ({ elapsedMs }) => ({
     title: "App tools did not load in time",
     description: `Listing this app's tools timed out after ${elapsedMs}ms in this execution, so its tools are unavailable here. A listing that was still running continues in the background, so a slow app usually loads in a later execution. Other apps are not affected.`,

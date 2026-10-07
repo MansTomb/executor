@@ -155,6 +155,7 @@ export const AccountFieldsInvalid = ApiError.define({
   fields: { provider: ProviderId, method: AuthMethodName },
   message: ({ method }) =>
     `The submitted account fields do not match the “${method}” method's declared fields.`,
+  recorded: () => "The submitted account fields do not match the method's declared fields",
 });
 export type AccountFieldsInvalid = typeof AccountFieldsInvalid.Type;
 

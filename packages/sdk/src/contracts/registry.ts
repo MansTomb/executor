@@ -121,6 +121,10 @@ export const RegistryError = ApiError.define({
     reason === "status" && status !== undefined
       ? `The public app registry responded with HTTP ${status}.`
       : registryFailures[reason],
+  recorded: ({ reason, status }) =>
+    reason === "status" && status !== undefined
+      ? `The public app registry responded with HTTP ${status}.`
+      : registryFailures[reason],
 });
 export type RegistryError = typeof RegistryError.Type;
 /** Public reads require a selected commit; a changed listing never silently selects newer code. */

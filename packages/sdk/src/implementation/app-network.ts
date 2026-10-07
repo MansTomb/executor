@@ -12,6 +12,7 @@
  * answer the service's side could have produced, and reaches the app unchanged.
  */
 import { Schema } from "effect";
+import { RecordedMessage } from "@executor-js/utils/recorded-message";
 
 /**
  * Executor's app network failed before the service answered an app's request. The request may have
@@ -25,6 +26,10 @@ export class NetworkUnreachable extends Schema.TaggedError<NetworkUnreachable>()
 ) {
   override get message() {
     return "Executor's connection to the service failed before it answered. The request may have reached the service.";
+  }
+  /** Fixed text: telemetry records the message itself. */
+  get [RecordedMessage]() {
+    return this.message;
   }
 }
 

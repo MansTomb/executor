@@ -3561,6 +3561,19 @@ export const scenarios = {
       cloud: na("clientRejectionReporting covers hosted request rejections."),
     },
   },
+  mcpTelemetryPrivacy: {
+    fixtures: "actors",
+    file: "mcp-telemetry-privacy.spec.ts",
+    title:
+      "MCP tool calls deliver their tool name and outcome, never the caller's arguments, results or names",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na(
+        "Local serves the same MCP package; the delivered spans are checked on hosted targets.",
+      ),
+    },
+  },
   observabilityOutcomes: {
     fixtures: "actors",
     file: "observability-outcomes.spec.ts",

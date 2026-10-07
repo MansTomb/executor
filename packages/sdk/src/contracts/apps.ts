@@ -198,6 +198,7 @@ export const AppSlugTaken = ApiError.define({
     existing === undefined
       ? `Another app already uses the address “${slug}”, which this name also produces. Choose a different name.`
       : `The app “${existing.name}” (${existing.app}) already uses the address “${slug}”, which this name also produces. Choose a different name, or deploy to that app by its ID.`,
+  recorded: () => "Another app already uses the address this name produces",
 });
 export type AppSlugTaken = typeof AppSlugTaken.Type;
 

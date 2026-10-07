@@ -47,8 +47,10 @@ type Definition<Tag extends string, Fields extends Schema.Struct.Fields> = Heade
     readonly [Key in keyof PresentationProperties | "_tag" | "message"]?: never;
   };
   /**
-   * What traces and error reports record instead of the description, when the description quotes
-   * an app's own error or a service's stated error for its caller. Only fixed text and typed fields.
+   * What traces and error reports record beside the tag. A fixed description is recorded as is; a
+   * presentation derived from fields is recorded only through this, from fixed text and closed
+   * fields, never a value the caller chose, an app's text or a service's reply. Without it the
+   * error is recorded by its tag alone.
    */
   readonly recorded?: (fields: Schema.Struct.Type<Fields>) => string;
 } & (
@@ -166,7 +168,8 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
       get(this: Self): PresentationProperties[Key];
     };
   };
-  const recorded = definition.recorded;
+  const fixed = "presentation" in definition ? undefined : definition.description;
+  const recorded = definition.recorded ?? (fixed === undefined ? undefined : () => fixed);
   Object.defineProperties(DefinedError.prototype, {
     ...properties,
     [TypeId]: { value: TypeId },

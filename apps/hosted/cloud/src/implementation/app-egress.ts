@@ -5,6 +5,7 @@
  * or Executor failing, and is reported.
  */
 import { Schema } from "effect";
+import { RecordedMessage } from "@executor-js/utils/recorded-message";
 
 /**
  * Executor's app network failed to send an app's request, or the outbound itself failed. The
@@ -22,6 +23,10 @@ export class AppEgressFailed extends Schema.TaggedError<AppEgressFailed>()("AppE
     return this.stage === "send"
       ? `Executor's app network could not send an app's request (${this.failure}).`
       : `Executor's app outbound failed while handling an app's request (${this.failure}).`;
+  }
+  /** Fixed text and closed fields: telemetry records the message itself. */
+  get [RecordedMessage]() {
+    return this.message;
   }
 }
 

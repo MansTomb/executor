@@ -745,7 +745,6 @@ export const makeTools = (
           "executor.app.id": state.app.id,
           "executor.deployment.id": state.deployment.id,
           "executor.build.id": state.deployment.build,
-          "executor.tool.name": parsed.tool,
         });
         const kind = yield* kindOf(state, context, parsed.tool, parsed.kind);
         let toolError = false;
@@ -772,6 +771,13 @@ export const makeTools = (
             Effect.result,
           );
         const result = yield* executeRenewing(state, context, kind, execute);
+        // The tool is named once the app has answered for it: a name it lacks is the caller's text.
+        if (
+          Result.isSuccess(result) ||
+          (result.failure._tag !== "HostToolNotFound" &&
+            result.failure._tag !== "HostOperationNotFound")
+        )
+          yield* Effect.annotateCurrentSpan("executor.tool.name", parsed.tool);
         if (Result.isSuccess(result)) {
           if (toolError)
             yield* Effect.annotateCurrentSpan({

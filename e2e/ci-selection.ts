@@ -22,6 +22,9 @@
  * The description is read when the job runs. `gh stack submit` opens each pull request before
  * its author writes the description, and opens a stack's layers one at a time, so the job waits
  * a few minutes for an e2e block, and for a pull request above a `skip` layer, before it fails.
+ *
+ * A scenario that guards a dependency patch also runs whenever the pull request's tree pins that
+ * dependency or its patch differently from main, whatever the block says.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -38,6 +41,7 @@ import {
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { createHash } from "node:crypto";
 import type { Target } from "./report-model.ts";
 import { scenariosForSuite } from "./test-plan.ts";
 
@@ -69,7 +73,7 @@ const jobs = {
   cloud: {
     target: "cloud",
     pattern:
-      "Cloud onboarding|Cloud OAuth callbacks|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser decode and startup|Browser connection failures explain|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud MCP session objects (?:hold|make)|database failure while verifying an API key|Cloud cron wakes the schedule coordinator|app evaluation failures explain the likely cause|client request rejections are recorded on their request span|failure text reaches its caller|an app request Executor's network failed to send",
+      "Cloud onboarding|Cloud OAuth callbacks|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser decode and startup|Browser connection failures explain|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud MCP session objects (?:hold|make)|database failure while verifying an API key|Cloud cron wakes the schedule coordinator|app evaluation failures explain the likely cause|client request rejections are recorded on their request span|failure text reaches its caller|an app request Executor's network failed to send|MCP tool calls deliver their tool name and outcome",
   },
   "cloud-workers": {
     target: "cloud",
@@ -98,6 +102,71 @@ const jobFiles: ReadonlySet<string> = new Set(
     )
     .map((scenario) => scenario.file),
 );
+
+/**
+ * Bun applies a patch only while its selector names the installed version, and applies hunks that
+ * still fit after an upgrade; it reports neither. Only these scenarios show that a patch still does
+ * its job, so they run whenever a dependency's version or patch differs from main's. The tree is
+ * compared with main, not the pull request's base, so the top of a stack counts every layer.
+ */
+const patchGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
+  effect: ["mcp-telemetry-privacy.spec.ts"],
+};
+
+const Manifest = Schema.fromJsonString(
+  Schema.Struct({
+    dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+    overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+    patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  }),
+);
+
+/** A dependency's pinned version, override and patch selectors with their file's Git blob ID. */
+const pinned = (
+  manifest: typeof Manifest.Type,
+  dependency: string,
+  blob: (path: string) => string | undefined,
+) =>
+  JSON.stringify([
+    manifest.dependencies?.[dependency],
+    manifest.overrides?.[dependency],
+    Object.entries(manifest.patchedDependencies ?? {})
+      .filter(([selector]) => selector.startsWith(`${dependency}@`))
+      .map(([selector, path]) => [selector, blob(path)]),
+  ]);
+
+/** Guard spec files for every dependency this tree pins differently from main. */
+const guardedPatches = (mainManifest: string, mainPatches: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const main = yield* Schema.decodeUnknownEffect(Manifest)(mainManifest);
+    const head = yield* Schema.decodeUnknownEffect(Manifest)(
+      yield* fs.readFileString("package.json"),
+    );
+    // Main's patch directory as `<blob ID> <file name>` lines, from the contents API.
+    const mainBlobs = new Map(
+      mainPatches
+        .split("\n")
+        .map((line) => line.trim().split(" "))
+        .filter((parts) => parts.length === 2)
+        .map(([id, name]) => [`patches/${name}`, id]),
+    );
+    const headBlobs = new Map<string, string>();
+    for (const path of Object.values(head.patchedDependencies ?? {}))
+      if (yield* fs.exists(path)) {
+        const bytes = yield* fs.readFile(path);
+        headBlobs.set(
+          path,
+          createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex"),
+        );
+      }
+    return Object.entries(patchGuards).flatMap(([dependency, specs]) =>
+      pinned(main, dependency, (path) => mainBlobs.get(path)) ===
+      pinned(head, dependency, (path) => headBlobs.get(path))
+        ? []
+        : specs,
+    );
+  });
 
 const example = "```e2e\ngroups.spec.ts\ninvitation-roles.spec.ts\n```";
 
@@ -397,6 +466,7 @@ NodeRuntime.runMain(
     const pullRequest = yield* Config.String("E2E_PULL_REQUEST").pipe(Config.withDefault(""));
     const headRef = yield* Config.String("E2E_HEAD_REF").pipe(Config.withDefault(""));
     const repository = yield* Config.String("GITHUB_REPOSITORY").pipe(Config.withDefault(""));
+    const defaultBranch = yield* Config.String("E2E_DEFAULT_BRANCH").pipe(Config.withDefault(""));
     const runId = yield* Config.String("GITHUB_RUN_ID").pipe(Config.withDefault("<run-id>"));
     // In a week, 118 pull requests gained their block, or the layer above their skip, within an
     // hour of select first reading the description. 117 of them took under 3 minutes.
@@ -466,10 +536,29 @@ NodeRuntime.runMain(
     const changedElsewhere = changedSpecs.filter(
       (file) => (specFiles.has(file) || suites.has(file)) && !jobFiles.has(file),
     );
+    // Main's pinned dependencies and patches: patch guard scenarios run when they differ. The
+    // workflow names the default branch; without it there is no main to compare with.
+    const guarded =
+      read === undefined || defaultBranch === ""
+        ? []
+        : yield* guardedPatches(
+            yield* gh([
+              "api",
+              `repos/${repository}/contents/package.json?ref=${defaultBranch}`,
+              "-H",
+              "Accept: application/vnd.github.raw+json",
+            ]),
+            yield* gh([
+              "api",
+              `repos/${repository}/contents/patches?ref=${defaultBranch}`,
+              "--jq",
+              '.[] | "\\(.sha) \\(.name)"',
+            ]),
+          );
     const files =
       named === undefined || "all" in named
         ? undefined
-        : new Set([...named, ...changedSpecs.filter((file) => jobFiles.has(file))]);
+        : new Set([...named, ...guarded, ...changedSpecs.filter((file) => jobFiles.has(file))]);
 
     const selections = Object.entries(jobs).map(([job, { target, pattern }]) => {
       const base = new RegExp(pattern);
@@ -508,6 +597,9 @@ NodeRuntime.runMain(
             "Changed spec files these jobs do not run:",
             ...changedElsewhere.sort().map((file) => runsElsewhere(file, suites.get(file))),
           ]),
+      ...(guarded.length === 0
+        ? []
+        : ["", `A dependency patch differs from main, so its guards run: ${guarded.join(", ")}`]),
       "",
       "| Job | Scenarios |",
       "| --- | --- |",

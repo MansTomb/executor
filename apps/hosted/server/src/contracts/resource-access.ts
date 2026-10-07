@@ -108,6 +108,7 @@ export const AccessConflict = ApiError.define({
     ]),
   },
   message: ({ reason }) => accessConflicts[reason],
+  recorded: ({ reason }) => accessConflicts[reason],
 });
 export type AccessConflict = typeof AccessConflict.Type;
 const organization = { organization: OrganizationReference };

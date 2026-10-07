@@ -1,4 +1,5 @@
 /** OAuth wire protocol. Effect owns transport and cancellation; oauth4webapi validates responses. */
+import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { parseDestination } from "@executor-js/utils/url-policy";
 import { Clock, Effect, Match, Result, Schema } from "effect";
 import { Base64 } from "effect/encoding";
@@ -109,6 +110,9 @@ export class OAuthProtocolFailed extends Schema.TaggedError<OAuthProtocolFailed>
     ]
       .filter((part) => part !== undefined)
       .join(", ");
+  }
+  get [RecordedMessage]() {
+    return this.message;
   }
 }
 

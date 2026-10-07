@@ -203,6 +203,7 @@ export const GrantForbidden = UserFacingError.define({
   tag: "GrantForbidden",
   status: 403,
   fields: { refusal: GrantRefusal },
+  recorded: ({ refusal }) => `The grant does not authorize this request (${refusal.reason})`,
   presentation: ({ refusal }) => refusalPresentation(refusal),
 });
 export type GrantForbidden = typeof GrantForbidden.Type;

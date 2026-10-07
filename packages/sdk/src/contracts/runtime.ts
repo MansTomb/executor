@@ -177,6 +177,9 @@ export class RuntimeProtocolUnsupported extends Schema.TaggedError<RuntimeProtoc
   override get message() {
     return `This app's apps framework uses host protocol ${this.protocol}. This host supports protocol ${this.supported.join(", ")}.`;
   }
+  get [RecordedMessage]() {
+    return this.message;
+  }
 }
 /**
  * The app's `package.json` declares no `apps` version. Every app declares the exact release it uses;
@@ -188,6 +191,9 @@ export class RuntimeAppsDependencyMissing extends Schema.TaggedError<RuntimeApps
 ) {
   override get message() {
     return `Add "apps": "${this.version}" to package.json dependencies. Every app declares the exact apps version it uses; ${this.version} is this host's.`;
+  }
+  get [RecordedMessage]() {
+    return this.message;
   }
 }
 /** Loading retained code and decoding the framework protocol are host failures. */

@@ -539,3 +539,35 @@ index b388d17..ff4d359 100644
        }
        if (
          isRequest && admission.protocol?.runtime._tag === "Stateless" &&
+diff --git a/dist/ai/Toolkit.js b/dist/ai/Toolkit.js
+index 31c84bb6900978cc54dce79f7f9dabbe6f0943a0..6ef5ff2e5013cbf1c406f055a24fb1eaa941d788 100644
+--- a/dist/ai/Toolkit.js
++++ b/dist/ai/Toolkit.js
+@@ -101,9 +101,9 @@ const Proto = {
+       };
+       const handle = Effect.fnUntraced(function* (name, params, toolCallId, options) {
+         const tool = Object.hasOwn(tools, name) ? tools[name] : undefined;
++        // Tool arguments are caller content; spans record only the tool name.
+         yield* Effect.annotateCurrentSpan({
+-          tool: name,
+-          parameters: params
++          tool: name
+         });
+         if (Predicate.isUndefined(tool)) {
+           return yield* AiError.make({
+diff --git a/src/ai/Toolkit.ts b/src/ai/Toolkit.ts
+index c017c35adddc6ddc2e3cf9279db34b8fc6a957aa..072f6ea7bdcbd129472211aeaaa31e18dd4b9956 100644
+--- a/src/ai/Toolkit.ts
++++ b/src/ai/Toolkit.ts
+@@ -344,9 +344,9 @@ const Proto = {
+       ) {
+         const tool = Object.hasOwn(tools, name) ? tools[name] : undefined
+ 
++        // Tool arguments are caller content; spans record only the tool name.
+         yield* Effect.annotateCurrentSpan({
+-          tool: name,
+-          parameters: params
++          tool: name
+         })
+ 
+         if (Predicate.isUndefined(tool)) {

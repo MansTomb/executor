@@ -99,6 +99,7 @@ export const SourceError = ApiError.define({
     ]),
   },
   message: ({ reason }) => sourceFailures[reason],
+  recorded: ({ reason }) => sourceFailures[reason],
 });
 export type SourceError = typeof SourceError.Type;
 

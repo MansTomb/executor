@@ -65,6 +65,8 @@ export const OAuthClientUnavailable = ApiError.define({
   fields: { provider: ProviderId, method: AuthMethodName },
   message: ({ method }) =>
     `The “${method}” OAuth method needs a client configured on this host before an account can connect.`,
+  recorded: () =>
+    "The OAuth method needs a client configured on this host before an account can connect",
 });
 export type OAuthClientUnavailable = typeof OAuthClientUnavailable.Type;
 
@@ -119,6 +121,20 @@ export const OAuthFailureCause = Schema.Struct({
 });
 export type OAuthFailureCause = typeof OAuthFailureCause.Type;
 
+/** The protocol evidence of a failure: closed stages, codes and fields, and the HTTP status. */
+const causeEvidence = (cause: OAuthFailureCause) =>
+  `OAuth ${cause.stage} stage${cause.status === undefined ? "" : `, HTTP ${cause.status}`}${
+    cause.providerError === undefined ? "" : `, provider error ${cause.providerError}`
+  }${cause.field === undefined ? "" : `, response field ${cause.field}`}.`;
+
+/** What telemetry records for an OAuth failure: its kind, reason and protocol evidence. */
+const oauthRecorded = (
+  failure: string,
+  reason: string | undefined,
+  cause: OAuthFailureCause | undefined,
+) =>
+  `${failure}${reason === undefined ? "" : ` (${reason})`}${cause === undefined ? "" : `. ${causeEvidence(cause)}`}`;
+
 /** The longest `error` code Executor keeps from a service's error response, in characters. */
 export const maxOAuthServiceErrorLength = 128;
 /**
@@ -166,9 +182,7 @@ const withProtocolCause = (
   cause: OAuthFailureCause | undefined,
 ) => {
   if (cause === undefined) return presentation;
-  const evidence = `OAuth ${cause.stage} stage${cause.status === undefined ? "" : `, HTTP ${cause.status}`}${
-    cause.providerError === undefined ? "" : `, provider error ${cause.providerError}`
-  }${cause.field === undefined ? "" : `, response field ${cause.field}`}.`;
+  const evidence = causeEvidence(cause);
   return {
     ...presentation,
     recovery: {
@@ -325,6 +339,7 @@ export const OAuthSetupFailed = UserFacingError.define({
     serviceError: Schema.optional(OAuthServiceError),
     retryAfter: RetryAfter,
   },
+  recorded: ({ reason, cause }) => oauthRecorded("OAuth setup failed", reason, cause),
   presentation: ({ reason, callbackUrl, cause, serviceError, retryAfter }) => {
     // Forms that open client entry already show the callback, so only the fix prompt repeats it.
     const callback = callbackUrl === undefined ? "" : ` Executor’s callback URL is ${callbackUrl}.`;
@@ -546,6 +561,7 @@ export const OAuthCompletionFailed = UserFacingError.define({
     serviceError: Schema.optional(OAuthServiceError),
     retryAfter: RetryAfter,
   },
+  recorded: ({ reason, cause }) => oauthRecorded("Sign-in completion failed", reason, cause),
   presentation: ({ reason, cause, serviceError, retryAfter }) =>
     withCause(
       (
@@ -793,6 +809,7 @@ export const OAuthReconnectRequired = UserFacingError.define({
     reason: Schema.optional(Schema.Literals(["renewal_interrupted"])),
     cause: Schema.optional(OAuthFailureCause),
   },
+  recorded: ({ reason, cause }) => oauthRecorded("An account needs to reconnect", reason, cause),
   presentation: ({ reason, cause }) =>
     withCause(
       {
@@ -840,6 +857,8 @@ export const OAuthRenewalFailed = UserFacingError.define({
     cause: Schema.optional(OAuthFailureCause),
     retryAfter: RetryAfter,
   },
+  recorded: ({ reason, cause }) =>
+    oauthRecorded("Renewing an account's access failed", reason, cause),
   presentation: ({ reason, cause, retryAfter }) =>
     withCause(
       (

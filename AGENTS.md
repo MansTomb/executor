@@ -115,7 +115,10 @@ invitation-roles.spec.ts
 ```
 ````
 
-Spec files the PR adds or changes are always included. Write `none` for a change
+Spec files the PR adds or changes are always included, as are the scenarios that
+guard a dependency patch when the PR's tree pins that dependency or its patch
+differently from main (`patchGuards` in `e2e/ci-selection.ts`): Bun skips a stale
+patch without an error. Write `none` for a change
 no scenario exercises, such as documentation. Write each name as it appears in
 `e2e/tests/`, optionally prefixed with `e2e/tests/`. The `select` job fails when the
 description has no block, a name is not a spec file there, or a named file is one these
@@ -209,7 +212,7 @@ scenarios on Linux instead of moving them to a Mac.
   in parallel with the functional jobs. This preserves the four concurrent writers,
   the catalog and listing latency bounds and the inventory case's 120-second limit without
   competing with the functional job's product servers.
-- `e2e-cloud` runs Cloud onboarding, delivered observability, client rejection and app evaluation
+- `e2e-cloud` runs Cloud onboarding, delivered observability, MCP tool-call privacy, client rejection and app evaluation
   incident reporting, bearer refusal, billing polling, MCP session object database connection and
   API-key storage outage scenarios; the refusal scenario writes stored rows into the runner-owned
   Postgres. It starts the local Cloud Worker, a throwaway Postgres container and the service

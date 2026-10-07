@@ -27,6 +27,7 @@ export const AppDataNotFound = ApiError.define({
   status: 404,
   fields: { app: AppId, name: Schema.String },
   message: ({ name }) => `The selected deployment does not define the operation “${name}”.`,
+  recorded: () => "The selected deployment does not define the requested operation",
 });
 export type AppDataNotFound = typeof AppDataNotFound.Type;
 /** Invalid input, unavailable storage, or failed app code. Details stay in the host. */
@@ -36,6 +37,8 @@ export const AppDataFailed = ApiError.define({
   fields: { app: AppId, name: Schema.String },
   message: ({ name }) =>
     `The operation “${name}” failed: its input was invalid, app storage was unavailable, or the app's code failed.`,
+  recorded: () =>
+    "The operation failed: its input was invalid, app storage was unavailable, or the app's code failed",
 });
 export type AppDataFailed = typeof AppDataFailed.Type;
 

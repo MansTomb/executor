@@ -85,6 +85,7 @@ export const ConnectionNotFound = ApiError.define({
   status: 404,
   fields: { connection: ConnectionId },
   message: ({ connection }) => `No MCP connection “${connection}” exists for this user.`,
+  recorded: () => "No MCP connection with the requested ID exists for this user",
 });
 export type ConnectionNotFound = typeof ConnectionNotFound.Type;
 /** Another user, organization, or a revoked connection already uses this client-chosen ID. */
@@ -94,6 +95,7 @@ export const ConnectionIdTaken = ApiError.define({
   fields: { connection: ConnectionId },
   message: ({ connection }) =>
     `The MCP connection ID “${connection}” is already in use. Choose another ID.`,
+  recorded: () => "The requested MCP connection ID is already in use",
 });
 export type ConnectionIdTaken = typeof ConnectionIdTaken.Type;
 const connectionAccessFailures = {
@@ -109,6 +111,7 @@ export const ConnectionAccessInvalid = ApiError.define({
   fields: { app: AppId, reason: Schema.Literals(["app", "profile", "account", "target"]) },
   message: ({ app, reason }) =>
     `The connection's entry for app ${app} ${connectionAccessFailures[reason]}.`,
+  recorded: ({ reason }) => `The connection's entry for an app ${connectionAccessFailures[reason]}`,
 });
 export type ConnectionAccessInvalid = typeof ConnectionAccessInvalid.Type;
 

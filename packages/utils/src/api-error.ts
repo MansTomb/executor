@@ -31,8 +31,10 @@ type Definition<Tag extends string, Fields extends Schema.Struct.Fields> = Heade
    */
   readonly message: string | ((fields: Schema.Struct.Type<Fields>) => string);
   /**
-   * What traces and error reports record instead of `message`, when the message quotes an app's
-   * own error or a service's stated error for its caller. Only fixed text and typed fields.
+   * What traces and error reports record beside the tag. A fixed `message` is recorded as is; a
+   * message derived from fields is recorded only through this, from fixed text and closed fields,
+   * never a value the caller chose, an app's text or a service's reply. Without it the error is
+   * recorded by its tag alone.
    */
   readonly recorded?: (fields: Schema.Struct.Type<Fields>) => string;
 };
@@ -64,7 +66,7 @@ function withFields<const Tag extends string, const Fields extends Schema.Struct
     ),
     { httpApiStatus: definition.status, ...documentation },
   );
-  const recorded = definition.recorded;
+  const recorded = definition.recorded ?? (typeof message === "string" ? () => message : undefined);
   Object.defineProperties(DefinedError.prototype, {
     message: {
       get(this: Self) {

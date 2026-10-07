@@ -97,6 +97,7 @@ export const ToolElicitationFailed = ApiError.define({
     reason: ElicitationFailed.fields.reason,
   },
   message: ({ reason }) => elicitationFailures[reason],
+  recorded: ({ reason }) => elicitationFailures[reason],
 });
 export type ToolElicitationFailed = typeof ToolElicitationFailed.Type;
 
@@ -552,6 +553,10 @@ export const ToolListingTimedOut = UserFacingError.define({
     /** The listing is still running in the background. */
     running: Schema.Boolean,
   },
+  recorded: ({ elapsedMs, running }) =>
+    running
+      ? `Listing the app's tools has run for ${elapsedMs}ms, longer than this request waits`
+      : `Listing the app's tools timed out after ${elapsedMs}ms`,
   presentation: ({ elapsedMs, running }) => ({
     title: "App tools did not load in time",
     description: running
@@ -748,6 +753,7 @@ export const ToolNotFound = ApiError.define({
   status: 404,
   fields: { app: AppId, deployment: DeploymentId, tool: ToolName },
   message: ({ tool }) => `The app does not expose a tool named “${tool}”.`,
+  recorded: () => "The app does not expose the requested tool",
 });
 export type ToolNotFound = typeof ToolNotFound.Type;
 
@@ -768,6 +774,8 @@ export const ToolKindMismatch = ApiError.define({
   },
   message: ({ tool, requested, actual }) =>
     `The tool “${tool}” is a ${actual}, but it was called as a ${requested}. Nothing ran; call it as a ${actual}.`,
+  recorded: ({ requested, actual }) =>
+    `The tool is a ${actual}, but it was called as a ${requested}`,
 });
 export type ToolKindMismatch = typeof ToolKindMismatch.Type;
 
@@ -851,6 +859,7 @@ export const ToolBlocked = UserFacingError.define({
       instructions: `The approval policy that “${tool}” declares in the app’s code returned \`denied\` for this call. Do not retry the call unchanged. Tell the user which tool was blocked. Read the policy to see what it checks: its input, the app’s configuration, or the user’s access. If the call should be allowed and a requirement is unmet, meet it (for example, ask the user to enable the setting or grant the access) and call the tool again. Change the app’s source only when the policy itself is wrong and the user agrees: find the tool’s \`approval\` option, or the \`withApprovals\` policy over its router, return \`user-approval\` to ask the user or \`approved\` to run it, then deploy. Otherwise reach the goal with a different tool.`,
     },
   }),
+  recorded: () => "The tool's approval policy blocked this call. The tool did not run.",
 });
 export type ToolBlocked = typeof ToolBlocked.Type;
 
@@ -861,6 +870,8 @@ export const ToolApprovalRequired = ApiError.define({
   fields: { app: AppId, deployment: DeploymentId, tool: ToolName },
   message: ({ tool }) =>
     `“${tool}” needs approval before it runs, and this request cannot present an approval prompt. The tool did not run.`,
+  recorded: () =>
+    "The tool needs approval before it runs, and this request cannot present an approval prompt. The tool did not run.",
 });
 export type ToolApprovalRequired = typeof ToolApprovalRequired.Type;
 
@@ -871,6 +882,7 @@ export const ToolPolicyFailed = ApiError.define({
   fields: { app: AppId, deployment: DeploymentId, tool: ToolName },
   message: ({ tool }) =>
     `The approval policy of “${tool}” failed before deciding. The tool did not run.`,
+  recorded: () => "The tool's approval policy failed before deciding. The tool did not run.",
 });
 export type ToolPolicyFailed = typeof ToolPolicyFailed.Type;
 

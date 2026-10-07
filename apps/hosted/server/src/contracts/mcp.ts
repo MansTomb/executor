@@ -69,6 +69,7 @@ export const McpForbidden = UserFacingError.define({
   tag: "McpForbidden",
   status: 403,
   fields: { reason: McpForbiddenReason },
+  recorded: ({ reason }) => forbidden[reason].description,
   presentation: ({ reason }) => forbidden[reason],
 });
 export type McpForbidden = typeof McpForbidden.Type;

@@ -35,6 +35,10 @@ export const AppAccessDenied = ApiError.define({
     reason === "authentication"
       ? "This request is not authenticated for app management."
       : "This caller may not perform this app operation, or cannot access this app.",
+  recorded: ({ reason }) =>
+    reason === "authentication"
+      ? "This request is not authenticated for app management."
+      : "This caller may not perform this app operation, or cannot access this app.",
 });
 export type AppAccessDenied = typeof AppAccessDenied.Type;
 /** Expected operation failures are shared unchanged across the product transports. */

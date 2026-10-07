@@ -102,6 +102,7 @@ export const WebhookFailed = ApiError.define({
     reason: Schema.Literals(["unavailable", "definition", "input", "delivery", "inactive"]),
   },
   message: ({ reason }) => webhookFailures[reason],
+  recorded: ({ reason }) => webhookFailures[reason],
 });
 export type WebhookFailed = typeof WebhookFailed.Type;
 /** Shared operation failures, retained as concrete schema variants at HTTP boundaries. */

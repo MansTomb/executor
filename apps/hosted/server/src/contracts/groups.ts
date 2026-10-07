@@ -69,6 +69,7 @@ export const GroupConflict = ApiError.define({
   status: 409,
   fields: { reason: Schema.Literals(["changed", "name_taken", "members_changed"]) },
   message: ({ reason }) => groupConflicts[reason],
+  recorded: ({ reason }) => groupConflicts[reason],
 });
 export type GroupConflict = typeof GroupConflict.Type;
 /** Storage failures contain no raw database details. */
