@@ -37,7 +37,7 @@ const sources = [
 
 const PackageVersion = Schema.Struct({ name: Schema.String, version: Schema.String });
 const Archive = Schema.Struct({
-  file: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.+~-]*$/)),
+  file: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_.+~-]*$/u)),
   url: Schema.String,
   sha256: Schema.String,
 });

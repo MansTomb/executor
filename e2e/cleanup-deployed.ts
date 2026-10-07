@@ -5,7 +5,7 @@ import { Console, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const Environment = Schema.Struct({
-  slug: Schema.String.check(Schema.isPattern(/^e2e-[a-z0-9]{1,13}$/)),
+  slug: Schema.String.check(Schema.isPattern(/^e2e-[a-z0-9]{1,13}$/u)),
 });
 
 NodeRuntime.runMain(

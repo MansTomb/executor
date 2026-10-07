@@ -27,7 +27,7 @@ const revision = Effect.gen(function* () {
   return yield* spawner.string(ChildProcess.make("git", ["rev-parse", "HEAD"])).pipe(
     Effect.map((value) => value.trim()),
     Effect.flatMap(
-      Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/))),
+      Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u))),
     ),
   );
 });

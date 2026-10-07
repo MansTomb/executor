@@ -294,6 +294,44 @@ const accountMiddlewareThroughHelper = defineRule({
   }),
 });
 
+/** The flags `Schema.isPattern` can export: Unicode, optionally with `d`, `g` or `y`. */
+const exportableFlags = /^[dg]*uy?$/u;
+
+const exportableSchemaPattern = defineRule({
+  meta: {
+    type: "problem",
+    docs: {
+      description: "Give Schema.isPattern a RegExp that Effect can export to JSON Schema.",
+    },
+    messages: {
+      notExported:
+        "Effect leaves this pattern out of JSON Schema and OpenAPI documents: it exports only Unicode RegExps whose other flags are d, g or y. Add the u flag (write both letter cases instead of i) and check the RegExp still matches the same strings.",
+    },
+  },
+  create: (context) => ({
+    CallExpression(node) {
+      const callee = node.callee;
+      const name =
+        callee.type === "Identifier"
+          ? callee.name
+          : callee.type === "MemberExpression" &&
+              !callee.computed &&
+              callee.property.type === "Identifier"
+            ? callee.property.name
+            : undefined;
+      const pattern = node.arguments[0];
+      if (
+        name === "isPattern" &&
+        pattern?.type === "Literal" &&
+        "regex" in pattern &&
+        pattern.regex !== undefined &&
+        !exportableFlags.test(pattern.regex.flags)
+      )
+        context.report({ node: pattern, messageId: "notExported" });
+    },
+  }),
+});
+
 export default definePlugin({
   meta: { name: "executor" },
   rules: {
@@ -302,5 +340,6 @@ export default definePlugin({
     "no-shared-wait-in-worker-initialization": noSharedWaitInWorkerInitialization,
     "no-proof-forgery": noProofForgery,
     "account-middleware-through-helper": accountMiddlewareThroughHelper,
+    "exportable-schema-pattern": exportableSchemaPattern,
   },
 });

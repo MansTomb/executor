@@ -37,9 +37,9 @@ const Setup = Schema.Struct({
   databaseName: Schema.NonEmptyString,
   databaseUsername: Schema.NonEmptyString,
 });
-const Id = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));
+const Id = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u));
 const TransportCause = Schema.Struct({
-  code: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]*$/))),
+  code: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]*$/u))),
   cause: Schema.optional(Schema.Unknown),
 });
 /** A socket, TLS or DNS failure's code, such as `ECONNRESET`; never its message, which can name the request. */

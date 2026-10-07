@@ -364,7 +364,7 @@ function visit(directory){for(const name of fs.readdirSync(directory).sort()){co
 visit("/app/data/hosted.pglite");process.stdout.write(hash.digest("hex"));`,
           ]).pipe(
             Effect.flatMap(
-              Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))),
+              Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u))),
             ),
           );
         let nativeBackup: string | undefined;

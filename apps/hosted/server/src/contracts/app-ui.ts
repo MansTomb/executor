@@ -54,7 +54,7 @@ export type AppUiBaseUrl = typeof AppUiBaseUrl.Type;
 /** One DNS label; the app and team are separate labels. */
 export const AppUiHostnameLabel = Schema.String.check(
   Schema.isMaxLength(63),
-  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u),
 ).pipe(Schema.brand("AppUiHostnameLabel"));
 /** App and organization names cannot be silently shortened or changed to create a browser origin. */
 export const AppUiAddressInvalid = ApiError.define({

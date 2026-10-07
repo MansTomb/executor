@@ -19,7 +19,7 @@ export { ConnectionId } from "./grant.ts";
 export const ConnectionName = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(80),
-  Schema.isPattern(/\S/),
+  Schema.isPattern(/\S/u),
 );
 /** One included app. Runs-as targets are exact; everything not included is excluded. */
 export const ConnectionApp = Schema.Struct({

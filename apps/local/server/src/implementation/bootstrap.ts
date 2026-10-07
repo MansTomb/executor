@@ -33,7 +33,7 @@ export class LocalConfigurationError extends Schema.TaggedError<LocalConfigurati
 const Keys = Schema.Struct({
   apiKey: Schema.RedactedFromValue(Schema.String.check(Schema.isMinLength(32))),
   encryptionKey: Schema.RedactedFromValue(
-    Schema.String.check(Schema.isPattern(/^[a-fA-F0-9]{64}$/)),
+    Schema.String.check(Schema.isPattern(/^[a-fA-F0-9]{64}$/u)),
   ),
 });
 /**

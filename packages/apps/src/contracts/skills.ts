@@ -104,7 +104,7 @@ export const AppSkills = Schema.Array(AppSkillSource).check(
 );
 /** Short display name for a skill source, such as "GitLab" or an index host name. */
 export const SkillServiceName = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9 .-]{0,98}[A-Za-z0-9])?$/),
+  Schema.isPattern(/^[A-Za-z0-9](?:[A-Za-z0-9 .-]{0,98}[A-Za-z0-9])?$/u),
 );
 /**
  * A skill loader failure shown to people. `message` is the explanation they read; write it for

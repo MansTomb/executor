@@ -415,7 +415,7 @@ const cachedCatalog = (
       );
 
 /** A token is a header value: visible ASCII, as GitHub tokens and Executor's handles are. */
-const GitHubToken = Schema.String.check(Schema.isPattern(/^[\x21-\x7e]+$/));
+const GitHubToken = Schema.String.check(Schema.isPattern(/^[\x21-\x7e]+$/u));
 
 const scopeMessages = {
   "missing-account": "A GitHub token needs its account. Pass account: ctx.accounts.<slot> with it.",

@@ -26,7 +26,7 @@ export const StageControl = Schema.Struct({
 export type StageControl = typeof StageControl.Type;
 
 export const perfSlug = Schema.String.check(
-  Schema.isPattern(/^perf-[a-z0-9-]+-0925$/, {
+  Schema.isPattern(/^perf-[a-z0-9-]+-0925$/u, {
     message: "Perf stages for this run are named perf-<key>-0925",
   }),
 );

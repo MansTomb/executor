@@ -9,7 +9,7 @@ import { Effect, Option, Redacted, Schema } from "effect";
 export { LoopbackOrigin as TestOrigin } from "@executor-js/utils/url-policy";
 
 /** Stable fixture names are also valid organization slugs and synthetic email components. */
-export const FixtureName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/));
+export const FixtureName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/u));
 
 /** Sanitized failures keep database credentials and session cookies out of diagnostics. */
 export class TestAccountFailed extends Schema.TaggedError<TestAccountFailed>()(

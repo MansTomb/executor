@@ -12,7 +12,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 
 const Control = Schema.Struct({
-  email: Schema.String.check(Schema.isPattern(/^[a-z0-9-]+@[a-z0-9.-]+$/)),
+  email: Schema.String.check(Schema.isPattern(/^[a-z0-9-]+@[a-z0-9.-]+$/u)),
   mode: Schema.Literals(["valid", "tamper", "wrong-audience"]),
 });
 const { IdentityProvider, ServiceProvider, SamlLib } = samlify;

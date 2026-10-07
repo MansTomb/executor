@@ -10,7 +10,7 @@ export const cloudAppSources = (tokens: ArtifactsTokens) =>
   Effect.gen(function* () {
     const accountId = yield* Config.String("CLOUDFLARE_ACCOUNT_ID").pipe(
       Effect.flatMap(
-        Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/))),
+        Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u))),
       ),
     );
     const namespace = yield* cloudSourceNamespace;

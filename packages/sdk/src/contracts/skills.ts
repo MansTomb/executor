@@ -22,7 +22,7 @@ import {
 /** A configured installation supplies the namespace; skill source never hardcodes it. */
 export const SkillApp = Schema.Struct({ id: AppId, name: Schema.String, slug: AppSlug });
 /** A content digest identifies the complete evaluated catalog, independently of its deployment. */
-export const SkillRevision = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+export const SkillRevision = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 export const SkillRevisionChanged = ApiError.define({
   tag: "SkillRevisionChanged",
   status: 409,

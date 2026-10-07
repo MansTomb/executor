@@ -10,7 +10,7 @@ class BootstrapError extends Schema.TaggedError<BootstrapError>()("SelfHostBoots
 }) {}
 
 const sessionSecret = Schema.String.check(Schema.isMinLength(32));
-const encryptionKey = Schema.String.check(Schema.isPattern(/^[0-9a-fA-F]{64}$/));
+const encryptionKey = Schema.String.check(Schema.isPattern(/^[0-9a-fA-F]{64}$/u));
 
 /** Resolve self-host defaults before opening the database or starting diagnostics. */
 export const selfHostConfiguration = Effect.scoped(

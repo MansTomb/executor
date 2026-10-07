@@ -12,9 +12,9 @@ const Provider = Schema.Struct({
   domain: Schema.NonEmptyString,
   domainVerified: Schema.Boolean,
 });
-const ProviderId = Schema.String.check(Schema.isPattern(/^sso-[a-z0-9-]{1,32}$/));
+const ProviderId = Schema.String.check(Schema.isPattern(/^sso-[a-z0-9-]{1,32}$/u));
 const Domain = Schema.String.check(
-  Schema.isPattern(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/),
+  Schema.isPattern(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/u),
 );
 const Registration = Schema.Struct({
   organizationId: Schema.NonEmptyString,
@@ -242,7 +242,7 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
             );
             if (input.providerId !== undefined || input.email === undefined) return;
             const email = parse(
-              Schema.String.check(Schema.isPattern(/^[^\s@]+@[^\s@]+$/)),
+              Schema.String.check(Schema.isPattern(/^[^\s@]+@[^\s@]+$/u)),
               input.email.trim().toLowerCase(),
             );
             const domain = parse(Domain, email.split("@")[1]);

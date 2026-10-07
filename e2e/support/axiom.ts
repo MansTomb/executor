@@ -101,7 +101,7 @@ const standard = `pack(${recognizedAttributes
   .join(", ")})`;
 
 /** Span names, attribute names and attribute values a search may put into its query. */
-const Term = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.:-]+$/));
+const Term = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_.:-]+$/u));
 /** The column that holds a delivered attribute, see `recognizedAttributes`. */
 const attributeColumn = (name: string) =>
   (recognizedAttributes as ReadonlyArray<string>).includes(name)
@@ -121,7 +121,7 @@ export const axiomSpans = Effect.gen(function* () {
       const organization = yield* Config.option(Config.NonEmptyString("E2E_AXIOM_ORG_ID"));
       const dataset = yield* Config.String("E2E_AXIOM_DATASET").pipe(
         Effect.flatMap(
-          Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]+$/))),
+          Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]+$/u))),
         ),
       );
       const now = yield* Clock.currentTimeMillis;
@@ -190,7 +190,7 @@ export const axiomSpans = Effect.gen(function* () {
     }).pipe(Effect.scoped, Effect.timeout("10 seconds"));
   return {
     trace: (traceId: string) =>
-      Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/)))(
+      Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u)))(
         traceId,
       ).pipe(Effect.flatMap((id) => query(`trace_id == '${id}'`))),
     search: (operation: string, attributes: Readonly<Record<string, string>>) =>

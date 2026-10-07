@@ -2234,6 +2234,11 @@ export const scenarios = {
     title: "OAuth resources are provisioned before client registration",
     targets: { local: scheduled, "self-host": scheduled, cloud: scheduled },
   },
+  apiDocumentPatterns: {
+    file: "api-document-patterns.spec.ts",
+    title: "the published API document keeps the string patterns requests must match",
+    targets: { local: scheduled, "self-host": scheduled, cloud: scheduled },
+  },
   appDeclarations: {
     fixtures: "actors",
     file: "app-declarations.spec.ts",

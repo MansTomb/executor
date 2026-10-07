@@ -143,8 +143,8 @@ const recordPacker = (prefix: string, suffix: string) => {
   };
 };
 
-const HexTrace = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));
-const HexSpan = Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/));
+const HexTrace = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u));
+const HexSpan = Schema.String.check(Schema.isPattern(/^[a-f0-9]{16}$/u));
 // Parse correlation fields and retain the rest of each native OTLP record verbatim.
 const Span = Schema.StructWithRest(Schema.Struct({ traceId: HexTrace, spanId: HexSpan }), [
   Schema.Record(Schema.String, Schema.Json),

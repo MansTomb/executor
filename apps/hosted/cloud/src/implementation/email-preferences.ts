@@ -8,7 +8,7 @@ import {
   type UnsubscribeLinks,
 } from "../contracts/email.ts";
 
-const Token = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,512}\.[A-Za-z0-9_-]{43}$/));
+const Token = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,512}\.[A-Za-z0-9_-]{43}$/u));
 const Recipient = Schema.Struct({
   id: Schema.NonEmptyString,
   email: Schema.RedactedFromValue(Schema.NonEmptyString),

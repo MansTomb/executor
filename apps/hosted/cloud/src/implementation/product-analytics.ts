@@ -22,7 +22,7 @@ import {
 const Settings = Schema.Struct({
   token: Schema.String,
   host: Schema.String,
-  path: Schema.String.check(Schema.isPattern(/^\/api\/[a-f0-9]{16}$/)),
+  path: Schema.String.check(Schema.isPattern(/^\/api\/[a-f0-9]{16}$/u)),
   environment: Schema.String,
   release: Schema.String,
   internalUserIds: Schema.optional(Schema.Array(Schema.String)),

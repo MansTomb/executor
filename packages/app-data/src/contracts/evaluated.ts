@@ -1,7 +1,7 @@
 /** Protocol of the store of evaluated results an app's supervisor keeps beside its app cache. */
 import { Schema } from "effect";
 
-const Key = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/));
+const Key = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u));
 const Time = Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0));
 const Body = Schema.declare((value): value is Uint8Array => value instanceof Uint8Array);
 

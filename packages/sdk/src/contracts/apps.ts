@@ -75,7 +75,7 @@ export type SelectedAccounts = typeof SelectedAccounts.Type;
 export const AppName = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(120),
-  Schema.isPattern(/\S/),
+  Schema.isPattern(/\S/u),
 );
 
 /** Informational origin captured when a copy is made. It never grants access or drives updates. */

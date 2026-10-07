@@ -27,7 +27,7 @@ export const webFiles = Effect.gen(function* () {
   const asset = Effect.gen(function* () {
     const { name } = yield* HttpRouter.schemaPathParams(
       Schema.Struct({
-        name: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)+$/)),
+        name: Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)+$/u)),
       }),
     );
     return yield* HttpServerResponse.file(path.join(directory, "assets", name), {

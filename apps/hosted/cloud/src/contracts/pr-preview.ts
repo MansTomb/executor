@@ -4,10 +4,10 @@ import { Config, Effect, Schema } from "effect";
 /** Only positive PR numbers can select an automatically managed preview. */
 export const PreviewNumber = Schema.Int.check(Schema.isGreaterThan(0));
 /** Git object identities are passed to checkout and displayed without accepting arbitrary refs. */
-export const PreviewCommit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
+export const PreviewCommit = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
 /** Repository paths passed to the GitHub API must have exactly two path components. */
 export const PreviewRepository = Schema.String.check(
-  Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+  Schema.isPattern(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u),
 );
 /** The workflow supplies its repository, never a repository named by the PR author. */
 export const previewRepository = Config.String("GITHUB_REPOSITORY").pipe(

@@ -22,7 +22,7 @@ export const organizationSlugMaxLength = 45;
 /** Team handles leave room for a production wildcard certificate name. */
 export const OrganizationSlug = Schema.String.check(
   Schema.isMaxLength(organizationSlugMaxLength),
-  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/u),
 ).pipe(Schema.brand("OrganizationSlug"));
 export type OrganizationSlug = typeof OrganizationSlug.Type;
 /** Suggested handle for a display name; empty when the name has no usable characters. */
@@ -55,7 +55,7 @@ export const OrganizationLogo = Schema.NullOr(
 /** Only public display and URL fields can be changed through organization settings. */
 export const OrganizationDetailsUpdate = Schema.Struct({
   name: Schema.optionalKey(
-    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120), Schema.isPattern(/\S/)),
+    Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(120), Schema.isPattern(/\S/u)),
   ),
   slug: Schema.optionalKey(OrganizationSlug),
   logo: Schema.optionalKey(OrganizationLogo),

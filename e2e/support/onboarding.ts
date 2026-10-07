@@ -10,7 +10,7 @@ const Organizations = Schema.Array(
   Schema.Struct({ id: Schema.String, name: Schema.String, slug: Schema.String }),
 );
 const AuthFailure = Schema.Struct({
-  code: Schema.String.check(Schema.isPattern(/^[A-Z][A-Z_]{0,79}$/)),
+  code: Schema.String.check(Schema.isPattern(/^[A-Z][A-Z_]{0,79}$/u)),
 });
 class OnboardingFailed extends Schema.TaggedError<OnboardingFailed>()("OnboardingFailed", {
   operation: Schema.String,

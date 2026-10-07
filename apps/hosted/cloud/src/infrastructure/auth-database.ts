@@ -44,7 +44,7 @@ import {
 import { cloudInvocationDatabase, InvocationDatabase } from "./invocation-database.ts";
 
 const DriverCode = Schema.Struct({
-  code: Schema.String.check(Schema.isPattern(/^(?:[0-9A-Z]{5}|E[A-Z_]{2,40})$/)),
+  code: Schema.String.check(Schema.isPattern(/^(?:[0-9A-Z]{5}|E[A-Z_]{2,40})$/u)),
 });
 /**
  * A Better Auth query the database or its connection failed. `code` is the server's SQLSTATE

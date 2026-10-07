@@ -6,8 +6,20 @@
     "typescript/no-explicit-any": "error",
     // Effect.gen bodies without a yield are valid Effect code.
     "require-yield": "off",
+    "executor/exportable-schema-pattern": "error",
   },
   "overrides": [
+    {
+      // Released host protocols reach these patterns. Their snapshots record each RegExp's
+      // flags, so they keep the original ones; see notes/apps-publishing.md.
+      "files": [
+        "packages/apps/src/contracts/protocols/**",
+        "packages/apps/src/contracts/provider.ts",
+        "packages/apps/src/contracts/failure.ts",
+        "packages/app-cache/src/contracts/cache.ts",
+      ],
+      "rules": { "executor/exportable-schema-pattern": "off" },
+    },
     {
       // Workers and servers reuse one module instance across requests.
       "files": ["apps/**/src/**", "packages/*/src/**"],

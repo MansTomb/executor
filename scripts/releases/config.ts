@@ -69,7 +69,7 @@ const channel = releaseChannel(version);
 const repository = "UsefulSoftwareCo/executor";
 const tag = `executor@${version}`;
 const nodeEngine = Schema.decodeUnknownSync(
-  Schema.String.check(Schema.isPattern(/^>=\d+\.\d+\.\d+$/)),
+  Schema.String.check(Schema.isPattern(/^>=\d+\.\d+\.\d+$/u)),
 )(manifest.engines.node);
 
 /** Durable v2 identities stay fixed when the version moves from beta to stable. */

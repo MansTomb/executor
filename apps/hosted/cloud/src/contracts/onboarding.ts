@@ -9,7 +9,7 @@ import {
 import { HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
 
 /** Safe uploader identity for the existing first-team icon namespace. */
-export const TeamIconOwner = Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]{1,255}$/));
+export const TeamIconOwner = Schema.String.check(Schema.isPattern(/^[a-zA-Z0-9_-]{1,255}$/u));
 
 /** Public company information, cached by verified email domain. */
 export const CompanyProfile = Schema.Struct({
@@ -25,7 +25,7 @@ export type CompanyProfile = typeof CompanyProfile.Type;
 export const TeamName = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(120),
-  Schema.isPattern(/\S/),
+  Schema.isPattern(/\S/u),
 );
 /** Editable values shown before creating the first organization. */
 export const TeamDetails = Schema.Struct({ name: TeamName, logo: OrganizationLogo });

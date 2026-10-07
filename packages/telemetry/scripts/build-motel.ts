@@ -21,7 +21,7 @@ const build = Effect.gen(function* () {
         Schema.fromJsonString(
           Schema.Struct({
             repository: Schema.NonEmptyString,
-            revision: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+            revision: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u)),
           }),
         ),
       ),
