@@ -21,6 +21,7 @@
     "@effect/atom-react": "4.0.1",
     "@effect/platform-node": "4.0.1",
     "@executor-js/ui": "workspace:*",
+    "@executor-js/utils": "workspace:*",
     "@tanstack/react-router": "1.170.41",
     "@tanstack/react-start": "1.168.60",
     "effect": "4.0.1",

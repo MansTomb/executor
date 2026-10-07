@@ -241,7 +241,7 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
               [actors.organization.id, actors.organization.slug].map(
                 (organization) => `/api/organizations/${organization}/apps/${app.id}/workspace`,
               ),
-              "fail",
+              "undeclared",
             );
             yield* rename;
             yield* failedRead.requested;

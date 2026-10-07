@@ -186,7 +186,7 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
         yield* failure.release;
         yield* browser.use("A failed save is reported in place", (page) =>
           page
-            .getByText("Unable to complete this request", { exact: true })
+            .getByText("Can’t reach Executor", { exact: true })
             .first()
             .waitFor({ state: "visible" }),
         );
@@ -246,7 +246,7 @@ export default defineApp({ accounts: { primary: service, mailboxes: service.many
           [actors.organization.slug, actors.organization.id].map(
             (id) => `/api/organizations/${id}/apps/${app.id}`,
           ),
-          "fail",
+          "undeclared",
         );
         yield* refreshVisiblePage;
         yield* refresh.requested;

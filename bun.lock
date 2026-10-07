@@ -477,7 +477,7 @@
     },
     "packages/apps": {
       "name": "apps",
-      "version": "0.0.1-beta.42",
+      "version": "0.0.1-beta.43",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@csstools/css-tokenizer": "4.0.2",
@@ -537,6 +537,7 @@
         "@effect/atom-react": "4.0.1",
         "@effect/platform-node": "4.0.1",
         "@executor-js/ui": "workspace:*",
+        "@executor-js/utils": "workspace:*",
         "@tanstack/react-router": "1.170.41",
         "@tanstack/react-start": "1.168.60",
         "effect": "4.0.1",

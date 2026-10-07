@@ -757,6 +757,17 @@ export const scenarios = {
       local: na("Cloud Sentry receiver"),
     },
   },
+  browserConnectionFailures: {
+    fixtures: "actors",
+    file: "browser-connection-failures.spec.ts",
+    title:
+      "Browser connection failures explain the lost connection and report only those the browser cannot explain",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
   emptyStateRecovery: {
     fixtures: "actors",
     file: "empty-state-recovery.spec.ts",

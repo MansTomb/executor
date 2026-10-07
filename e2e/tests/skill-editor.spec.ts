@@ -267,7 +267,11 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         );
         hold = (route) => {
           hold = () => "pass";
-          return route.abort("failed").then(() => "take" as const);
+          // A status no endpoint declares is an unexpected failure; a dropped connection would be
+          // explained as a lost connection instead.
+          return route
+            .fulfill({ status: 599, contentType: "text/plain", body: "undeclared" })
+            .then(() => "take" as const);
         };
         yield* page("Save while the source cannot be read", (page) =>
           page.getByRole("button", { name: "Save", exact: true }).click(),

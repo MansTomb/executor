@@ -43,8 +43,10 @@ export const startErrorReporting = () => {
   window.addEventListener("executor:operation-failed", (event) => {
     if (!(event instanceof CustomEvent)) return;
     const value = Schema.decodeUnknownOption(BrowserOperationFailure)(event.detail);
+    // Every failure is captured at this one call site, so group by kind rather than by stack.
     if (Option.isSome(value))
       Sentry.captureException(new Error(value.value.error_type), {
+        fingerprint: [value.value.error_type],
         contexts: { trace: { trace_id: value.value.trace_id, span_id: value.value.span_id } },
         tags: { error_type: value.value.error_type, page_id: value.value.page_id },
       });

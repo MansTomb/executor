@@ -11,7 +11,8 @@ import { Input } from "../components/input.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { CopyButton } from "./code.tsx";
 import { AsyncResult } from "effect/reactivity";
-import { UnexpectedError, type UserFacingError } from "@executor-js/utils/user-facing-error";
+import type { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { undeclaredError } from "@executor-js/utils/connection-failure";
 import { ErrorNotice } from "./error-notice.tsx";
 import { useQuery } from "./context.tsx";
 
@@ -32,7 +33,9 @@ export function OAuthSetup<E extends UserFacingError>({
   const loading = Option.isNone(data);
   const action = failed ? (
     <ErrorNotice
-      error={Option.getOrElse(Cause.findErrorOption(result.cause), () => new UnexpectedError())}
+      error={Option.getOrElse(Cause.findErrorOption(result.cause), () =>
+        undeclaredError(result.cause),
+      )}
       context="While preparing account sign-in."
       retry={refresh}
       retrying={result.waiting}
