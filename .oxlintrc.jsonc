@@ -1,12 +1,67 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["typescript", "react", "unicorn", "oxc"],
+  "jsPlugins": ["./scripts/oxlint-plugin.ts"],
   "rules": {
     "typescript/no-explicit-any": "error",
     // Effect.gen bodies without a yield are valid Effect code.
     "require-yield": "off",
+    "executor/exportable-schema-pattern": "error",
   },
   "overrides": [
+    {
+      // Released host protocols reach these patterns. Their snapshots record each RegExp's
+      // flags, so they keep the original ones; see notes/apps-publishing.md.
+      "files": [
+        "packages/apps/src/contracts/protocols/**",
+        "packages/apps/src/contracts/provider.ts",
+        "packages/apps/src/contracts/failure.ts",
+        "packages/app-cache/src/contracts/cache.ts",
+      ],
+      "rules": { "executor/exportable-schema-pattern": "off" },
+    },
+    {
+      // Workers and servers reuse one module instance across requests.
+      "files": ["apps/**/src/**", "packages/*/src/**"],
+      "rules": { "executor/no-module-level-mutable-state": "error" },
+    },
+    {
+      // Worker entry points: initialization runs once per isolate, for every request it serves.
+      "files": ["apps/hosted/cloud/src/**"],
+      "rules": { "executor/no-shared-wait-in-worker-initialization": "error" },
+    },
+    {
+      // Exceptions kept here because a comment in these files changes the published apps
+      // framework. openapi-source keeps an isolate-wide cache of content-addressed parts.
+      "files": ["packages/apps/src/implementation/openapi-source.ts"],
+      "rules": { "executor/no-module-level-mutable-state": "off" },
+    },
+    {
+      // Authorization proofs are minted only where their check runs.
+      "files": ["apps/hosted/server/src/**"],
+      "rules": {
+        "executor/no-proof-forgery": "error",
+        "executor/account-middleware-through-helper": "error",
+      },
+    },
+    {
+      // The helper itself attaches the middleware.
+      "files": ["apps/hosted/server/src/contracts/account-grants.ts"],
+      "rules": { "executor/account-middleware-through-helper": "off" },
+    },
+    {
+      "files": ["apps/hosted/server/src/implementation/proofs/**"],
+      "rules": { "executor/no-proof-forgery": "off" },
+    },
+    {
+      "files": ["e2e/**"],
+      "rules": { "executor/no-manual-effect-runtime-in-tests": "error" },
+    },
+    {
+      // The evidence viewer is a browser app, not a scenario.
+      "files": ["e2e/viewer/**"],
+      "rules": { "executor/no-manual-effect-runtime-in-tests": "off" },
+    },
     {
       // Compile-only type checks declare functions and expressions that are never run.
       "files": ["**/*.types.tsx", "**/*.types.ts"],
@@ -29,5 +84,7 @@
     "*.tsbuildinfo",
     "**/.generated/",
     "**/routeTree.gen.ts",
+    "**/browser-scripts.gen.ts",
+    "**/executor-intro.gen.ts",
   ],
 }

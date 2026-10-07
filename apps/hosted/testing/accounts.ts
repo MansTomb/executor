@@ -1,6 +1,7 @@
 /** Privileged fixture helpers. Imported only by local test tooling, never a host entry point. */
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { testUtils } from "better-auth/plugins";
+import { organization } from "better-auth/plugins/organization";
 import { authOptions } from "@executor-js/hosted-server";
 import { Effect, Option, Redacted, Schema } from "effect";
 
@@ -8,7 +9,7 @@ import { Effect, Option, Redacted, Schema } from "effect";
 export { LoopbackOrigin as TestOrigin } from "@executor-js/utils/url-policy";
 
 /** Stable fixture names are also valid organization slugs and synthetic email components. */
-export const FixtureName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/));
+export const FixtureName = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9-]{0,39}$/u));
 
 /** Sanitized failures keep database credentials and session cookies out of diagnostics. */
 export class TestAccountFailed extends Schema.TaggedError<TestAccountFailed>()(
@@ -43,6 +44,8 @@ export const testAccountAuth = (settings: {
     session: { ...base.session, expiresIn: 3600 },
     plugins: [
       ...base.plugins,
+      // Fixture helpers create organizations and members through this plugin.
+      organization({ disableOrganizationDeletion: true }),
       {
         ...helpers,
         // Better Auth 1.7.5 emits options: undefined; omit it for exact optional property types.

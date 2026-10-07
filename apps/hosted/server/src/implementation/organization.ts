@@ -2,7 +2,12 @@ import type { AuthContext } from "@better-auth/core";
 import type { Principal } from "../contracts/auth.ts";
 import { type Profile } from "@executor-js/sdk/core";
 import { accountOAuthRedirectUri } from "./auth.ts";
-import { CurrentUsage, observeProductOperation } from "../contracts/product-analytics.ts";
+import {
+  CurrentUsage,
+  isReadMethod,
+  observeProductOperation,
+  traceProductRead,
+} from "../contracts/product-analytics.ts";
 import { RequiredAction, CurrentAuthorization } from "../contracts/authorization.ts";
 import {
   fullAuthority,
@@ -12,19 +17,19 @@ import {
 } from "@executor-js/authorization";
 import { AppId } from "@executor-js/sdk/core";
 import { Context } from "effect";
-import { visibleApps, visibleAccounts } from "./resource-policy.ts";
+import { currentResourceAuthority, visibleAccountsAs, visibleAppsAs } from "./resource-policy.ts";
 import { readOrganizationIconUpload } from "./organization-icons.ts";
 import { OrganizationTombstones } from "../contracts/organization-removal.ts";
 import { requireOrganizationAdmin } from "./access.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import { APIError } from "better-auth/api";
 import { ErrorReporter, Effect, Layer, Schema } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import type { OwnerId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   ApiAuthentication,
   Authentication,
@@ -148,17 +153,11 @@ export const withOrganizationRequest = <E, R>(
     const principal = yield* auth.current(headers);
     if (principal === null) return yield* new Unauthorized();
     const organization = yield* auth.organization(reference);
-    // The tombstone and membership reads use separate clients and depend only on the
-    // resolved organization, so they overlap. Removal is still reported before membership.
-    const [removed, member] = yield* Effect.all(
-      [
-        Effect.exit(refuseRemoved(organization)),
-        Effect.exit(auth.membership(principal, organization)),
-      ],
-      { concurrency: "unbounded" },
-    );
-    yield* removed;
-    const membership = yield* member;
+    // Removal is reported before membership. The reads run one after the other: on Cloud they
+    // share the event's one SQL connection, and overlapping them would open a second one, a TLS
+    // login that costs far more than the few milliseconds the second read waits.
+    yield* refuseRemoved(organization);
+    const membership = yield* auth.membership(principal, organization);
     const access = {
       organization,
       owner: organizationOwner(organization),
@@ -186,16 +185,20 @@ export const requireOrganizationLive = Layer.effect(
     const api = yield* ApiAuthentication;
     return (response, { endpoint, group }) =>
       withOrganizationRequest(
-        () =>
-          observeProductOperation(
-            { area: group.identifier, operation: endpoint.identifier, method: endpoint.method },
-            response,
-            (result) => ({
-              status_code: result.status,
-              ok: result.status < 400,
-              outcome: result.status < 400 ? "success" : "failure",
-            }),
-          ),
+        () => {
+          const operation = {
+            area: group.identifier,
+            operation: endpoint.identifier,
+            method: endpoint.method,
+          };
+          return isReadMethod(endpoint.method)
+            ? traceProductRead(operation, response)
+            : observeProductOperation(operation, response, (result) => ({
+                status_code: result.status,
+                ok: result.status < 400,
+                outcome: result.status < 400 ? "success" : "failure",
+              }));
+        },
         Context.getOrUndefined(endpoint.annotations, RequiredAction),
       ).pipe(
         Effect.provideService(Authentication, auth),
@@ -209,11 +212,14 @@ export const inventory = (owner: OwnerId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     const policy = yield* CurrentAuthorization;
-    const apps = yield* executor.apps
-      .list({ owner, ids: permittedAppIds(policy) })
-      .pipe(Effect.flatMap(visibleApps));
+    const listedApps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
+    // Membership is read once for both the app and the account policies.
+    const actor = yield* currentResourceAuthority;
+    const apps = yield* visibleAppsAs(actor, listedApps);
     const accounts = permitsAction(policy, "read")
-      ? yield* executor.accounts.list({ owner }).pipe(Effect.flatMap(visibleAccounts))
+      ? yield* executor.accounts
+          .list({ owner })
+          .pipe(Effect.flatMap((listed) => visibleAccountsAs(actor, listed)))
       : [];
     const user = yield* CurrentUserId;
     if (user === undefined) return yield* new OrganizationForbidden();
@@ -230,7 +236,19 @@ export const inventory = (owner: OwnerId) =>
       else existing.push(profile);
     }
     const profiles = apps.flatMap((app) => byApp.get(app.id) ?? []);
-    if (policy.tools.kind === "all") return { apps, accounts, profiles };
+    const listed = new Set(apps.map((app) => app.id));
+    const health = new Map(
+      (accounts.length === 0 ? [] : yield* executor.accounts.listHealth({ owner })).map((entry) => [
+        entry.account,
+        { ...entry, apps: entry.apps.filter((check) => listed.has(check.app)) },
+      ]),
+    );
+    const withHealth = (listedAccounts: typeof accounts) =>
+      listedAccounts.map((account) => {
+        const checks = health.get(account.id);
+        return checks === undefined ? account : { ...account, health: checks };
+      });
+    if (policy.tools.kind === "all") return { apps, accounts: withHealth(accounts), profiles };
     const selected = new Set(
       profiles.flatMap((profile) =>
         Object.values(profile.accounts).flatMap((value) =>
@@ -238,7 +256,11 @@ export const inventory = (owner: OwnerId) =>
         ),
       ),
     );
-    return { apps, accounts: accounts.filter((account) => selected.has(account.id)), profiles };
+    return {
+      apps,
+      accounts: withHealth(accounts.filter((account) => selected.has(account.id))),
+      profiles,
+    };
   });
 /** Organization routes do not own app/account operations. */
 export const hostedOrganizationHandlers = HttpApiBuilder.group(

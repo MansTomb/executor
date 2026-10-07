@@ -10,6 +10,7 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { captureBrowserAnalytics, renderBrowserReplay } from "../support/product-analytics.ts";
+import { appsManifest } from "../support/apps-release.ts";
 
 const Event = Schema.Struct({
   event: Schema.String,
@@ -42,36 +43,48 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         const before = readEvents(
           yield* fs.readFileString(`${target.directory}/analytics.ndjson`),
         ).length;
-        const response = yield* api.request(
-          actors.owner,
-          "GET",
-          `/api/organizations/${actors.organization.id}/inventory`,
-        );
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        // Reads are traced but never exported; dashboard refetches would otherwise dominate.
+        expect((yield* api.request(actors.owner, "GET", `${prefix}/inventory`)).status).toBe(200);
+        const response = yield* api.request(actors.owner, "POST", `${prefix}/feedback`, {
+          message: "Synthetic feedback from the product analytics scenario",
+        });
         expect(response.status).toBe(200);
+        // Cases share one collector, so only this case's organization is considered.
         const events = yield* fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
-          Effect.map((text) => readEvents(text).slice(before)),
+          Effect.map((text) =>
+            readEvents(text)
+              .slice(before)
+              .filter((event) => event.properties.organization_id === actors.organization.id),
+          ),
           Effect.repeat({
             schedule: Schedule.spaced("100 millis"),
             until: (events) =>
               events.some(
                 (event) =>
                   event.event === "product_operation_completed" &&
-                  event.properties.operation === "inventory",
+                  event.properties.area === "feedback",
               ),
           }),
           Effect.timeout("10 seconds"),
         );
+        expect(
+          events.filter(
+            (event) =>
+              event.event.startsWith("product_operation_") &&
+              event.properties.operation === "inventory",
+          ),
+        ).toEqual([]);
         const completed = events.filter(
           (event) =>
-            event.event === "product_operation_completed" &&
-            event.properties.operation === "inventory",
+            event.event === "product_operation_completed" && event.properties.area === "feedback",
         );
         expect(completed).toHaveLength(1);
         expect(completed[0]).toMatchObject({
           distinct_id: actor.user.id,
           properties: {
             source: "dashboard",
-            area: "organization",
+            operation: "submit",
             organization_id: actors.organization.id,
             ok: true,
             executor_test: true,
@@ -198,14 +211,15 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
               {
                 path: "index.ts",
                 content: `
-import { defineApp, query, object, string } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ queries: {
-  echo: query({ input: object({ message: string() }) }, async (_, input) => {
+import { defineApp, query, object, string, router } from "apps";
+export default defineApp({ accounts: {} }, async () => ({ tools: router({
+   echo: query({ input: object({ message: string() }) }, async (_, input) => {
     if (input.message === "PRIVATE_TOOL_FAILURE") throw new Error("PRIVATE_TOOL_ERROR");
     return { message: input.message, result: "PRIVATE_TOOL_RESULT" };
-  })
-} }));`,
+  }),
+ }) }));`,
               },
+              appsManifest,
             ],
           },
         );
@@ -218,8 +232,8 @@ export default defineApp({ accounts: {} }, async () => ({ queries: {
         yield* open(`/org/${actors.organization.slug}/apps/${app.id}?view=tools`);
         yield* browser.use("Run a tool with private input", (page) =>
           page
-            .getByLabel("Input", { exact: true })
-            .fill(JSON.stringify({ message: "PRIVATE_TOOL_INPUT" }))
+            .getByLabel("Message", { exact: true })
+            .fill("PRIVATE_TOOL_INPUT")
             .then(() => page.getByRole("button", { name: "Run tool", exact: true }).click())
             .then(() => page.getByRole("region", { name: "Tool result" }).waitFor())
             .then(() => page.getByRole("region", { name: "Tool result" }).innerText())
@@ -229,18 +243,18 @@ export default defineApp({ accounts: {} }, async () => ({ queries: {
         yield* browser.checkpoint("tool-result-live");
         const toolError = yield* browser.use("Run a failing tool", (page) =>
           page
-            .getByLabel("Input", { exact: true })
-            .fill(JSON.stringify({ message: "PRIVATE_TOOL_FAILURE" }))
+            .getByLabel("Message", { exact: true })
+            .fill("PRIVATE_TOOL_FAILURE")
             .then(() => page.getByRole("button", { name: "Run tool", exact: true }).click())
             .then(() => page.getByRole("alert").innerText()),
         );
         yield* recordedAfter(snapshots().length);
         yield* browser.checkpoint("tool-error-live");
-        yield* open(`/org/${actors.organization.slug}/api-keys`);
-        yield* browser.use("Wait for excluded API keys page", (page) =>
-          page.getByRole("heading", { name: "API keys", exact: true }).waitFor(),
+        yield* open(`/account/tokens?organization=${actors.organization.slug}`);
+        yield* browser.use("Wait for excluded tokens page", (page) =>
+          page.getByRole("heading", { name: "Tokens", exact: true }).waitFor(),
         );
-        yield* browser.use("Insert a sentinel on the excluded API keys page", (page) =>
+        yield* browser.use("Insert a sentinel on the excluded tokens page", (page) =>
           page.evaluate(() => document.body.append("PRIVATE_API_KEY_PAGE")),
         );
         yield* open(`${dashboard}?private=PRIVATE_QUERY`);

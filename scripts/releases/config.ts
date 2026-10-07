@@ -1,6 +1,17 @@
 /** One release identity shared by builders, publishers, infrastructure and install links. */
 import { Schema } from "effect";
+import {
+  ReleaseVersion,
+  releaseChannel,
+  type ReleaseChannel,
+} from "@executor-js/utils/release-version";
 import manifest from "../../apps/cli/package.json" with { type: "json" };
+
+export {
+  compareReleaseVersions,
+  ReleaseVersion,
+  type ReleaseChannel,
+} from "@executor-js/utils/release-version";
 
 /** Conservative compressed archive budget, checked before npm receives any upload. */
 export const npmArchiveBudgetBytes = 180 * 1024 * 1024;
@@ -53,13 +64,13 @@ export const platforms = [
 /** A supported native build target. */
 export type Platform = (typeof platforms)[number];
 
-/** Reject arbitrary tags and unexpected prerelease channels before creating artifacts. */
-export const ReleaseVersion = Schema.String.check(Schema.isPattern(/^2\.\d+\.\d+(?:-beta\.\d+)?$/));
-
 const version = Schema.decodeUnknownSync(ReleaseVersion)(manifest.version);
-const channel = version.includes("-beta.") ? "beta" : "latest";
+const channel = releaseChannel(version);
 const repository = "UsefulSoftwareCo/executor";
 const tag = `executor@${version}`;
+const nodeEngine = Schema.decodeUnknownSync(
+  Schema.String.check(Schema.isPattern(/^>=\d+\.\d+\.\d+$/u)),
+)(manifest.engines.node);
 
 /** Durable v2 identities stay fixed when the version moves from beta to stable. */
 export const release = {
@@ -68,6 +79,7 @@ export const release = {
   repository,
   tag,
   npmPackage: "executor",
+  minimumNodeVersion: nodeEngine.slice(2),
   npmInstall: `npm i -g executor${channel === "beta" ? "@beta" : ""}`,
   image: "ghcr.io/usefulsoftwareco/executor-selfhost",
   imageTag: version,
@@ -81,6 +93,25 @@ export const release = {
   },
 } as const;
 
+/**
+ * Executor 1 reads GitHub's release list in the same public repository, so v2
+ * never uses its feed file names. One published prerelease holds the current
+ * update metadata per channel, pointing at the versioned release assets.
+ */
+export const desktopUpdateFeed = {
+  tag: "executor-v2-desktop-updates",
+  url: `https://github.com/${repository}/releases/download/executor-v2-desktop-updates`,
+  channel: (channel: ReleaseChannel) => `executor-v2-${channel}`,
+} as const;
+
+/** electron-updater's metadata file name for one channel on one platform. */
+export const desktopUpdateFile = (target: Platform, channel: ReleaseChannel): string => {
+  const name = desktopUpdateFeed.channel(channel);
+  if (target.platform === "darwin") return `${name}-mac.yml`;
+  if (target.platform === "win32") return `${name}.yml`;
+  return target.arch === "x64" ? `${name}-linux.yml` : `${name}-linux-${target.arch}.yml`;
+};
+
 /** Immutable npm version for one native runtime, aliased by the launcher package. */
 export const platformVersion = (target: Platform): string =>
   `${release.version}-${target.platform}-${target.arch}`;
@@ -93,15 +124,28 @@ export const platformPackage = (target: Platform): string =>
 export const platformArchive = (target: Platform): string =>
   `executor-${platformVersion(target)}.tgz`;
 
-/** Primary downloads follow electron-builder's target-specific architecture names. */
-export const desktopAsset = (target: Platform): string => {
+/** The version-free end of a primary download, following electron-builder's architecture names. */
+export const desktopAssetSuffix = (target: Platform): string => {
   const arch = target.extension === "AppImage" && target.arch === "x64" ? "x86_64" : target.arch;
-  return `${release.desktop.artifactPrefix}-${release.version}-${target.desktopOs}-${arch}.${target.extension}`;
+  return `-${target.desktopOs}-${arch}.${target.extension}`;
 };
 
-/** Public download for this exact release, never the legacy latest release. */
-export const desktopDownload = (target: Platform): string =>
-  `https://github.com/${release.repository}/releases/download/${encodeURIComponent(release.tag)}/${desktopAsset(target)}`;
+export const desktopAsset = (target: Platform): string =>
+  `${release.desktop.artifactPrefix}-${release.version}${desktopAssetSuffix(target)}`;
+
+/**
+ * The website resolves desktop downloads in the browser from the public
+ * release list, as GitHub only lists a release once it is published. A merged
+ * version bump therefore never links to installers that are not public yet.
+ * GitHub's `latest` release belongs to Executor 1 and skips prereleases, so the
+ * list is filtered by this major version's tag prefix instead.
+ */
+export const desktopDownloads = {
+  releasesApi: `https://api.github.com/repos/${repository}/releases?per_page=100`,
+  releasesPage: `https://github.com/${repository}/releases`,
+  tagPrefix: `executor@${version.split(".")[0]}.`,
+  stableOnly: channel === "latest",
+} as const;
 
 /** Fail at the build boundary if the host cannot produce a supported native artifact. */
 export const nativePlatform = (platform: string, arch: string): Platform => {

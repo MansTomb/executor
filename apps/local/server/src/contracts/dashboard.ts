@@ -8,25 +8,28 @@ import { Profile } from "@executor-js/sdk/core";
 import { DashboardAppBrowser } from "./app-browser.ts";
 import { DashboardWorkflows, DashboardWebhooks } from "./resources.ts";
 import { DashboardProfiles } from "./profiles.ts";
-import { ProfileId, ProfileRevision } from "@executor-js/sdk/core";
+import { ProfileId, ProfileRevision, ToolKind, ToolKindMismatch } from "@executor-js/sdk/core";
 import { ProfileErrors } from "@executor-js/sdk/core";
 import { AppWorkflowsActive, AccountWorkflowsActive } from "@executor-js/sdk/core";
 import { DashboardSchedules } from "./schedules.ts";
+import { DashboardMcpConnections } from "./mcp-connections.ts";
 import { AccountWebhooksActive } from "@executor-js/sdk/core";
 import { AppWebhooksActive } from "@executor-js/sdk/core";
 /** Browser-safe read contracts for inspecting the local Executor instance. */
 import {
   AccountConnectionTargetChanged,
-  AccountConnectionId,
   AccountConnectionNotFound,
   AccountConnectionClosed,
   Account,
+  AccountHealth,
+  CredentialCheck,
   AccountNotFound,
   AccountRequired,
   AccountSelectionInvalid,
   App,
   AppNotDeployed,
   AppEvaluationFailed,
+  ToolListingTimedOut,
   AppProviderFailed,
   AppId,
   AppName,
@@ -65,6 +68,17 @@ import {
   AccountId,
   DeployedApp,
   Tool,
+  ToolName,
+  ToolRouter,
+  Json,
+  ToolNotFound,
+  InputInvalid,
+  ToolCallFailed,
+  ToolElicitationFailed,
+  ToolBlocked,
+  ToolApprovalRequired,
+  ToolPolicyFailed,
+  RequestInvalid,
   type ProviderDefinition,
 } from "@executor-js/sdk";
 import {
@@ -83,7 +97,7 @@ import {
   HttpApiGroup,
   HttpApiMiddleware,
   HttpApiSchema,
-} from "effect/unstable/httpapi";
+} from "effect/http-api";
 
 /** Same callback path as Executor local, cloud and self-host; the host supplies its origin. */
 export const OAuthCallbackPath = "/api/oauth/callback";
@@ -178,6 +192,8 @@ export const DashboardAccount = Schema.Struct({
   providerName: Schema.String,
   providerUrl: Schema.NullOr(HttpUrl),
   signIn: AccountSignIn,
+  /** Checks by the apps that select the account; absent from single-account reads. */
+  health: Schema.optionalKey(AccountHealth),
 });
 export type DashboardAccount = typeof DashboardAccount.Type;
 /** Credential management uses the retained provider even when no installed app selects it. */
@@ -185,6 +201,8 @@ export const DashboardAccountDetail = Schema.Struct({
   account: DashboardAccount,
   provider: Provider,
   apps: Schema.Array(App),
+  /** The latest check by each app in `apps`; reading it never runs a check. */
+  health: AccountHealth,
   canManage: Schema.Boolean,
 });
 export type DashboardAccountDetail = typeof DashboardAccountDetail.Type;
@@ -229,8 +247,14 @@ export const DashboardApp = Schema.Struct({
 });
 export type DashboardApp = typeof DashboardApp.Type;
 
-/** Complete account-dependent catalog. Tool schemas remain dynamic, never retained deployment metadata. */
-export const DashboardTools = Schema.Struct({ tools: Schema.Array(Tool) });
+/**
+ * Complete account-dependent catalog and the routers that group it. Tool schemas remain dynamic,
+ * never retained deployment metadata.
+ */
+export const DashboardTools = Schema.Struct({
+  tools: Schema.Array(Tool),
+  routers: Schema.Array(ToolRouter),
+});
 export type DashboardTools = typeof DashboardTools.Type;
 
 /** Query results include a connection-local revision; heartbeats carry no product data. */
@@ -268,6 +292,7 @@ const toolErrors = [
   AppNotDeployed,
   DeploymentNotFound,
   AppEvaluationFailed,
+  ToolListingTimedOut,
   AppProviderFailed,
   AccountNotFound,
   AccountRequired,
@@ -393,6 +418,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           AppNotDeployed,
           DeploymentNotFound,
           AppEvaluationFailed,
+          ToolListingTimedOut,
           AppProviderFailed,
           AccountNotFound,
           AccountRequired,
@@ -400,6 +426,45 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           ToolDiscoveryTimedOut,
           OAuthReconnectRequired,
           OAuthRenewalFailed,
+        ],
+      }),
+    )
+    .add(
+      HttpApiEndpoint.post("callTool", "/dashboard/api/apps/:app/tools/call", {
+        params: { app: AppId },
+        payload: Schema.Struct({
+          tool: ToolName,
+          /** "query" for tools the catalog marks readOnly, otherwise "mutation". Omitted, it is read from the catalog. */
+          kind: Schema.optional(ToolKind),
+          input: Json,
+          deployment: Schema.optional(DeploymentId),
+          profile: Schema.optional(ProfileId),
+          expectedProfileRevision: Schema.optional(ProfileRevision),
+        }),
+        success: Json,
+        error: [
+          ...ProfileErrors,
+          StorageError,
+          CredentialsError,
+          AppNotFound,
+          AppNotDeployed,
+          DeploymentNotFound,
+          AppEvaluationFailed,
+          AppProviderFailed,
+          AccountNotFound,
+          AccountRequired,
+          AccountSelectionInvalid,
+          OAuthReconnectRequired,
+          OAuthRenewalFailed,
+          ToolNotFound,
+          ToolKindMismatch,
+          InputInvalid,
+          ToolCallFailed,
+          ToolElicitationFailed,
+          ToolBlocked,
+          ToolApprovalRequired,
+          ToolPolicyFailed,
+          RequestInvalid,
         ],
       }),
     )
@@ -455,7 +520,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
         payload: Schema.Struct({
           provider: ProviderId,
           method: AuthMethodName,
-          label: Schema.NonEmptyString,
+          label: Schema.optional(Schema.NonEmptyString),
           fields: AccountFieldsInput,
         }),
         success: Account,
@@ -476,9 +541,34 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
       }),
     )
     .add(
-      HttpApiEndpoint.patch("renameAccount", "/dashboard/api/accounts/:account", {
+      HttpApiEndpoint.post("checkCredentials", "/dashboard/api/apps/:app/credential-checks", {
+        params: { app: AppId },
+        payload: Schema.Struct({
+          provider: ProviderId,
+          method: AuthMethodName,
+          fields: AccountFieldsInput,
+        }),
+        success: Schema.NullOr(CredentialCheck),
+        error: [StorageError, AppNotFound, AuthMethodInvalid, AccountFieldsInvalid],
+      }),
+    )
+    .add(
+      HttpApiEndpoint.post("checkAccount", "/dashboard/api/accounts/:account/health", {
         params: { account: AccountId },
-        payload: Schema.Struct({ label: Schema.NonEmptyString }),
+        success: AccountHealth,
+        error: [StorageError, AccountNotFound],
+      }),
+    )
+    .add(
+      HttpApiEndpoint.patch("updateAccount", "/dashboard/api/accounts/:account", {
+        params: { account: AccountId },
+        /** Only supplied fields change; a null description removes it. */
+        payload: Schema.Struct({
+          label: Schema.optional(Schema.NonEmptyString),
+          description: Schema.optional(
+            Schema.NullOr(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(500))),
+          ),
+        }),
         success: Account,
         error: [StorageError, AccountNotFound, AccountManagementBlocked],
       }),
@@ -556,7 +646,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
         payload: Schema.Struct({
           provider: ProviderId,
           method: AuthMethodName,
-          label: Schema.NonEmptyString,
+          label: Schema.optional(Schema.NonEmptyString),
           client: Schema.optional(OAuthClientInput),
         }),
         success: ConnectionSignIn,
@@ -578,11 +668,9 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
       }),
     )
     .add(
+      // The callback's state finds its sign-in, so any tab of this dashboard can finish it.
       HttpApiEndpoint.post("completeOAuth", "/dashboard/api/accounts/oauth/complete", {
-        payload: Schema.Struct({
-          connection: AccountConnectionId,
-          callbackUrl: Schema.RedactedFromValue(HttpUrl),
-        }),
+        payload: Schema.Struct({ callbackUrl: Schema.RedactedFromValue(HttpUrl) }),
         success: Account,
         error: [
           StorageError,
@@ -611,4 +699,5 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
   DashboardProfiles.middleware(DashboardAccess),
   DashboardWorkflows.middleware(DashboardAccess),
   DashboardWebhooks.middleware(DashboardAccess),
+  DashboardMcpConnections.middleware(DashboardAccess),
 );

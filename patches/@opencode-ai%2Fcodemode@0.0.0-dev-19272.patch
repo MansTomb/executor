@@ -1,0 +1,50 @@
+diff --git a/dist/openapi/index.js b/dist/openapi/index.js
+index 1702476510e1019a2a2b6b7e14423c84a350e8c9..2425925a7bd394917d57f36b84e6f0fa29e5f79e 100644
+--- a/dist/openapi/index.js
++++ b/dist/openapi/index.js
+@@ -1,4 +1,4 @@
+-import { HttpClient } from "effect/unstable/http";
++import { HttpClient } from "effect/http";
+ import { make } from "../tool.js";
+ import { invoke } from "./runtime.js";
+ import { componentDefinitions, hasDirectionalSchemas, inputSchema, isRecord, methods, nonEmptyString, operationInput, operationOutput, operationPath, operationSecurityRequirements, securityRequirements, securitySchemes, specServerUrl, validateBaseUrl, } from "./spec.js";
+diff --git a/dist/openapi/runtime.d.ts b/dist/openapi/runtime.d.ts
+index 86ae0c3d2183e89bc3d83c1548d860bc8d69c78b..2da6eeb1b50263f69bc593a4fe0eb0cc4cc3a1d3 100644
+--- a/dist/openapi/runtime.d.ts
++++ b/dist/openapi/runtime.d.ts
+@@ -1,4 +1,4 @@
+ import { Effect } from "effect";
+-import { HttpClient } from "effect/unstable/http";
++import { HttpClient } from "effect/http";
+ import type { Plan } from "./types.js";
+ export declare const invoke: (plan: Plan, input: unknown) => Effect.Effect<unknown, unknown, HttpClient.HttpClient>;
+diff --git a/dist/openapi/runtime.js b/dist/openapi/runtime.js
+index 0fa6088d164442dfc9c41fff6ab71357f7386317..4e2d042f4f2b20b800bd26cd270014eee6b8dac6 100644
+--- a/dist/openapi/runtime.js
++++ b/dist/openapi/runtime.js
+@@ -1,5 +1,5 @@
+ import { Effect, Option, Schema, Stream } from "effect";
+-import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http";
++import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+ import { ToolError, toolError } from "../tool-error.js";
+ import { isRecord, own } from "./spec.js";
+ const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+diff --git a/dist/openapi/types.d.ts b/dist/openapi/types.d.ts
+index 52d2cb7dbb75f6998a9dd2a4ad4e8a780ba9ceb0..80e1db35c82b1434144608a797077030f2c386b1 100644
+--- a/dist/openapi/types.d.ts
++++ b/dist/openapi/types.d.ts
+@@ -1,5 +1,5 @@
+ import { Effect } from "effect";
+-import { HttpClient } from "effect/unstable/http";
++import { HttpClient } from "effect/http";
+ import type { Tool, JsonSchema } from "../tool.js";
+ /** A parsed OpenAPI 3.x document. YAML must be parsed by the host. */
+ export type Document = Record<string, unknown>;
+diff --git a/dist/openapi/types.js b/dist/openapi/types.js
+index bc386d2cd78bffa1bd1f76bf98509183f61c57d1..483cc3fd953ab434bf0209462d9a88ddce404fb0 100644
+--- a/dist/openapi/types.js
++++ b/dist/openapi/types.js
+@@ -1,2 +1,2 @@
+ import { Effect } from "effect";
+-import { HttpClient } from "effect/unstable/http";
++import { HttpClient } from "effect/http";

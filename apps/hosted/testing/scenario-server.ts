@@ -25,7 +25,7 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { provisionTestAccount, testAccountAuth, TestAccountFailed } from "./accounts.ts";
 import { cloudSessionCookiePrefix } from "../cloud/src/contracts/browser.ts";
 
@@ -37,7 +37,19 @@ const Setup = Schema.Struct({
   databaseName: Schema.NonEmptyString,
   databaseUsername: Schema.NonEmptyString,
 });
-const Id = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/));
+const Id = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u));
+const TransportCause = Schema.Struct({
+  code: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z][A-Z0-9_]*$/u))),
+  cause: Schema.optional(Schema.Unknown),
+});
+/** A socket, TLS or DNS failure's code, such as `ECONNRESET`; never its message, which can name the request. */
+const transportCode = (cause: unknown, depth = 0): string | undefined => {
+  if (depth > 3) return undefined;
+  const parsed = Schema.decodeUnknownOption(TransportCause)(cause);
+  return Option.isNone(parsed)
+    ? undefined
+    : (parsed.value.code ?? transportCode(parsed.value.cause, depth + 1));
+};
 // Preserve all 128 bits in at most 27 characters, including the prefix.
 const organizationSlug = (id: string) => `s-${BigInt(`0x${id}`).toString(36)}`;
 const Request = Schema.Struct({ id: Id, label: Schema.NonEmptyString });
@@ -244,6 +256,12 @@ const main = Effect.gen(function* () {
         ).rows,
       )[0];
     let cleanupPhase = "start-removal";
+    // Keep the name and message of the last failed step; its request details stay out of the log.
+    let cleanupCause: string | undefined;
+    const cleanupFailed = (cause: unknown) => {
+      cleanupCause = cause instanceof Error ? `${cause.name}: ${cause.message}` : typeof cause;
+      return new TestAccountFailed({ stage: "fixture" });
+    };
     yield* scenario.gate.withPermits(1)(
       Effect.gen(function* () {
         let organizationId = scenario.organization;
@@ -278,7 +296,7 @@ const main = Effect.gen(function* () {
             }
             return organization;
           },
-          catch: () => new TestAccountFailed({ stage: "fixture" }),
+          catch: cleanupFailed,
         });
         if (cleanup !== undefined) {
           const owner = yield* actor(id, "owner");
@@ -329,17 +347,27 @@ const main = Effect.gen(function* () {
             }
             for (const user of scenario.users) await ctx.internalAdapter.deleteUser(user);
           },
-          catch: () => new TestAccountFailed({ stage: "fixture" }),
+          catch: cleanupFailed,
         }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis") }));
         owned.delete(id);
       }).pipe(
         // Leave time to report the error before the runner's 60-second cleanup deadline.
         Effect.timeout("55 seconds"),
-        Effect.tapError(() =>
+        Effect.tapError((error) =>
           Console.error({
             message: "Fixture cleanup did not complete",
             scenario: id,
             phase: cleanupPhase,
+            error: error._tag,
+            ...(error._tag === "HttpClientError"
+              ? {
+                  reason: error.reason._tag,
+                  ...(error.reason._tag === "TransportError"
+                    ? { code: transportCode(error.reason.cause) ?? "unknown" }
+                    : {}),
+                }
+              : {}),
+            ...(cleanupCause === undefined ? {} : { cause: cleanupCause }),
           }),
         ),
       ),
@@ -371,7 +399,7 @@ const main = Effect.gen(function* () {
     { flag: "wx", mode: 0o600 },
   );
   yield* Effect.addFinalizer(() => fs.remove(output).pipe(Effect.orDie));
-  yield* Effect.never;
+  return yield* Effect.never;
 });
 NodeRuntime.runMain(
   Effect.scoped(main).pipe(

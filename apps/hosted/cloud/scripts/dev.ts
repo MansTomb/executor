@@ -2,7 +2,7 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Effect, FileSystem, Path, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { cloudDevelopment } from "../src/contracts/development.ts";
 
 class LocalCertificateUnavailable extends Schema.TaggedError<LocalCertificateUnavailable>()(

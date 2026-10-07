@@ -2,7 +2,7 @@ import { Cause, Clock, Effect, Exit, Logger, Option, Schema } from "effect";
 import { captureTelemetry } from "./context.ts";
 import type { TelemetryBatch } from "./relay.ts";
 
-const Name = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/));
+const Name = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u));
 const Dimensions = {
   event: Name,
   operation: Schema.optional(Name),
@@ -30,7 +30,7 @@ export const AnalyticsEvent = Schema.Union([
 ]);
 export type AnalyticsEvent = typeof AnalyticsEvent.Type;
 export const AnalyticsRecord = Schema.Struct({
-  id: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/)),
+  id: Schema.String.check(Schema.isPattern(/^[a-f0-9-]{36}$/u)),
   timestamp: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   value: AnalyticsEvent,
 });

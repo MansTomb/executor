@@ -2,12 +2,7 @@
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { openapiAppFiles } from "../support/authored-templates.ts";
@@ -129,7 +124,8 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI User-Agent", (it) => {
         for (const userAgent of [undefined, "Custom REST client"]) {
           const result = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
             profile,
-            tool: "queries.currentUser",
+            tool: "user.currentUser",
+            kind: "query",
             input: {
               accountId: account,
               input: userAgent === undefined ? {} : { headers: { "User-Agent": userAgent } },

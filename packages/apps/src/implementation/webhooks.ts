@@ -1,5 +1,6 @@
 /** Native webhook dispatch. The author verifies signatures before parsing or performing side effects. */
-import { Cause, Effect, Encoding, Schema, Stream } from "effect";
+import { Cause, Effect, Schema, Stream } from "effect";
+import { Base64 } from "effect/encoding";
 import type { AppDefinition } from "../contracts/app.ts";
 import {
   HostDeclarationInvalid,
@@ -152,7 +153,7 @@ export const dispatchWebhook = <
       yield* invoke(hook.unregister, { ...input, state });
       return null;
     }
-    const body = yield* Effect.fromResult(Encoding.decodeBase64(command.request.body)).pipe(
+    const body = yield* Effect.fromResult(Base64.decode(command.request.body)).pipe(
       Effect.mapError(() => new HostInputInvalid()),
     );
     if (body.byteLength > defaultWebhookTransportLimits.maxBodyBytes)
@@ -206,7 +207,7 @@ export const dispatchWebhook = <
         Schema.decodeUnknownEffect(WebhookResponseData)({
           status: response.status,
           headers,
-          body: Encoding.encodeBase64(new Uint8Array(bytes)),
+          body: Base64.encode(new Uint8Array(bytes)),
         }),
       new HostOutputInvalid(),
     );

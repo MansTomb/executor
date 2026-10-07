@@ -1,10 +1,12 @@
 import { storedApp, storedDeployment } from "./apps.ts";
-import { evaluationFailure, snapshot as invocation } from "./tools.ts";
-import { AppSkills } from "apps/contracts";
-import { AppEvaluationFailed } from "../contracts/tools.ts";
+import { snapshot as invocation } from "./tools.ts";
+import { appProviderFailure } from "./provider-error.ts";
+import { AppSkills, ProviderError } from "apps/contracts";
+import { AppEvaluationFailed, evaluationFailure } from "../contracts/tools.ts";
 import { AppNotDeployed } from "../contracts/apps.ts";
 /** Skill reads project one authorized runtime catalog, or a retained pre-capability folder. */
-import { Crypto, Effect, Encoding, Schema } from "effect";
+import { Crypto, Effect, Schema } from "effect";
+import { Hex } from "effect/encoding";
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { AppSkillInputs, AppSkillNotFound, SkillRevisionChanged } from "../contracts/skills.ts";
 import { RequestInvalid, StorageError } from "../contracts/shared.ts";
@@ -14,17 +16,27 @@ import type { Declarations } from "./declarations.ts";
 import { readDeploymentSource } from "./deployment-source.ts";
 import { prepareAppSkills } from "./skill-source.ts";
 
-/** Runtime skill results; only a catalog known to have no live loader is reused. */
+/**
+ * Runtime skill results. A catalog is reused when it has no live loader, or when its
+ * `dynamicSkills` loader read through the app cache, whose freshness and invalidation then govern
+ * it. A loader that fetches without the cache, or a build that cannot say, is read every time.
+ */
 const Catalog = Schema.Struct({
   skills: Schema.Unknown,
   dynamic: Schema.optionalKey(Schema.Boolean),
+  cached: Schema.optionalKey(Schema.Boolean),
 });
-const StaticCatalog = Schema.Struct({ skills: Schema.Unknown, dynamic: Schema.Literal(false) });
+/** A catalog whose loader read a publisher through the app cache, which can change it. */
+const Published = Schema.Struct({ skills: Schema.Unknown, cached: Schema.Literal(true) });
+const Reusable = Schema.Union([
+  Schema.Struct({ skills: Schema.Unknown, dynamic: Schema.Literal(false) }),
+  Published,
+]);
 
 /** Sorted catalog digest; equal content has equal revisions. */
 const catalogRevision = (crypto: Crypto.Crypto, skills: typeof AppSkills.Type) =>
   crypto.digest("SHA-256", new TextEncoder().encode(JSON.stringify(skills))).pipe(
-    Effect.map(Encoding.encodeHex),
+    Effect.map(Hex.encode),
     Effect.mapError(() => new StorageError()),
   );
 const sorted = (skills: typeof AppSkills.Type) =>
@@ -37,7 +49,10 @@ const sorted = (skills: typeof AppSkills.Type) =>
 
 /**
  * Bind skill reads to the app's code lineage. Builds with the skills capability are evaluated
- * with the selected profile; their catalog is served stale-while-revalidate within its bound.
+ * with the selected profile. A read pinned to a revision is served a kept catalog with that
+ * revision, stale-while-revalidate within its bound. A read without one gets the publisher's
+ * current catalog: a stale kept catalog that reflects a publisher is evaluated again first, so
+ * the revision it returns is not replaced by a background refresh moments later.
  */
 export const makeSkills = (
   db: Query,
@@ -71,8 +86,6 @@ export const makeSkills = (
         capabilities?.skills === true
           ? yield* Effect.gen(function* () {
               const state = yield* invocation(db, { ...input, deployment });
-              // Builds that report their sources keep catalogs without a live loader. A catalog
-              // from `dynamicSkills`, or from an older build that cannot say, is read every time.
               const sources = capabilities.skillSources === true;
               const known = input.revision;
               const catalog = yield* declarations.read(
@@ -82,21 +95,25 @@ export const makeSkills = (
                   runtime
                     .skills({ app: app.id, build: state.deployment.build, sources, ...context })
                     .pipe(
+                      // A service's rejection names the selected account, as in tool listing.
                       Effect.mapError((error) =>
-                        evaluationFailure(
-                          { app: app.id, deployment },
-                          error,
-                          "Skill evaluation failed",
-                        ),
+                        Schema.is(ProviderError)(error)
+                          ? appProviderFailure(state, error)
+                          : evaluationFailure(
+                              { app: app.id, deployment },
+                              error,
+                              "Skill evaluation failed",
+                            ),
                       ),
                     ),
                 {
-                  retain: (value) => Schema.is(StaticCatalog)(value),
+                  retain: (value) => Schema.is(Reusable)(value),
+                  revalidate: (value) => known === undefined && Schema.is(Published)(value),
                   // A caller holding another revision rereads rather than receive an older one.
                   current: (value) =>
                     known === undefined
                       ? Effect.succeed(true)
-                      : Schema.decodeUnknownEffect(StaticCatalog)(value).pipe(
+                      : Schema.decodeUnknownEffect(Catalog)(value).pipe(
                           Effect.flatMap((catalog) => decode(catalog.skills)),
                           Effect.flatMap((skills) => catalogRevision(crypto, skills)),
                           Effect.map((revision) => revision === known),

@@ -3,7 +3,7 @@ import { useId, useState, type ReactNode } from "react";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type { AppId, Tool } from "@executor-js/sdk";
 import type { GrantPolicy } from "@executor-js/mcp-auth/grants";
-import { AsyncResult, type Atom } from "effect/unstable/reactivity";
+import { AsyncResult, type Atom } from "effect/reactivity";
 import { RadioGroup } from "radix-ui";
 import { Checkbox } from "../components/checkbox.tsx";
 import { Button } from "../components/button.tsx";
@@ -19,7 +19,7 @@ import {
 /** A consent form needs at least one usable selection, or explicit all-app access. */
 export const hasGrantSelection = (policy: GrantPolicy) =>
   policy.kind === "all" ||
-  policy.apps.some(({ tools }) => tools.kind === "all" || tools.names.length > 0);
+  policy.apps.some(({ tools }) => tools.kind !== "selected" || tools.names.length > 0);
 
 /** Both hosts display the same permissions; each host supplies its authorized catalog and navigation. */
 export function GrantPicker<E>({

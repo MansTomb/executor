@@ -3,7 +3,10 @@ import type { Effect, Schema } from "effect";
 import type { OperationContext } from "../contracts/operations.ts";
 import type { ToolAnnotations } from "../contracts/tools.ts";
 import type { JsonObject, JsonValue } from "../contracts/schema.ts";
-import { operationDeclaration, type Operation } from "./operations.ts";
+import { nativeOperation, operationDeclaration, type Operation } from "./operations.ts";
+import { fixedRouter } from "./router-catalog.ts";
+import { routerDeclaration } from "./router.ts";
+import type { AppOperation } from "../contracts/operations.ts";
 
 /** Explicit corrections for upstream read-only hints or unusual HTTP semantics. */
 export type OperationKinds = Readonly<Record<string, "query" | "mutation">>;
@@ -14,6 +17,9 @@ interface ProtocolOperation {
   readonly annotations?: ToolAnnotations | undefined;
   readonly _meta?: JsonObject | undefined;
   readonly input: Schema.Decoder<JsonValue>;
+  /** Checks and describes every returned value. */
+  readonly output?: Schema.Decoder<JsonValue> | undefined;
+  /** Describes the returned value without checking it; ignored when `output` is declared. */
   readonly outputSchema?: JsonObject | undefined;
   readonly run: (context: OperationContext, input: JsonValue) => Effect.Effect<unknown, unknown>;
 }
@@ -22,11 +28,13 @@ export const protocolOperations = (
   operations: Readonly<Record<string, ProtocolOperation>>,
   kinds: OperationKinds = {},
 ) => {
-  const queries: Record<string, Operation<JsonValue, unknown, "query", OperationContext>> = {};
-  const mutations: Record<string, Operation<JsonValue, unknown, "mutation", OperationContext>> = {};
+  const declared: Record<
+    string,
+    Operation<JsonValue, unknown, "query" | "mutation", OperationContext>
+  > = {};
   for (const [name, operation] of Object.entries(operations)) {
     const kind = Object.hasOwn(kinds, name)
-      ? kinds[name]
+      ? (kinds[name] ?? "mutation")
       : operation.readOnly === true
         ? "query"
         : "mutation";
@@ -36,16 +44,31 @@ export const protocolOperations = (
       ...(operation.annotations === undefined ? {} : { annotations: operation.annotations }),
       ...(operation._meta === undefined ? {} : { _meta: operation._meta }),
       input: operation.input,
+      ...(operation.output === undefined ? {} : { output: operation.output }),
       run: operation.run,
     };
     // Copy the property itself: an adapter may build a large output schema only when it is read.
     const output = Object.getOwnPropertyDescriptor(operation, "outputSchema");
     const withOutput = <T extends object>(target: T): T =>
-      output === undefined || (output.get === undefined && output.value === undefined)
+      operation.output !== undefined ||
+      output === undefined ||
+      (output.get === undefined && output.value === undefined)
         ? target
         : Object.defineProperty(target, "outputSchema", { ...output, enumerable: true });
-    if (kind === "query") queries[name] = operationDeclaration(withOutput({ ...native, kind }));
-    else mutations[name] = operationDeclaration(withOutput({ ...native, kind: "mutation" }));
+    declared[name] = operationDeclaration(withOutput({ ...native, kind }));
   }
-  return { queries, mutations };
+  return declared;
+};
+
+/** Operations already discovered, as a router keyed by upstream name. */
+export const protocolRouter = (
+  operations: Readonly<Record<string, ProtocolOperation>>,
+  kinds: OperationKinds = {},
+) => {
+  const native: Record<string, AppOperation> = {};
+  for (const [name, declaration] of Object.entries(protocolOperations(operations, kinds))) {
+    const operation = nativeOperation(declaration);
+    if (operation !== undefined) native[name] = operation;
+  }
+  return routerDeclaration(fixedRouter(native));
 };

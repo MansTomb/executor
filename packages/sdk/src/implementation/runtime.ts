@@ -1,17 +1,22 @@
 import type { AnalyticsRecord } from "@executor-js/telemetry";
 /** Public Promise boundary for host-supplied runtime implementations. */
-import { Effect, Option, Schema } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
 import {
   HostAccountsInvalid,
   ResolvedAccounts,
   type HostContext,
-  type AppStorage,
-  type HostedTool,
-  type HostedToolSummary,
+  type HostedCatalog,
+  type HostedCatalogSummary,
   type AppSkillSource,
   type ResolvedAccountsInput,
 } from "apps/contracts";
-import type { BuiltApp, Runtime, RuntimeAsset } from "../contracts/runtime.ts";
+import {
+  AppCacheChanges,
+  type BuiltApp,
+  type Runtime,
+  type RuntimeAsset,
+} from "../contracts/runtime.ts";
+import type { DeclarationCache } from "../contracts/declarations.ts";
 import type { SourceFiles } from "../contracts/deployment.ts";
 import type { BuildId, Json } from "../contracts/shared.ts";
 import { BlobStore, type BlobStorage } from "../contracts/blobs.ts";
@@ -41,18 +46,17 @@ export interface ResolvedAppRuntime {
     readonly accounts: ResolvedAccountsInput;
     readonly tools?: readonly string[];
     readonly scheduled?: true;
-  }) => Promise<readonly HostedTool[]>;
+  }) => Promise<HostedCatalog>;
   readonly index: (input: {
     readonly app: string;
     readonly build: BuildId;
     readonly accounts: ResolvedAccountsInput;
-  }) => Promise<readonly HostedToolSummary[]>;
+  }) => Promise<HostedCatalogSummary>;
   readonly query: (input: {
     readonly app: string;
     readonly build: BuildId;
     readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
-    readonly storage?: AppStorage;
     readonly name: string;
     readonly input: Json;
   }) => Promise<Json>;
@@ -61,7 +65,6 @@ export interface ResolvedAppRuntime {
     readonly build: BuildId;
     readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
-    readonly storage?: AppStorage;
     readonly name: string;
     readonly input: Json;
   }) => Promise<Json>;
@@ -74,13 +77,13 @@ export interface ResolvedAppRuntime {
   }) => Promise<Json>;
   readonly call: (input: {
     readonly app: string;
-    readonly storage?: AppStorage;
     readonly approval?: NonNullable<HostContext["approval"]>;
     readonly elicitation?: NonNullable<HostContext["elicitation"]>;
     readonly build: BuildId;
     readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
     readonly tool: string;
+    readonly kind?: "query" | "mutation";
     readonly input: Json;
   }) => Promise<Json>;
 }
@@ -151,15 +154,28 @@ export const createAppRuntime = (options: {
   };
 };
 
-/** Provide the host store without changing caller cancellation, tracing, or resource scopes. */
+/**
+ * Provide the host store without changing caller cancellation, tracing, or resource scopes. App
+ * cache changes the runtime reports forget that app's kept results in `declarations`.
+ */
 export const toEffectRuntime = (
   definition: AppRuntime,
   blobs: BlobStorage,
+  declarations?: DeclarationCache,
   recordAnalytics?: (app: string, records: readonly AnalyticsRecord[]) => Effect.Effect<void>,
 ): Runtime => {
   const runtime = definition[NativeRuntime];
   const asset = runtime.asset;
-  const provide = Effect.provideService(BlobStore, {
+  const changes =
+    declarations === undefined
+      ? undefined
+      : {
+          changed: (app: string) =>
+            Clock.currentTimeMillis.pipe(Effect.map((at) => declarations.changed(app, at))),
+        };
+  const observe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    changes === undefined ? effect : Effect.provideService(effect, AppCacheChanges, changes);
+  const store = Effect.provideService(BlobStore, {
     get: (key) =>
       blobs.get(key).pipe(
         Effect.tap((body) =>
@@ -170,6 +186,11 @@ export const toEffectRuntime = (
         ),
         Effect.withSpan("storage.blob.get"),
       ),
+    exists: (key) =>
+      blobs.exists(key).pipe(
+        Effect.tap((found) => Effect.annotateCurrentSpan("storage.blob.found", found)),
+        Effect.withSpan("storage.blob.exists"),
+      ),
     put: (key, body) =>
       blobs.put(key, body).pipe(
         Effect.withSpan("storage.blob.put", {
@@ -178,6 +199,7 @@ export const toEffectRuntime = (
       ),
     remove: (key) => blobs.remove(key).pipe(Effect.withSpan("storage.blob.remove")),
   });
+  const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => observe(store(effect));
   const withAnalytics = <A extends { readonly app: string }>(input: A) => ({
     ...input,
     ...(recordAnalytics === undefined
@@ -201,5 +223,7 @@ export const toEffectRuntime = (
     workflow: (input) => runtime.workflow(withAnalytics(input)).pipe(provide),
     webhook: (input) => runtime.webhook(withAnalytics(input)).pipe(provide),
     call: (input) => runtime.call(withAnalytics(input)).pipe(provide),
+    checkAccount: (input) => runtime.checkAccount(withAnalytics(input)).pipe(provide),
+    migrate: (input) => runtime.migrate(withAnalytics(input)).pipe(provide),
   };
 };

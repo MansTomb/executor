@@ -1,7 +1,7 @@
 import { makeAnalyticsStorage } from "./analytics-storage.ts";
 /** Runtime storage and the explicit, transactional migration boundary. */
 import { Effect, Option } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { sqlAdapter } from "fumadb-effect/sql";
 import type { Provider as SqlProvider } from "fumadb-effect";
 import { makeReactiveStore } from "@executor-js/reactivity";
@@ -20,7 +20,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
     const sql = yield* SqlClient.SqlClient;
     const reactivity = yield* makeReactiveStore({ namespace: "executor" });
     const client = executorDatabase.client(sqlAdapter({ provider: options.provider }));
-    const db = bindOrm(client.orm("4.0.0"), sql, reactivity);
+    const db = bindOrm(client.orm("4.0.6"), sql, reactivity);
     const checkMigration = Effect.gen(function* () {
       const migrator = yield* client.createMigrator;
       const version = yield* migrator.version;
@@ -58,7 +58,7 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
     );
     return {
       analytics: makeAnalyticsStorage(sql),
-      orm: (_version: "4.0.0") => db,
+      orm: (_version: "4.0.6") => db,
       reactivity,
       checkMigration,
       migrate,

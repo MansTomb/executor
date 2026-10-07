@@ -1,7 +1,7 @@
 /** Synthetic authored app used by the runtime walkthrough. No real credentials. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   query,
   array,
@@ -13,6 +13,7 @@ import {
   secrets,
   string,
   type Infer,
+  router,
 } from "apps";
 
 const service = defineProvider({
@@ -41,7 +42,7 @@ export default defineApp(
       throw new Error(`Synthetic evaluation failure ${accounts.service.fields.token}`);
     const catalog = await decodeJson(response, Catalog);
     return {
-      queries: {
+      tools: router({
         ...Object.fromEntries(
           catalog.names.map((name) => [
             name,
@@ -85,7 +86,7 @@ export default defineApp(
               }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
             ),
         ),
-      },
+      }),
     };
   },
 );

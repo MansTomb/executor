@@ -1,15 +1,18 @@
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
-import { Cause, Clock, Effect, Encoding, Redacted, Result, Schema, type Crypto } from "effect";
+import { Cause, Clock, Effect, Redacted, Result, Schema, type Crypto } from "effect";
+import { Hex } from "effect/encoding";
 import {
   HostedWorkflow,
   WorkflowFailure,
   WorkflowRun,
   WorkflowRunId,
+  WorkflowRunFailure,
   WorkflowRunPage,
   WorkflowValue,
   type WorkflowHostControls,
 } from "apps/contracts";
+import { workflowFailureDetail } from "../contracts/workflow-errors.ts";
 import { WorkflowHost, type WorkflowRuntime } from "../contracts/workflow-runtime.ts";
 import {
   StartWorkflow,
@@ -22,7 +25,7 @@ import { AppId, DeploymentId, OwnerId, StorageError, type Json } from "../contra
 import type { Credentials } from "../contracts/storage.ts";
 import type { Runtime } from "../contracts/runtime.ts";
 import type { ExecutorDatabase } from "./storage.ts";
-import type { AppDatabases } from "@executor-js/app-data";
+import type { Executor } from "../contracts/executor.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
 import { storedProfile } from "./profiles.ts";
@@ -30,8 +33,8 @@ import { ProfileId } from "../contracts/shared.ts";
 import { storedAccount } from "./accounts.ts";
 import { storedApp } from "./apps.ts";
 import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
-import { bindAppStorage } from "./app-database.ts";
 import type { Declarations } from "./declarations.ts";
+import { ownsDatabase } from "../contracts/apps.ts";
 
 const StoredRun = Schema.Struct({
   id: WorkflowRunId,
@@ -52,6 +55,8 @@ const Payload = Schema.Struct({
   input: WorkflowValue,
   request: WorkflowValue,
   output: Schema.optionalKey(WorkflowValue),
+  /** The failing step and app error; encrypted with the run's other authored values. */
+  failure: Schema.optionalKey(WorkflowRunFailure),
 });
 const terminal = (row: typeof StoredRun.Type) =>
   row.status === "complete" || row.status === "errored" || row.status === "terminated";
@@ -80,16 +85,35 @@ const safe = <A>(
     }),
   );
 
+/**
+ * Hand a committed queued run to the native engine. The run row is already durable, so a transient
+ * engine failure leaves it queued for the next status read or the reconciliation job to dispatch,
+ * and the caller still receives the run it created. Reports whether the engine accepted it.
+ */
+const dispatch = (backend: WorkflowRuntime, run: WorkflowRunId) =>
+  backend.start(run).pipe(
+    Effect.as(true),
+    Effect.catchIf(
+      (error) => error.reason === "engine" && error.retryable,
+      () =>
+        Effect.annotateCurrentSpan("executor.workflow.dispatch", "deferred").pipe(
+          Effect.andThen(
+            Effect.logWarning("Workflow dispatch deferred to reconciliation", { run }),
+          ),
+          Effect.as(false),
+        ),
+    ),
+  );
+
 /** Compose lifecycle operations and private execution callbacks without acquiring resources. */
 export const makeWorkflowRuns = (
   storage: ExecutorDatabase,
   runtime: Runtime,
-  resolveAccount: ReturnType<typeof makeOAuth>["resolve"],
+  resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
   credentials: Credentials,
   crypto: Crypto.Crypto,
   declarations: Declarations,
   backend?: WorkflowRuntime,
-  appStorage?: AppDatabases,
   lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
@@ -123,7 +147,12 @@ export const makeWorkflowRuns = (
         createdAt: row.createdAt.toISOString(),
         status: row.status,
         ...(row.status === "complete" ? { output: payload.output } : {}),
-        ...(row.status === "errored" ? { error: row.failure } : {}),
+        ...(row.status === "errored"
+          ? {
+              error: row.failure,
+              ...(payload.failure === undefined ? {} : { failure: payload.failure }),
+            }
+          : {}),
       }).pipe(Effect.mapError(() => failure("engine")));
     });
   const finish: WorkflowHost["finish"] = (run, result) =>
@@ -139,6 +168,7 @@ export const makeWorkflowRuns = (
               input: payload.input,
               request: payload.request,
               ...(result.ok ? { output: result.output } : {}),
+              ...(!result.ok && result.detail !== undefined ? { failure: result.detail } : {}),
             }),
           );
           yield* query(() =>
@@ -177,8 +207,7 @@ export const makeWorkflowRuns = (
         );
         return {
           ...(yield* resolve(state, resolveAccount, lifecycle)),
-          database: state.deployment.requirements.database !== undefined,
-          ...(yield* bindAppStorage(appStorage, row.app)),
+          database: ownsDatabase(state.deployment.requirements),
           workflowControls: controls(state),
         };
       }),
@@ -228,13 +257,14 @@ export const makeWorkflowRuns = (
             build: current.build,
             ...bound,
             deadline,
-            tool: `${input.kind === "query" ? "queries" : "mutations"}.${input.name}`,
+            tool: input.name,
+            kind: input.kind,
             input: input.input,
             ...(input.kind === "mutation"
               ? {
                   replay: {
                     key: input.stepId,
-                    fingerprint: Encoding.encodeHex(
+                    fingerprint: Hex.encode(
                       yield* crypto.digest(
                         "SHA-256",
                         new TextEncoder().encode(
@@ -256,6 +286,26 @@ export const makeWorkflowRuns = (
               HostToolBlocked: () => Effect.fail(failure("approval")),
               HostInputInvalid: () => Effect.fail(failure("input")),
               HostToolNotFound: () => Effect.fail(failure("operation")),
+              HostKindMismatch: () => Effect.fail(failure("operation")),
+              HostOperationFailed: ({ errorName, message }) =>
+                Effect.fail(
+                  new WorkflowFailure({
+                    reason: "execution",
+                    retryable: true,
+                    ...(errorName === undefined ? {} : { errorName }),
+                    ...(message.length === 0 ? {} : { message }),
+                  }),
+                ),
+              // The same step exceeds the same budget again, so retrying it cannot succeed.
+              DatabaseLimitExceeded: (error) =>
+                Effect.fail(
+                  new WorkflowFailure({
+                    reason: "execution",
+                    retryable: false,
+                    errorName: error._tag,
+                    message: error.message,
+                  }),
+                ),
             }),
           );
         return yield* Schema.decodeUnknownEffect(WorkflowValue)(result).pipe(
@@ -301,7 +351,12 @@ export const makeWorkflowRuns = (
       if (Result.isFailure(result)) {
         if (result.failure.reason === "engine" && result.failure.retryable)
           return yield* result.failure;
-        yield* finish(run, { ok: false, error: result.failure.reason });
+        const detail = workflowFailureDetail(result.failure);
+        yield* finish(run, {
+          ok: false,
+          error: result.failure.reason,
+          ...(detail === undefined ? {} : { detail }),
+        });
         return yield* result.failure;
       }
       yield* finish(run, { ok: true, output: result.success });
@@ -317,7 +372,8 @@ export const makeWorkflowRuns = (
         // native dispatch. A status read reconciles that gap without waiting for cron.
         const current = yield* read(row.id);
         if (terminal(current)) return yield* view(current);
-        if (current.status === "queued") yield* backend.start(row.id);
+        if (current.status === "queued" && !(yield* dispatch(backend, row.id)))
+          return yield* view(current);
         state = yield* backend.status(row.id);
       }
       if (state.status === "complete") {
@@ -385,12 +441,21 @@ export const makeWorkflowRuns = (
         const state = inherited ?? (yield* snapshot(db, input));
         const bound = yield* resolve(state, resolveAccount, lifecycle);
         const parsed = yield* safe(
-          runtime.workflow({
-            app: input.app,
-            build: state.deployment.build,
-            ...bound,
-            command: { operation: "workflow-validate", name: input.workflow, input: input.input },
-          }),
+          runtime
+            .workflow({
+              app: input.app,
+              build: state.deployment.build,
+              ...bound,
+              command: { operation: "workflow-validate", name: input.workflow, input: input.input },
+            })
+            .pipe(
+              // The app rejects input with its own WorkflowFailure. A build that could not load or
+              // answer is the host's failure, not the caller's input.
+              Effect.catchTags({
+                RuntimeBuildUnavailable: () => Effect.fail(failure("engine", true)),
+                RuntimeProtocolFailed: () => Effect.fail(failure("engine", true)),
+              }),
+            ),
           "input",
         );
         const encrypted = yield* credentials.encrypt(
@@ -470,7 +535,7 @@ export const makeWorkflowRuns = (
       if (retained.name !== input.workflow || stable(payload.request) !== stable(input.input))
         return yield* failure("conflict");
       yield* Effect.annotateCurrentSpan("executor.run.id", retained.id);
-      if (!terminal(retained)) yield* backend.start(retained.id);
+      if (!terminal(retained)) yield* dispatch(backend, retained.id);
       return yield* view(yield* read(retained.id));
     }).pipe(Effect.withSpan("workflow.start", { attributes: { "executor.app.id": input.app } }));
   const terminate = (input: typeof WorkflowTarget.Type) =>
@@ -516,6 +581,7 @@ export const makeWorkflowRuns = (
                     ? []
                     : [b("profile", "=", input.profile)]),
               ...(input.workflow === undefined ? [] : [b("name", "=", input.workflow)]),
+              ...(input.key === undefined ? [] : [b("key", "=", input.key)]),
               ...(input.cursor === undefined ? [] : [b("id", ">", input.cursor)]),
             ),
           orderBy: ["id", "asc"],
@@ -605,6 +671,14 @@ export const makeWorkflowRuns = (
       get,
       terminate,
       list,
+      pinned: (input: Parameters<Executor["apps"]["workflowRuns"]["pinned"]>[0]) =>
+        Effect.gen(function* () {
+          yield* storedApp(db, { app: input.app, owner: input.owner });
+          const row = yield* read(input.run, input.app);
+          if (input.owner !== undefined && row.owner !== input.owner)
+            return yield* failure("not_found");
+          return { accounts: row.accounts, profile: row.profile };
+        }),
     },
     host: {
       get: (run) => safe(read(run).pipe(Effect.flatMap(view)), "engine", true),

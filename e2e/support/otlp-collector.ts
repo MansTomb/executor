@@ -1,62 +1,75 @@
 /** Run the shipped collector as a separate process; query only its public HTTP API. */
 import { Deferred, Effect, FileSystem, Path, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-const Ready = Schema.Struct({ version: Schema.Literal(1), url: Schema.String });
+/** workerd's control message once the collector socket accepts connections. */
+const Listening = Schema.Struct({
+  event: Schema.Literal("listen"),
+  socket: Schema.Literal("motel"),
+  port: Schema.Number,
+});
 
-/** Each managed Cloud target owns an isolated on-disk collector and its lifetime. */
-export const startOtlpCollector = (directory: string) =>
+/**
+ * Serve the bundle `e2e:prepare` built. Every target in a run serves the same directory, and a
+ * build replaces it, so nothing in a run builds it.
+ */
+export const serveOtlpCollector = (directory: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const diagnostics = path.join(directory, "data/diagnostics");
-    yield* fs.makeDirectory(diagnostics, { recursive: true });
-    const built = yield* processes.exitCode(
-      ChildProcess.make("bun", ["run", "telemetry:build"], {
-        stdout: "inherit",
-        stderr: "inherit",
-      }),
-    );
-    if (built !== 0) return yield* Effect.die("Could not build the shipped telemetry collector");
+    const data = path.join(diagnostics, "motel");
+    yield* fs.makeDirectory(data, { recursive: true });
     const bundle = path.resolve("packages/telemetry/dist/motel");
-    const ready = yield* Deferred.make<string>();
+    if (!(yield* fs.exists(path.join(bundle, "motel.capnp"))))
+      return yield* Effect.die("Run bun run e2e:prepare to build the telemetry collector first.");
+    // The bundle's config names its directories and socket; this supplies their paths and a free port.
     const child = yield* processes.spawn(
       ChildProcess.make(
-        path.join(bundle, process.platform === "win32" ? "bun.exe" : "bun"),
-        [path.join(bundle, "src/executor-server.ts")],
+        path.resolve("node_modules/.bin", process.platform === "win32" ? "workerd.exe" : "workerd"),
+        [
+          "serve",
+          "--control-fd=3",
+          `--directory-path=motel-data=${data}`,
+          `--directory-path=motel-assets=${path.join(bundle, "web/dist")}`,
+          "--socket-addr=motel=127.0.0.1:0",
+          path.join(bundle, "motel.capnp"),
+        ],
         {
-          cwd: diagnostics,
-          stdin: "pipe",
+          cwd: data,
+          stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
-          extendEnv: false,
-          env: {
-            MOTEL_OTEL_BASE_URL: "http://127.0.0.1:0",
-            MOTEL_OTEL_HOST: "127.0.0.1",
-            MOTEL_OTEL_DB_PATH: path.join(diagnostics, "telemetry.sqlite"),
-            XDG_STATE_HOME: diagnostics,
-            MOTEL_OTEL_RETENTION_HOURS: "168",
-          },
+          additionalFds: { fd3: { type: "output" } },
           forceKillAfter: "3 seconds",
         },
       ),
     );
-    yield* child.stdout.pipe(
+    yield* Effect.forEach(
+      [child.stdout, child.stderr],
+      (output) =>
+        output.pipe(
+          Stream.decodeText,
+          Stream.runForEach((text) =>
+            fs.writeFileString(path.join(directory, "collector.log"), text, {
+              flag: "a",
+              mode: 0o600,
+            }),
+          ),
+          Effect.forkScoped,
+        ),
+      { discard: true },
+    );
+    const ready = yield* Deferred.make<string>();
+    yield* child.getOutputFd(3).pipe(
       Stream.decodeText,
       Stream.splitLines,
       Stream.runForEach((line) =>
-        Schema.decodeUnknownEffect(Schema.fromJsonString(Ready))(line).pipe(
-          Effect.flatMap(({ url }) => Deferred.succeed(ready, url)),
-          Effect.asVoid,
+        Schema.decodeUnknownEffect(Schema.fromJsonString(Listening))(line).pipe(
+          Effect.flatMap(({ port }) => Deferred.succeed(ready, `http://127.0.0.1:${port}`)),
+          Effect.ignore,
         ),
-      ),
-      Effect.forkScoped,
-    );
-    yield* child.stderr.pipe(
-      Stream.decodeText,
-      Stream.runForEach((text) =>
-        fs.writeFileString(path.join(directory, "collector.log"), text, { flag: "a", mode: 0o600 }),
       ),
       Effect.forkScoped,
     );

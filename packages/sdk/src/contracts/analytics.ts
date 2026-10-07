@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { AppId, OwnerId, RequestInvalid, StorageError } from "./shared.ts";
 import { AppNotFound } from "./apps.ts";
 
@@ -12,7 +12,7 @@ export const AnalyticsDimension = Schema.Literals([
   "outcome",
   "statusCode",
 ]);
-const name = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/));
+const name = Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u));
 const timestamp = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 export const AnalyticsQuery = {
   from: timestamp,

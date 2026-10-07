@@ -6,19 +6,25 @@ import {
   type GetAccountConnection,
   type SubmitAccountConnection,
 } from "../contracts/account-connection.ts";
-import { AccountNotFound } from "../contracts/account.ts";
+import { Account, AccountNotFound } from "../contracts/account.ts";
 import { AuthMethodInvalid, Provider, ProviderNotFound } from "../contracts/provider.ts";
 import { StorageError, AccountConnectionId } from "../contracts/shared.ts";
 import { StoredConnectionTarget, type Credentials } from "../contracts/storage.ts";
 import { makeAccounts, ownedAccount } from "./accounts.ts";
 import {
-  openConnection,
+  type ConnectionRow,
   readConnection,
+  requireOpen,
   finishConnection,
   lockConnection,
 } from "./connection-state.ts";
-import { captureConnectionTarget } from "./connection-target.ts";
+import {
+  captureConnectionTarget,
+  requireTargetProvider,
+  targetProvider,
+} from "./connection-target.ts";
 import { query, transaction, type Query } from "./database.ts";
+import { storedProfile } from "./profiles.ts";
 
 /** Requests survive host restarts. Pending requests expire after thirty minutes. */
 export const makeAccountConnections = (
@@ -35,33 +41,55 @@ export const makeAccountConnections = (
         Effect.mapError(() => new StorageError()),
       );
     });
+  const describe = (
+    row: Pick<ConnectionRow, "id" | "owner" | "target" | "createdAt" | "expiresAt" | "state">,
+    provider: Provider,
+    reconnectAccount: Account | null,
+  ) => ({
+    id: row.id,
+    owner: row.owner,
+    provider,
+    reconnectAccount,
+    target:
+      row.target === null
+        ? null
+        : {
+            app: row.target.app,
+            requirement: row.target.requirement,
+            name: row.target.name,
+            profile: row.target.profile,
+          },
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+    state: row.state,
+  });
+  /** A connection for an app shows that app's declaration, whose hosts it will grant. */
+  const show = (row: ConnectionRow, shown: Provider | undefined) =>
+    Effect.gen(function* () {
+      return describe(
+        row,
+        shown ?? (yield* provider(row.provider)),
+        row.reconnectAccount === null
+          ? null
+          : yield* makeAccounts(db, credentials, crypto, lifecycle).get({
+              account: row.reconnectAccount,
+              owner: row.owner,
+            }),
+      );
+    });
+  /** Ended requests keep showing the provider they used, even after their app changed. */
+  const endedProvider = (row: ConnectionRow) =>
+    row.target === null ? Effect.succeed(undefined) : targetProvider(db, row.target, row.provider);
   const get = (input: typeof GetAccountConnection.Type) =>
     Effect.gen(function* () {
       const row = yield* readConnection(db, input);
-      return {
-        id: row.id,
-        owner: row.owner,
-        provider: yield* provider(row.provider),
-        reconnectAccount:
-          row.reconnectAccount === null
-            ? null
-            : yield* makeAccounts(db, credentials, crypto, lifecycle).get({
-                account: row.reconnectAccount,
-                owner: row.owner,
-              }),
-        target:
-          row.target === null
-            ? null
-            : {
-                app: row.target.app,
-                requirement: row.target.requirement,
-                name: row.target.name,
-                profile: row.target.profile,
-              },
-        createdAt: row.createdAt,
-        expiresAt: row.expiresAt,
-        state: row.state,
-      };
+      // A pending request offers only a sign-in its app still accepts.
+      return yield* show(
+        row,
+        row.state.status === "pending"
+          ? yield* requireTargetProvider(db, row)
+          : yield* endedProvider(row),
+      );
     });
   return {
     get,
@@ -71,12 +99,15 @@ export const makeAccountConnections = (
           input.target === undefined
             ? { provider: input.provider, snapshot: null }
             : yield* captureConnectionTarget(db, input.target);
-        const resolved = destination.provider;
-        yield* provider(resolved);
+        const resolved = yield* provider(destination.provider);
+        let reconnectAccount: Account | null = null;
         if (input.account !== undefined) {
           const account = yield* ownedAccount(db, { account: input.account, owner: input.owner });
-          if (account.provider !== resolved)
+          if (account.provider !== resolved.id)
             return yield* new AccountNotFound({ account: input.account });
+          reconnectAccount = yield* Schema.decodeUnknownEffect(Account)(account).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
         }
         const id = AccountConnectionId.make(
           `con_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
@@ -85,21 +116,29 @@ export const makeAccountConnections = (
         const target = yield* Schema.encodeEffect(Schema.NullOr(StoredConnectionTarget))(
           destination.snapshot,
         ).pipe(Effect.mapError(() => new StorageError()));
+        const created = {
+          id,
+          owner: input.owner,
+          target: destination.snapshot,
+          createdAt: new Date(now),
+          expiresAt: new Date(now + 30 * 60_000),
+          state: { status: "pending" as const },
+        };
         yield* query(() =>
           db.create("accountConnections", {
-            id,
-            owner: input.owner,
-            provider: resolved,
+            ...created,
+            provider: resolved.id,
             target,
             reconnectAccount: input.account ?? null,
-            state: { status: "pending" },
             oauthAttempt: null,
             revision: id,
-            createdAt: new Date(now),
-            expiresAt: new Date(now + 30 * 60_000),
           }),
         );
-        return yield* get({ connection: id });
+        const shown =
+          destination.snapshot === null
+            ? undefined
+            : yield* targetProvider(db, destination.snapshot, resolved.id);
+        return describe(created, shown ?? resolved, reconnectAccount);
       }).pipe(Effect.withSpan("sdk.connections.create")),
     cancel: (input: typeof GetAccountConnection.Type) =>
       transaction(db, (tx) =>
@@ -112,7 +151,9 @@ export const makeAccountConnections = (
                 set: { state: { status: "cancelled" }, oauthAttempt: null },
               }),
             );
-          return yield* get(input);
+          // A request whose app has changed can still be cancelled.
+          const cancelled = yield* readConnection(db, input);
+          return yield* show(cancelled, yield* endedProvider(cancelled));
         }),
       ).pipe(Effect.withSpan("sdk.connections.cancel")),
     submit: (input: typeof SubmitAccountConnection.Type) =>
@@ -120,7 +161,8 @@ export const makeAccountConnections = (
         Effect.gen(function* () {
           const saved = yield* lockConnection(tx, input, crypto);
           if (saved.state.status === "completed") return saved.state.account;
-          const row = yield* openConnection(tx, input);
+          const row = yield* requireOpen(input, saved);
+          yield* requireTargetProvider(tx, row);
           const accounts = makeAccounts(tx, credentials, crypto, lifecycle);
           let account;
           if (row.reconnectAccount !== null) {
@@ -140,11 +182,26 @@ export const makeAccountConnections = (
               owner: row.owner,
               provider: row.provider,
               method: input.method,
-              label: input.label,
+              ...(input.label === undefined ? {} : { label: input.label }),
               fields: input.fields,
             });
-          if (lifecycle) yield* lifecycle.connectionCompleting(input.connection);
-          yield* finishConnection(tx, input, account);
+          if (lifecycle)
+            yield* lifecycle.connectionCompleting({
+              id: row.id,
+              owner: row.owner,
+              reconnectAccount: row.reconnectAccount,
+              target:
+                row.target === null
+                  ? null
+                  : {
+                      app: row.target.app,
+                      profile: yield* storedProfile(tx, {
+                        app: row.target.app,
+                        profile: row.target.profile,
+                      }),
+                    },
+            });
+          yield* finishConnection(tx, row, account);
           return account;
         }),
       ).pipe(Effect.withSpan("sdk.connections.submit")),

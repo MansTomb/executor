@@ -1,19 +1,20 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { RegistryProvider, useAtomValue } from "@effect/atom-react";
 import { Cause, Option } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import {
   registryPublicationPath,
   type Publication,
   type PublicationSnapshot,
   type RegistryError,
-} from "@executor-js/app-registry/contracts";
+} from "@executor-js/sdk/core";
 import {
   publicApps,
   publicApp,
   publicAppFiles,
   publicAppsLocation,
 } from "../contracts/public-apps.ts";
+import { HighlightedCode } from "./highlighted-code.tsx";
 
 function usePageTitle(title: string) {
   useEffect(() => {
@@ -412,7 +413,7 @@ function PublishedFiles({ files }: { readonly files: typeof PublicationSnapshot.
           </select>
         </div>
         <pre className="m-0 max-h-[34rem] min-h-80 overflow-auto p-5 font-mono text-xs leading-6 text-ink">
-          <code>{file?.content}</code>
+          {file && <HighlightedCode code={file.content} path={file.path} />}
         </pre>
       </div>
     </div>

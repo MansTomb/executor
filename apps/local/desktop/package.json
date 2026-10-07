@@ -9,13 +9,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform-node": "https://pkg.pr.new/Effect-TS/effect/@effect/platform-node@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
+    "@effect/platform-node": "4.0.1",
     "@executor-js/local-server": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
-    "effect": "https://pkg.pr.new/Effect-TS/effect/effect@c7d1ffff31a3e2ae0b0b0796b742bddeb797269d",
-    "electron-updater": "6.6.8"
+    "effect": "4.0.1",
+    "electron-updater": "6.6.8",
+    "fflate": "0.8.3",
+    "proper-lockfile": "4.1.2"
   },
   "devDependencies": {
+    "@types/proper-lockfile": "4.1.4",
     "electron": "44.4.2",
     "electron-builder": "26.15.6",
     "esbuild": "0.28.2"

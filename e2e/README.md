@@ -59,7 +59,9 @@ server and provision the actors declared in the test plan. Provisioning belongs 
 the setup deadline; scenario actions retain their full deadline. Scenarios that need
 the default management app can declare `managementProfiles` with the required actor
 roles. Setup waits for those committed profiles through public APIs. Scenarios that
-exercise provisioning progress leave that prerequisite undeclared. Native cleanup
+exercise provisioning progress leave that prerequisite undeclared. Scenarios that need
+another Testing SDK scenario declare `sdkScenarios`; setup creates each one in a
+child scope the test may close. Native cleanup
 hooks release those fixtures and close the server scope. `withCase` provides the per-case Layers;
 `@effect/vitest` owns suite sharing and test interruption. The scenario deadline
 is 60 seconds, with separate 60-second setup and cleanup deadlines and no retries.
@@ -75,11 +77,32 @@ self-host process reads that explicit artifact instead of rebuilding the same
 trusted runtime. Rebuild with `e2e:prepare` after source changes; scenario data
 and processes remain isolated. Product listeners use an OS-assigned port.
 
-Local restart scenarios can advance persisted wall time while their server is
-stopped through the authenticated runner control API. A runner-owned Node preload
-sets wall time for both source and installed CLI processes. It is never packaged.
+Local and self-host restart scenarios can advance persisted wall time while their
+server is stopped through the authenticated runner control API. A runner-owned
+preload, loaded by Node and Bun, sets wall time for source and installed CLI
+processes. It is never packaged. The control API's `kill` ends the product process
+group with SIGKILL, running none of its shutdown, to model a crash.
 Sleep timers and duration measurements stay real. This tests
 minute-based scheduling without adding a minute of sleep to each scenario.
+
+### Legacy storage
+
+Some upgrade bugs only arise from rows that an older version wrote and no current
+public surface can create. A scenario that needs such rows declares
+`legacyStorage: true` in `test-plan.ts` and calls `legacyStorage` from
+`support/legacy-storage.ts`. The runner stops that scenario's product, applies the
+parameterized SQL to its own PGlite database in one transaction, returns each
+statement's rows, and leaves the product stopped. `serverControl("start")` then
+boots the current server over that state, as an upgrade would. Statement errors
+roll back the whole write.
+
+Use it only for legacy or upgrade-era data, and for reading rows that exist only
+in storage. Create everything else through the product, as usual. The boundary
+check rejects any use outside a declared scenario. Only scenarios and the runner
+may import the module, and it is the only file allowed a database driver. The
+control route refuses undeclared scenarios at runtime. Self-host and Local
+support it. Cloud scenarios must be N/A: they share one Worker and database,
+which the runner cannot stop, and seeded rows would reach every case.
 
 Each case owns its fixtures. Self-host runs signup and invitations against a new
 process and PGlite directory. Local uses its own process, database and pairing key.
@@ -92,29 +115,39 @@ credentials nor fixture endpoints are installed in the Worker.
 The test plan declares `appOrigin: true` for scenarios that use private app URLs.
 Deployed preparation verifies those HTTPS origins before the scenario deadline;
 an origin that misses the infrastructure deadline produces a native setup failure
-for its scenario. Independent scenarios still run. The preparation report retains
-the number of ready origins, both phase timings, and each origin's probe count and
-last safe DNS, TLS, or HTTP failure. All origin probes start together. Fallback
+for its scenario. Beside organization provisioning, a dedicated organization
+deploys one small app through `POST /apps/deploy` until the freshly deployed
+compiler Worker builds it, within the same infrastructure deadline; otherwise
+preparation fails with `CompilerNotReady`. An organization whose actors are not provisioned within their
+60-second deadline does the same. Independent scenarios still run. The preparation
+report retains each unavailable organization and its failure, the number of ready
+origins, both phase timings, and each origin's probe count and last safe DNS, TLS,
+or HTTP failure. All origin probes start together. Fallback
 organization cleanup uses the worker bound and preserves release order within
 each scenario, including when another organization's cleanup fails.
 
-Files run in parallel with 16 workers by default. Use `--workers 1` through
-`--workers 32` to set the bound. A file's cases retain their declared sequence.
+Files run in parallel with one worker per two CPUs by default, up to 16. Each worker
+runs its own product server and browser. Use `--workers 1` through `--workers 32` to
+set the bound. A file's cases retain their declared sequence.
 Interactive recordings use one worker. Filters load only applicable files.
-Each unattended test has a 60-second timeout. Cleanup hooks retain a separate
+Each unattended test has a 60-second timeout, except the 1,000-account self-host
+inventory case, which has 120 seconds. Cleanup hooks retain a separate
 60-second timeout. Interactive inspection has no test timeout.
 Within a scenario, use `Effect.all` or `Effect.forEach` with a concurrency bound
 when operations are independent. Keep dependent actions ordered.
 
 The self-host load case creates 1,000 accounts through four concurrent API
-writers. CI gives it its own M4 runner, in parallel with the functional
-suite. The PGlite workload depends on single-thread speed. Running both workloads on one machine can consume its CPU budget and
+writers. The MCP catalog scale case deploys 29 apps with 7,000 tools and about
+46 MB of input schemas, plus three MCP apps with profiles whose server never answers, and bounds
+execute and search latency. CI gives both cases their own 16-vCPU Linux runner, one
+after the other, in parallel with the functional suite. The PGlite workload depends on single-thread speed. Running both workloads on one machine can consume its CPU budget and
 invalidate the load timing. The normal self-host command still includes every
 applicable case. To reproduce the CI split, use separate machines:
 
 ```sh
-bun run e2e:self-host --test-name '^(?!.*(?:Claude Code connects|concurrent owners and admins save every account))'
+bun run e2e:self-host --test-name '^(?!.*(?:Claude Code connects|concurrent owners and admins save every account|MCP execute over 7,000 tools))'
 bun run e2e:self-host --test-name 'concurrent owners and admins save every account'
+bun run e2e:self-host --test-name 'MCP execute over 7,000 tools'
 ```
 
 ## Shared SDK and interactive CLI
@@ -209,7 +242,12 @@ network in `100.64.0.0/10`, gives the container a fixed address there and maps
 `nexus.example.ts.net` to that address inside the container. `BETTER_AUTH_URL`
 uses that name, and `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH` is unset. After
 first-admin setup, an API key calls the built-in Executor app through `/mcp`. An
-authored app then checks that it cannot fetch the container's private address.
+authored app then checks that Executor refuses the container's private address
+by name, and that the image's public-only network refuses it behind a public
+name mapped to it, which no name check catches.
+The same case points `EXECUTOR_REGISTRY_URL` at a synthetic registry and checks
+that the public app catalog, running in workerd, refuses redirects and reports
+status, invalid-response, forwarded and network failures distinctly.
 The runner reaches the server through a port published on `127.0.0.1` in the
 range 4431-4439. It sends each request with the tailnet `Host` header through
 `node:http`, because Node's `fetch` replaces that header. This works with Docker
@@ -234,6 +272,12 @@ login, encrypted credentials, app data, frontend availability and execution. It
 reads the previous build version from the image and checks the new version after
 replacement.
 
+The same config runs `docker-oauth-renewal.spec.ts` against the image. It shares the
+runner's network so the container reaches a loopback token endpoint that rotates
+refresh tokens. A slow renewal holds its claim while other calls wait, a renewal
+survives its caller disconnecting, and `docker kill` mid-renewal followed by an
+immediate `docker start` recovers the grant within an execute deadline.
+
 | Command                 | Target                                                          | Current coverage                                              |
 | ----------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |
 | `bun run e2e:self-host` | Fresh Node/PGlite self-host                                     | Shared hosted scenario, password login, account volume, Motel |
@@ -250,9 +294,22 @@ Cloudflare, PlanetScale, Google, GitHub, Context.dev, or 1Password credentials
 are needed. Docker must be running; Bun, Playwright Chromium and ffmpeg are
 normal tool prerequisites.
 
-The disposable Postgres server allows 512 connections. Local Hyperdrive forwards
-TCP directly, so concurrent requests and background jobs cannot share the deployed
-pooler's backend connections. PostgreSQL's default 100 slots can reject parallel
+The run removes its Postgres container when it ends, including after a failed or
+interrupted start; under load Docker can finish creating a container long after
+the run has stopped waiting for it. Each container is labelled with
+`executor.e2e.role=cloud-postgres` and the process ID of the run that owns it,
+with the process namespace that ID belongs to (`executor.e2e.pid-namespace`: the
+boot and PID namespace on Linux, the boot session on macOS). A run killed before
+its cleanup leaves the container behind; the next Cloud run in the same namespace
+removes containers whose owning process has exited and that are more than five
+minutes old. Containers of live runs, of other namespaces (such as another
+devcontainer sharing the Docker socket) and unlabelled containers are never
+touched. A run that cannot determine its namespace records none and removes
+nothing.
+
+The disposable Postgres server allows 512 connections. The local Worker connects
+directly, so concurrent requests and background jobs cannot share a pooler's
+backend connections. PostgreSQL's default 100 slots can reject parallel
 scenario startup. This capacity setting applies only to the managed test container.
 
 Setting `E2E_CLOUD_URL` explicitly attaches to that server instead. A failed
@@ -270,9 +327,8 @@ The SDK isolation scenario also runs on the disposable Cloud stage. Deployed
 runs use a scoped Axiom reader for delivered telemetry. This is correctness
 coverage; it does not establish Cloud load capacity.
 
-Neon stages connect directly to Neon's pooled endpoint with verified TLS and
-allocate no Hyperdrive configuration. Explicit PlanetScale stages retain Hyperdrive.
-Realistic concurrent CI coverage of that path is tracked in
+Neon stages connect to Neon's pooled endpoint and PlanetScale stages to their
+branch's PgBouncer, both directly over verified TLS. Realistic concurrent CI coverage of that path is tracked in
 [#508](https://github.com/UsefulSoftwareCo/executor-next/issues/508).
 
 ### MCP server scenarios
@@ -353,6 +409,31 @@ accounts, or need credentials. It can run after the test environment is destroye
 bun run e2e:render --directory .local/e2e/<run>
 bun run e2e:report --directory .local/e2e/<run>/report
 ```
+
+Each case's `telemetry.json` holds the delivered spans of its five slowest requests
+and its last five browser traces. A failed case also keeps the trace of every request
+it sent: from the test, its background fibers and its cleanup, answered or not. A case
+fails when its body fails or when its own cleanup does, so a finalizer that fails after
+the body passed fails the evidence too. The flush waits up to five seconds for the server
+to export the spans that answered those requests. Each entry's `kept` lists why it was kept.
+
+The failure traces have a budget of 64 MiB of compact JSON (`FailureTraceBudget`). The
+largest case, the 1,000-account inventory load, sends about 4,000 requests whose traces
+take 47 MB; most cases take under 4 MB. Past the budget, the oldest traces are left out.
+The newest request, every request that never answered and the five slowest are always
+kept, so the budget is soft: those traces are kept even when they alone exceed it.
+
+Exporting and reading traces stops after 25 seconds, so the evidence finishes inside the
+60-second cleanup hook and the product still stops. The evidence writes `result.json` and
+`trace-ids.json` before it reads any trace. `trace-ids.json` lists every request newest
+first with why its trace is kept, every answered request's trace, the `failure` traces
+kept, the `dropped` ones and the `unfetched` ones, and its `state`: `collecting` until the
+end, then `complete` or `partial` when the deadline stopped the reads. `telemetry.json`
+is written a batch at a time, one compact entry per line: first the newest request, then
+the other traces always kept, then the rest newest first. A trace not read before the
+deadline has an entry with only an `error`. `unanswered-requests.json` lists every
+request that never answered. `failure-evidence.spec.ts` checks this with cases that fail
+on purpose.
 
 For CI failures, download and extract the evidence artifact, then pass the
 extracted run directory (the one containing `evidence.json` and target folders)
@@ -497,10 +578,8 @@ The Worker is the real Cloud entry point; only external service configuration an
 resource lifetimes vary. No alternate auth server is constructed.
 
 The runner ignores inherited infrastructure credentials, sets `CI=true`, and
-uses an empty per-run `ALCHEMY_HOME`. Alchemy beta.79's local Worker/R2/Hyperdrive
-providers require the included patch to stop resolving cloud credentials for
-local identities. Live providers and bindings explicitly marked remote retain
-normal credential resolution. Generated test credentials are ephemeral, not
+uses an empty per-run `ALCHEMY_HOME`. Alchemy's local Worker, R2 and Hyperdrive
+providers use a fixed local account in CI and never resolve cloud credentials. Generated test credentials are ephemeral, not
 personal or production secrets. On completion the runner stops the Worker,
 removes its Postgres container, removes the emulator credential file and resets
 its external emulator instances. Recordings remain in the report.
@@ -634,7 +713,7 @@ results fail; missing parents are never replaced by synthetic success records.
 
 `framework discovery deploys its checked example with optimistic updates and rollback`
 reads the built-in app through MCP, checks native and imported tool output signatures,
-follows a pinned skill topic, and deploys the example returned by `framework_describe`.
+follows a pinned skill topic, and deploys the example returned by `framework.describe`.
 It holds the real write and reconciliation read at the browser boundary, checks the
 optimistic row and draft, rejects a later write, then retries and reloads persisted data.
 Run it with `bun run e2e:self-host --test-name 'framework discovery deploys'`.
@@ -689,30 +768,36 @@ Run it alone with `bun run e2e:deployed --test-name 'Cloud compiler memory failu
 The default deployed filter excludes it because exhausting the shared compiler
 can interrupt other scenarios' builds.
 
-The MCP memory soak probes use the separate `deployed-cloud-soak` job
-after the functional deployed job on `main`. PRs run the emulated Cloud target.
+The deployed job runs after the functional checks on `main`. PRs run the emulated Cloud target.
 Main and manual deployed CI jobs share one non-cancelling concurrency group;
 scenario workers remain parallel within each job. Agents can still run targeted
-disposable deployments through this CLI.
-The shared-session and distributed-session probes are temporarily skipped because deployed
-streams end unexpectedly; see [the failing run](https://github.com/UsefulSoftwareCo/executor-next/actions/runs/36063767428).
-The reconnect-burst probe remains enabled. The skipped probes retain their workloads and
-assertions for re-enabling after the transport cause is resolved. Enabled probes share a
-disposable deployment and run concurrently in independent organizations.
-Their original stream counts, reconnect rounds, observation periods and 20-minute
-deadlines are preserved. The normal deployed suite excludes these probes and keeps
-its 16 workers and separate 60-second setup, scenario and cleanup deadlines.
-Run the soak suite with `bun run e2e:deployed --test-name '^MCP subscriptions survive ' --workers 3`,
-or dispatch `Deployed Cloud tests` with `soak` enabled. Both CI jobs retain raw evidence
-and destroy their own environments. The soak artifact has `soak` in its name.
+disposable deployments through this CLI. The job retains raw evidence and destroys its
+own environment.
 
 ### Installed CLI artifact
 
 To verify the installed CLI artifact through the same local scenarios, set
 `EXECUTOR_E2E_LOCAL_ENTRY` to the absolute installed `bin.mjs` path and run
-`bun run e2e:local`. The harness starts that entry from its isolated data directory,
-with synthetic secrets. Pairing, dashboard loading and app deployment/call use
-real HTTP requests against the installed package.
+`bun run e2e:local`. The harness starts that entry from its installed package directory,
+with an isolated data directory and synthetic secrets. Pairing, dashboard loading and
+app deployment/call use real HTTP requests against the installed package.
+
+The first-launch key scenarios also run against an installed entry:
+
+```sh
+EXECUTOR_E2E_LOCAL_ENTRY=/path/to/node_modules/executor/bin.mjs \
+  bunx vitest run --config e2e/local-bootstrap.config.ts
+```
+
+The OS credential scenario uses the real store and removes only its own entry.
+The key file and denied-access scenarios never touch the real store. They start
+the CLI with a stand-in keyring module that reproduces the package's errors: an
+absent store, a cancelled or dismissed prompt, and a store that grants access.
+Only an absent store may fall back to `keys.json`. The key storage scenario
+covers `EXECUTOR_KEY_STORAGE`: `file` on a new or denied-pending directory,
+no-ops on matching directories, refusals on mismatched ones, and invalid values. On Linux outside a D-Bus
+session, set `EXECUTOR_E2E_CREDENTIAL_STORE=absent` to use the real missing
+Secret Service for the key file scenario instead; release CI runs both.
 
 The desktop artifact smoke uses the packaged executable, synthetic secrets and a
 fresh profile/data directory. It deploys a dependency-using app, calls it, closes

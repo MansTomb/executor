@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Path, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { freePort as freeLoopbackPort } from "../../../../scripts/dev-host.ts";
 import {
   LocalSecrets,
@@ -159,7 +159,7 @@ const main = Effect.scoped(
       CI: "true",
       ALCHEMY_HOME: localDevelopmentFiles.alchemyHome,
       NODE_ENV: "development",
-      // Local Worker, R2 and Hyperdrive need an account-shaped ID, never a real account.
+      // Local Worker and R2 need an account-shaped ID, never a real account.
       CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
       BETTER_AUTH_URL: origin,
       BETTER_AUTH_SECRET: secrets.betterAuthSecret,

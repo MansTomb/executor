@@ -1,8 +1,8 @@
 import { Effect, FileSystem, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Target } from "./platform.ts";
 
-export const analyticsDatabase = (action: "baseline" | "inspect" | "rollback") =>
+export const analyticsDatabase = (action: "inspect") =>
   Effect.gen(function* () {
     const target = yield* Target;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -11,14 +11,6 @@ const sdk=createRequire(process.cwd()+"/packages/sdk/package.json");
 const driver=createRequire(sdk.resolve("@effect/sql-pglite"));
 const {PGlite}=driver("@electric-sql/pglite");
 (async()=>{const pg=new PGlite(process.argv[1]);await pg.waitReady;
-if(process.argv[2]==="baseline"||process.argv[2]==="rollback"){
-const {Effect}=sdk("effect");const {PgliteClient}=sdk("@effect/sql-pglite");
-const {executorDatabase}=sdk("@executor-js/sdk");const {sqlAdapter}=sdk("fumadb-effect/sql");
-await Effect.runPromise(Effect.scoped(Effect.gen(function*(){
-const migrator=yield* executorDatabase.client(sqlAdapter({provider:"postgresql"})).createMigrator;
-yield* (yield* migrator.down()).execute;
-}).pipe(Effect.provide(PgliteClient.layer({liveClient:pg})))));
-}
 const version=(await pg.query("SELECT value FROM private_executor_settings WHERE key='version'")).rows[0].value;
 const events=Number((await pg.query("SELECT COUNT(*) AS count FROM executor_analytics_events")).rows[0].count);
 await pg.close();process.stdout.write(JSON.stringify({version,events}));})().catch(error=>{console.error(error);process.exit(1);});`;

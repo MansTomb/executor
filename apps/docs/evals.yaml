@@ -67,7 +67,7 @@ questions:
       - there is no app-wide approval setting
     routes:
       - /concepts/tools-and-approvals
-      - /build/author-an-app
+      - /author-an-app
 
   - id: elicitation-modes
     question: Can I approve tool calls in my browser instead of through the agent?
@@ -83,8 +83,8 @@ questions:
     question: How does an agent call one of my app's tools through the MCP endpoint?
     expected:
       - the agent writes a JavaScript program and runs it with the execute tool
-      - tools.search returns the callable path and signature
-      - a tool is called as tools.<app>.queries.<name> or tools.<app>.mutations.<name>
+      - tools.search returns the callable path and input type, and tools.search.describe returns the full signature
+      - a tool is called as tools.<app>.<name>, with router groups as nested paths such as tools.<app>.<group>.<name>
     routes:
       - /mcp
       - /concepts/tools-and-approvals
@@ -93,7 +93,7 @@ questions:
     question: What limits apply to an execute program?
     expected:
       - 100 tool calls
-      - 30 seconds
+      - 5 minutes
       - 65,536 characters of program source
       - 65,536 bytes of output
       - a client cannot raise them
@@ -108,17 +108,17 @@ questions:
       - queries are declared with query(options, handler)
       - one index.ts file is enough
     routes:
-      - /build/author-an-app
+      - /author-an-app
 
   - id: deploy-an-app
     question: How do I deploy an app?
     expected:
-      - call the apps_deploy mutation through the MCP endpoint
+      - call the apps.deploy mutation through the MCP endpoint
       - pass the files as path and content pairs
       - there is no executor deploy command
       - the app activates only after the build succeeds
     routes:
-      - /build/author-an-app
+      - /author-an-app
 
   - id: self-host-docker
     question: How do I self-host Executor with Docker, and what must I configure?

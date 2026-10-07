@@ -1,7 +1,8 @@
+import { appsManifest } from "../support/apps-release.ts";
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Clock, Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -23,12 +24,13 @@ const Result = Schema.Struct({
 });
 
 const source = (version: number, origin?: string) => [
+  appsManifest,
   {
     path: "index.ts",
-    content: `import { defineApp, query, object, number } from "apps";
+    content: `import { defineApp, query, object, number, router } from "apps";
 export default defineApp({ accounts: {} }, async () => {
   ${origin === undefined ? "" : `const response = await fetch(${JSON.stringify(origin)}); if (!response.ok) throw new Error("Fixture unavailable");`}
-  return { queries: { version: query({ input: object({}), output: number() }, async () => ${version}) } };
+  return { tools: router({ queries: router({ version: query({ input: object({}), output: number() }, async () => ${version}) }) }) };
 });`,
   },
 ];

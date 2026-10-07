@@ -1,8 +1,15 @@
 /** Persisted scheduling transitions. App code and external effects run only after a claim commits. */
-import { Clock, Cron, Effect, Result, Schema, SchemaAST, type Crypto } from "effect";
+import { Clock, Cron, Effect, Option, Result, Schema, SchemaAST, type Crypto } from "effect";
 import { ScheduleTiming } from "apps/contracts";
 import type { Executor } from "../contracts/executor.ts";
-import { StorageError, RequestInvalid, type OwnerId } from "../contracts/shared.ts";
+import {
+  StorageError,
+  RequestInvalid,
+  type AppId,
+  type OwnerId,
+  type ProfileId,
+} from "../contracts/shared.ts";
+import { OAuthReconnectRequired } from "../contracts/oauth.ts";
 import {
   AppSchedule,
   ScheduleInputs,
@@ -15,6 +22,7 @@ import {
   ScheduleConflict,
   ScheduleInvalid,
 } from "../contracts/schedules.ts";
+import { InvocationRun } from "../contracts/runtime.ts";
 import { ScheduleObservation } from "../contracts/scheduler.ts";
 import type { ScheduleDispatcher } from "../contracts/scheduler.ts";
 import type { Credentials } from "../contracts/storage.ts";
@@ -51,7 +59,7 @@ export const makeSchedules = (
   storage: ExecutorDatabase,
   apps: Pick<Executor["apps"], "get">,
   tools: Pick<Executor["tools"], "call" | "resume"> &
-    Pick<ReturnType<typeof makeTools>, "scheduled">,
+    Pick<ReturnType<typeof makeTools>, "scheduled" | "accountNeedingReconnect">,
   credentials: Credentials,
   crypto: Crypto.Crypto,
 ) => {
@@ -84,6 +92,18 @@ export const makeSchedules = (
       return yield* parse(StoredScheduledRun, row);
     });
   const publicRun = (run: StoredScheduledRun) => ScheduledRun.make(run);
+  /**
+   * The account a profile's schedules wait on. Only a stored grant that must reconnect counts; any
+   * other problem with the profile or its selection is left to the run, which reports it.
+   */
+  const waitingOn = (input: { app: AppId; profile: ProfileId }) =>
+    tools
+      .accountNeedingReconnect(input)
+      .pipe(
+        Effect.catch((error) =>
+          Schema.is(StorageError)(error) ? Effect.fail(error) : Effect.succeed(undefined),
+        ),
+      );
   const definitions = (input: typeof ScheduleInputs.list.Type) =>
     Effect.gen(function* () {
       yield* apps.get(input);
@@ -100,7 +120,7 @@ export const makeSchedules = (
       );
       const settings = yield* parse(Schema.Array(ScheduleSettings), saved);
       const declared = yield* tools.scheduled({ app: input.app, profile: input.profile });
-      const results: AppSchedule[] = declared.map((schedule) => ({
+      const results: AppSchedule[] = declared.items.map((schedule) => ({
         ...schedule,
         app: input.app,
         settings: settings.find((setting) => setting.name === schedule.name) ?? null,
@@ -136,7 +156,29 @@ export const makeSchedules = (
         if (terminal(status)) {
           const current = yield* readRun(run.id);
           if (current.revision !== run.revision || current.status !== status) return;
-          const settings = yield* readSettings(run.scheduleId);
+          const completed = {
+            id: run.id,
+            scheduleId: run.scheduleId,
+            app: run.app,
+            owner: run.owner,
+            status,
+            startedAt: run.startedAt,
+            finishedAt,
+          };
+          const saved = yield* query(() =>
+            db.findFirst("schedules", { where: (b) => b("id", "=", run.scheduleId) }),
+          );
+          // An activation removed this schedule while the run was in flight. Its history goes
+          // with it, as it did for the schedule's earlier runs.
+          if (saved === null) {
+            yield* query(() =>
+              db.deleteMany("scheduledRuns", {
+                where: (b) => b.and(b("id", "=", run.id), b("revision", "=", run.revision)),
+              }),
+            );
+            return completed;
+          }
+          const settings = yield* parse(ScheduleSettings, saved);
           const nextAt =
             settings.nextAt !== null && settings.nextAt <= finishedAt && settings.enabled
               ? yield* nextOccurrence(settings.timing, finishedAt).pipe(
@@ -161,15 +203,7 @@ export const makeSchedules = (
               set: { activeRun: null },
             }),
           );
-          return {
-            id: run.id,
-            scheduleId: run.scheduleId,
-            app: run.app,
-            owner: run.owner,
-            status,
-            startedAt: run.startedAt,
-            finishedAt,
-          };
+          return completed;
         }
       }),
     ).pipe(
@@ -195,6 +229,78 @@ export const makeSchedules = (
       ),
       Effect.catchTag("ScheduleNotFound", () => Effect.void),
     );
+  /**
+   * Delete the saved settings of every schedule the active deployment no longer declares, with
+   * their run history. Only a successful evaluation removes anything: a broken app or an account
+   * that cannot be used fails here and keeps every saved setting.
+   */
+  const reconcile = (input: { app: AppId; profile?: ProfileId | undefined }) =>
+    Effect.gen(function* () {
+      const declared = yield* tools.scheduled({ app: input.app, profile: input.profile });
+      const names = new Set(declared.items.map((schedule) => schedule.name));
+      yield* transaction(db, () =>
+        Effect.gen(function* () {
+          const app = yield* lockApp(db, { app: input.app });
+          // A later activation reconciles against its own declarations.
+          if (app.activeDeployment !== declared.deployment) return;
+          const rows = yield* query(() =>
+            db.findMany("schedules", {
+              where: (b) =>
+                b.and(
+                  b("app", "=", app.id),
+                  input.profile === undefined
+                    ? b("profile", "is", null)
+                    : b("profile", "=", input.profile),
+                ),
+            }),
+          );
+          const settings = yield* parse(Schema.Array(ScheduleSettings), rows);
+          for (const setting of settings) {
+            if (names.has(setting.name)) continue;
+            // A waiting approval would run a call the source no longer schedules, so it is
+            // withdrawn. A running mutation finishes; finish then removes its record.
+            const runs = yield* query(() =>
+              db.findMany("scheduledRuns", {
+                where: (b) => b.and(b("scheduleId", "=", setting.id), b("status", "!=", "running")),
+              }),
+            ).pipe(Effect.flatMap((rows) => parse(Schema.Array(StoredScheduledRun), rows)));
+            for (const run of runs)
+              if (run.requestId !== null && !terminal(run.status)) {
+                const requestId = run.requestId;
+                yield* query(() =>
+                  db.deleteMany("toolApprovals", {
+                    where: (b) => b.and(b("id", "=", requestId), b("status", "=", "pending")),
+                  }),
+                );
+              }
+            yield* query(() =>
+              db.deleteMany("scheduledRuns", {
+                where: (b) => b.and(b("scheduleId", "=", setting.id), b("status", "!=", "running")),
+              }),
+            );
+            yield* query(() =>
+              db.deleteMany("schedules", { where: (b) => b("id", "=", setting.id) }),
+            );
+          }
+        }),
+      );
+      return declared.items;
+    }).pipe(
+      Effect.withSpan("sdk.schedules.reconcile", {
+        attributes: { "executor.app.id": input.app, "executor.profile.id": input.profile },
+      }),
+    );
+  /** Reconcile the app's own schedules after an activation, when it has any. */
+  const activated = (app: AppId) =>
+    Effect.gen(function* () {
+      const saved = yield* query(() =>
+        db.findFirst("schedules", {
+          select: ["id"],
+          where: (b) => b.and(b("app", "=", app), b("profile", "is", null)),
+        }),
+      );
+      if (saved !== null) yield* reconcile({ app });
+    });
   const getApproval = (input: typeof ScheduleInputs.approval.Type) =>
     Effect.gen(function* () {
       const run = yield* readRun(input.run, input.owner);
@@ -222,7 +328,16 @@ export const makeSchedules = (
               ),
           }),
         );
-        return yield* parse(Schema.Array(ScheduleSettings), rows);
+        const settings = yield* parse(Schema.Array(ScheduleSettings), rows);
+        // Enabled schedules report the account they wait on, so the owner sees why none run.
+        if (input.profile === undefined || !settings.some((setting) => setting.enabled))
+          return settings;
+        const account = yield* waitingOn({ app: input.app, profile: input.profile });
+        return account === undefined
+          ? settings
+          : settings.map((setting) =>
+              setting.enabled ? { ...setting, reconnectAccount: account } : setting,
+            );
       }),
     configure: (input: typeof ScheduleInputs.configure.Type) =>
       Effect.gen(function* () {
@@ -533,6 +648,7 @@ export const makeSchedules = (
                   Effect.withErrorReporting,
                   Effect.catch((error) => finish(claim, "failed", diagnostic(error))),
                   Effect.onInterrupt(() => finish(claim, "interrupted", "Interrupted")),
+                  Effect.provideService(InvocationRun, claim.id),
                   Effect.withSpan("schedule.run", {
                     attributes: {
                       "executor.run.id": claim.id,
@@ -578,6 +694,45 @@ export const makeSchedules = (
               Effect.gen(function* () {
                 if (setting.nextAt === null) return yield* new StorageError();
                 const scheduledAt = setting.nextAt;
+                // A run cannot use an account whose sign-in must reconnect. Skip the occurrence
+                // without recording a run or contacting the service; the owner sees the account on
+                // the schedule, and the first occurrence after reconnecting runs as usual.
+                const account =
+                  setting.profile === null
+                    ? undefined
+                    : yield* waitingOn({ app: setting.app, profile: setting.profile });
+                if (account !== undefined) {
+                  // Invalid timing is left to the run path, which pauses the schedule.
+                  const following = yield* nextOccurrence(setting.timing, time).pipe(Effect.option);
+                  if (Option.isSome(following)) {
+                    const revision = yield* uuid;
+                    yield* query(() =>
+                      db.updateMany("schedules", {
+                        where: (b) =>
+                          b.and(
+                            b("id", "=", setting.id),
+                            b("revision", "=", setting.revision),
+                            b("activeRun", "is", null),
+                            b("enabled", "=", true),
+                          ),
+                        // Consume the scanned revision as a claim does. Another dispatch holding
+                        // the same due snapshot must not run the skipped occurrence once the
+                        // account reconnects.
+                        set: { nextAt: following.value, revision },
+                      }),
+                    ).pipe(
+                      Effect.withSpan("schedule.skip", {
+                        attributes: {
+                          "executor.schedule.id": setting.id,
+                          "executor.app.id": setting.app,
+                          "executor.account.id": account,
+                          "executor.outcome": "waiting_for_reconnect",
+                        },
+                      }),
+                    );
+                    return;
+                  }
+                }
                 const id = ScheduledRunId.make(`run_${yield* uuid}`);
                 const claim = yield* transaction(db, () =>
                   Effect.gen(function* () {
@@ -674,6 +829,8 @@ export const makeSchedules = (
                     app: setting.app,
                     profile: setting.profile ?? undefined,
                     tool: declared.tool,
+                    // Schedules only target mutations; defineApp checks this.
+                    kind: "mutation",
                     input: declared.input,
                   });
                   if (response.status === "completed") {
@@ -693,18 +850,53 @@ export const makeSchedules = (
                       }),
                     );
                   } else {
-                    yield* query(() =>
-                      db.updateMany("scheduledRuns", {
-                        where: (b) => b.and(b("id", "=", claim.id), b("status", "=", "running")),
-                        set: {
-                          status: "awaiting-approval",
-                          requestId: response.requestId,
-                          expiresAt: new Date(response.expiresAt),
-                        },
+                    // Serialized with reconcile by the app lock: a schedule removed while this
+                    // run started never leaves an approval waiting for review.
+                    const waiting = yield* transaction(db, () =>
+                      Effect.gen(function* () {
+                        yield* lockApp(db, { app: setting.app });
+                        const saved = yield* query(() =>
+                          db.findFirst("schedules", {
+                            select: ["id"],
+                            where: (b) =>
+                              b.and(b("id", "=", setting.id), b("activeRun", "=", claim.id)),
+                          }),
+                        );
+                        if (saved === null) return false;
+                        yield* query(() =>
+                          db.updateMany("scheduledRuns", {
+                            where: (b) =>
+                              b.and(b("id", "=", claim.id), b("status", "=", "running")),
+                            set: {
+                              status: "awaiting-approval",
+                              requestId: response.requestId,
+                              expiresAt: new Date(response.expiresAt),
+                            },
+                          }),
+                        );
+                        return true;
                       }),
                     );
+                    if (!waiting)
+                      yield* complete(
+                        claim,
+                        yield* tools.resume({
+                          requestId: response.requestId,
+                          owner: setting.owner,
+                          response: { action: "decline" },
+                        }),
+                      );
                   }
                 }).pipe(
+                  // The account's sign-in ended during this run. That is an account state the
+                  // owner resolves by reconnecting, not a fault to report; later occurrences are
+                  // skipped until then.
+                  Effect.catchIf(Schema.is(OAuthReconnectRequired), () =>
+                    Effect.annotateCurrentSpan(
+                      "executor.schedule.skip_reason",
+                      "account_reconnect",
+                    ).pipe(Effect.andThen(finish(claim, "failed", "OAuthReconnectRequired"))),
+                  ),
                   Effect.withErrorReporting,
                   Effect.catch((error) =>
                     Effect.gen(function* () {
@@ -729,6 +921,7 @@ export const makeSchedules = (
                     }),
                   ),
                   Effect.onInterrupt(() => finish(claim, "interrupted", "Interrupted")),
+                  Effect.provideService(InvocationRun, claim.id),
                   Effect.withSpan("schedule.run", {
                     attributes: {
                       "executor.run.id": claim.id,
@@ -748,5 +941,5 @@ export const makeSchedules = (
         );
       }),
   };
-  return { operations, dispatcher };
+  return { operations, dispatcher, reconcile, activated };
 };

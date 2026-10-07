@@ -1,7 +1,7 @@
 import { BrowserAtoms } from "@executor-js/hosted-web/contracts/telemetry";
 import { AuthFailed, authRequest } from "@executor-js/hosted-web/contracts/auth";
 import { Effect } from "effect";
-import { Atom } from "effect/unstable/reactivity";
+import { Atom } from "effect/reactivity";
 import { passkeyEnrollmentCookie } from "../../../src/contracts/passkey-enrollment.ts";
 import { cloudAuthClient } from "./auth.ts";
 

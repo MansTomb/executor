@@ -1,7 +1,7 @@
 /** MCP catalog caching through real app deployment, storage and upstream HTTP boundaries. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Config, Effect, Layer, Option, Schema } from "effect";
+import { Config, Effect, Layer, Option, Schedule, Schema } from "effect";
 import {
   HttpRouter,
   HttpClient,
@@ -9,7 +9,7 @@ import {
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -18,6 +18,9 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { McpClient } from "../support/mcp-client.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
+import { withApps } from "../support/apps-release.ts";
 
 const Counters = Schema.Struct({
   initialize: Schema.Number,
@@ -93,6 +96,9 @@ const fixture = () =>
               serverInfo: { name: "Cache fixture", version: "1" },
             });
           }
+          // The outbound network must swap a credential handle for the account's real token.
+          if (request.headers.authorization?.includes("exsec_"))
+            return HttpServerResponse.empty({ status: 401 });
           const variant = request.headers["x-fixture-variant"];
           const prefix = variant ? `${variant}_` : "";
           if (message.method === "tools/list") {
@@ -163,54 +169,61 @@ const control = (origin: string, data?: Schema.Json) =>
     return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Stats)));
   });
 
-const source = (url: string, cached: boolean, accounts: boolean) => [
+const source = (url: string, cached: boolean, accounts: boolean, unbound = false) => [
   {
     path: "package.json",
-    content: JSON.stringify({ dependencies: { "@modelcontextprotocol/sdk": "1.30.0" } }),
+    content: JSON.stringify({ dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }) }),
   },
   {
     path: "index.ts",
     content: `
-import { defineApp, defineProvider, accountOperations, secrets, object, string, query } from "apps";
-import { mcpOperations } from "apps/mcp";
-const provider = defineProvider({ name: "Cache fixture", auth: { key: secrets({ label: "Variant", fields: object({ token: string() }) }) } });
+import { defineApp, defineProvider, accountRouter, secrets, object, plain, string, query, router } from "apps";
+import { mcpRouter } from "apps/mcp";
+// Declared hosts give app code a fresh token handle on every call; the account's catalog must still hit.
+const provider = defineProvider({ name: "Cache fixture", hosts: ${JSON.stringify([new URL(url).host])}, auth: { key: secrets({ label: "Variant", fields: object({ variant: plain(string()), token: string() }) }) } });
 export default defineApp({ accounts: ${accounts ? "{ service: provider.many() }" : "{}"} }, async ctx => {
   const options = account => ({ url: ${JSON.stringify(url)}, signal: ctx.signal,
-    ${cached ? "cache: account ? ctx.cache.forAccount(account) : ctx.cache," : ""}
-    ...(account ? { accountId: account.id, headers: { "X-Fixture-Variant": account.fields.token } } : {}),
+    ${cached ? "cache: ctx.cache," : ""}
+    ${unbound ? 'headers: { Authorization: "Bearer unbound" },' : ""}
+    ...(account ? { account, headers: { "X-Fixture-Variant": account.fields.variant, Authorization: "Bearer " + account.fields.token } } : {}),
   });
-  const tools = ${accounts ? "await accountOperations(ctx.accounts.service, account => mcpOperations(options(account)), { signal: ctx.signal })" : "await mcpOperations(options(undefined))"};
-  return { ...tools, queries: { ...tools.queries,
+  const tools = ${accounts ? "await accountRouter(ctx.accounts.service, account => mcpRouter(options(account)), { signal: ctx.signal })" : "await mcpRouter(options(undefined))"};
+  return { tools: router({
+    upstream: tools,
     refresh: query({ input: object({ id: string() }) }, async (_, { id }) => {
       const account = ${accounts ? "ctx.accounts.service.find(account => account.id === id)" : "undefined"};
       ${accounts ? 'if (!account) throw new Error("Missing account");' : ""}
-      await mcpOperations({ ...options(account), revalidate: true }); return true;
+      await mcpRouter({ ...options(account), revalidate: true }); return true;
     }),
-  } };
+  }) };
 });`,
   },
 ];
 
-const deploy = (url: string, cached: boolean, accounts = false) =>
+const deploy = (url: string, cached: boolean, accounts = false, unbound = false) =>
   Effect.gen(function* () {
     const api = yield* Api;
     const actors = yield* Actors;
     const prefix = `/api/organizations/${actors.organization.id}`;
     const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
       name: `MCP cache ${randomUUID().slice(0, 8)}`,
-      files: source(url, cached, accounts),
+      files: source(url, cached, accounts, unbound),
     });
     expect(response.status).toBe(200);
-    const path = `${prefix}/apps/${(yield* body(App, response)).id}`;
+    const id = (yield* body(App, response)).id;
+    const path = `${prefix}/apps/${id}`;
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
     const profile = yield* createProfile(actors.owner, path);
+    // The server's tools are mounted under "upstream" beside the app's own refresh query.
+    // Every fixture tool is read-only.
     const call = (name: string, input: Schema.Json = {}, profileId = profile.id) =>
       api.request(actors.owner, "POST", `${path}/tools/call`, {
         profile: profileId,
-        tool: `queries.${name}`,
+        tool: name === "refresh" ? name : `upstream.${name}`,
+        kind: "query",
         input,
       });
-    return { api, actors, path, prefix, profile, call };
+    return { api, actors, id, path, prefix, profile, call };
   });
 
 layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
@@ -229,7 +242,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
             app.api.request(app.actors.owner, "DELETE", `${app.prefix}/accounts/${id}`),
           ).pipe(Effect.orDie),
         );
-        const connect = (token: string) =>
+        const connect = (variant: string) =>
           Effect.gen(function* () {
             const connection = yield* body(
               Resource,
@@ -244,7 +257,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
                 app.actors.owner,
                 "POST",
                 `${app.prefix}/connections/${connection.id}/submit`,
-                { method: "key", label: "Synthetic variant", fields: { token } },
+                {
+                  method: "key",
+                  label: "Synthetic variant",
+                  fields: { variant, token: randomUUID() },
+                },
               ),
             );
             ids.push(account.id);
@@ -300,7 +317,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         expect(index.items.some((tool) => "inputSchema" in tool || "outputSchema" in tool)).toBe(
           false,
         );
-        const selected = index.items.find((tool) => tool.name !== "queries.refresh")?.name;
+        const selected = index.items.find((tool) => tool.name !== "refresh")?.name;
         expect(typeof selected).toBe("string");
         const describeStart = performance.now();
         const described = yield* app.api.request(
@@ -323,7 +340,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
           (yield* app.api.request(
             app.actors.owner,
             "GET",
-            `${app.path}/tools/queries.missing_tool?profile=${app.profile.id}`,
+            `${app.path}/tools/missing_tool?profile=${app.profile.id}`,
           )).status,
         ).toBe(404);
         expect((yield* control(origin)).counters.list).toBe(1);
@@ -402,7 +419,121 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         expect((yield* app.call("fixture_0000", { message: "old schema" })).status).toBe(422);
         expect((yield* control(origin)).counters.call).toBe(calls);
         expect((yield* app.call("revision_1")).status).toBe(404);
+
+        // Credentials come only with their account: headers without one are refused before
+        // the server is contacted, so an unbound credential never keys or fills a shared catalog.
+        const unbound = yield* deploy(`${origin}/mcp`, true, false, true);
+        const before = (yield* control(origin)).counters;
+        const refused = yield* unbound.call("fixture_0000");
+        expect(refused.status).toBe(502);
+        expect(
+          (yield* body(Schema.Struct({ mcp: Schema.Struct({ reason: Schema.String }) }), refused))
+            .mcp.reason,
+        ).toBe("invalid_input");
+        expect((yield* control(origin)).counters).toEqual(before);
       }),
+    ),
+  );
+  it.effect(scenarios.mcpListingCacheChanges.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const origin = yield* fixture();
+        yield* control(origin, { count: 3, delayMs: 0 });
+        const app = yield* deploy(`${origin}/mcp`, true);
+        const mcp = yield* McpClient;
+        const key = yield* body(
+          Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+          yield* app.api.request(app.actors.owner, "POST", "/api/auth/api-key/create", {
+            name: "Listing cache changes",
+          }),
+        );
+        yield* Effect.addFinalizer(() =>
+          app.api
+            .request(app.actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+            .pipe(Effect.orDie),
+        );
+        const client = yield* mcp.connect(key.key, "listing-cache-changes", {
+          organization: app.actors.organization.id,
+        });
+        const listed = Schema.Struct({
+          structuredContent: Schema.Struct({
+            execution: Schema.Struct({
+              ok: Schema.Literal(true),
+              value: Schema.Struct({ items: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+            }),
+          }),
+        });
+        /** The revision tool each listed target of the app exposes. */
+        const revisions = (step: string) =>
+          Effect.gen(function* () {
+            const result = yield* client.use(step, (client, signal) =>
+              client.callTool(
+                {
+                  name: "execute",
+                  arguments: {
+                    code: `return await tools.search({ query: "revision", limit: 50 });`,
+                  },
+                },
+                undefined,
+                { signal, timeout: 55_000 },
+              ),
+            );
+            const { items } = (yield* Schema.decodeUnknownEffect(listed)(result)).structuredContent
+              .execution.value;
+            return [
+              ...new Set(items.flatMap((item) => /revision_\d+/.exec(item.path) ?? [])),
+            ].sort();
+          });
+        const evidence = yield* Evidence,
+          telemetry = yield* Telemetry;
+        /**
+         * This app's SDK listing reads recorded in the trace of the latest MCP request. Other apps
+         * of the organization, such as one installed while the scenario runs, are listed too.
+         */
+        const listingReads = Effect.gen(function* () {
+          const request = (yield* evidence.requests)
+            .filter((entry) => entry.path === "/mcp")
+            .at(-1);
+          if (request === undefined) return yield* Effect.fail(new Error("Missing MCP request"));
+          return yield* telemetry.query(request.traceId).pipe(
+            Effect.flatMap((result) => {
+              const reads = result.data.flatMap(({ span }) => {
+                const outcome = span.tags["executor.declarations.cache"];
+                return span.operationName === "sdk.tools.listing" &&
+                  span.tags["executor.app.id"] === app.id &&
+                  outcome !== undefined
+                  ? [outcome]
+                  : [];
+              });
+              return reads.length === 0
+                ? Effect.fail(new Error("Missing tool listing span"))
+                : Effect.succeed(reads);
+            }),
+            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
+          );
+        });
+        expect(yield* revisions("First listing")).toEqual(["revision_1"]);
+        // That evaluation filled the cold app cache, a change that keeps it from being reused;
+        // the next one reads the warm cache and is kept.
+        expect(yield* revisions("Listing from the warm app cache")).toEqual(["revision_1"]);
+        const lists = (yield* control(origin)).counters.list;
+        // The listing is kept: a second search neither evaluates the app nor asks the server.
+        expect(yield* revisions("Kept listing")).toEqual(["revision_1"]);
+        expect((yield* control(origin)).counters.list).toBe(lists);
+        for (const outcome of yield* listingReads) expect(outcome).toBe("hit");
+
+        // An explicit refresh replaces the app's cached catalog; the next search lists it again.
+        yield* control(origin, { version: 2 });
+        expect((yield* app.call("refresh", { id: "" })).status).toBe(200);
+        expect(yield* revisions("After a catalog refresh")).toEqual(["revision_2"]);
+
+        // A server that announces a changed tool list during a call invalidates the cached
+        // catalog, and the next search lists the changed tools.
+        yield* control(origin, { version: 3, notify: true });
+        expect((yield* app.call("fixture_0000")).status).toBe(200);
+        expect(yield* revisions("After tools/list_changed")).toEqual(["revision_3"]);
+      }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
 });

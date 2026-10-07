@@ -1,7 +1,9 @@
+import { usePageUrl } from "@executor-js/dashboard-start/page";
 import type { OAuthSubmission } from "@executor-js/ui/contracts/credentials";
 import { useAtomSet } from "@effect/atom-react";
-import type { Atom } from "effect/unstable/reactivity";
+import type { Atom } from "effect/reactivity";
 import { Cause, Effect, Option, Schema } from "effect";
+import type { ReactNode } from "react";
 import {
   OAuthClientUnavailable,
   OAuthSetupFailed,
@@ -22,7 +24,7 @@ import {
 } from "../../contracts/account-connections.ts";
 import { openConnectionOAuth } from "../account-connections.ts";
 import { openOAuth } from "../oauth.ts";
-import { Failure } from "../components/common.tsx";
+import { ConnectionLinkFailure, Failure } from "../components/common.tsx";
 
 /** Local owns agent handoff grants, reconnect behavior, and the browser return intent. */
 export function OAuthFields({
@@ -33,6 +35,7 @@ export function OAuthFields({
   onSaved,
   returnTo,
   onPendingChange,
+  access,
   disabled = false,
 }: {
   readonly provider: Provider;
@@ -40,10 +43,13 @@ export function OAuthFields({
   readonly account?: Account;
   readonly connection?: ConnectionGrant;
   readonly onSaved: (account: Account) => void;
-  readonly returnTo?: Omit<typeof OAuthAppReturn.Type, "connection">;
+  readonly returnTo?: typeof OAuthAppReturn.Type;
   readonly onPendingChange?: (pending: boolean) => void;
+  /** Where the sign-in goes once saved; the shared form shows it above Connect. */
+  readonly access?: ReactNode;
   readonly disabled?: boolean;
 }) {
+  const page = usePageUrl();
   const start = useAtomSet(startOAuthAtom, { mode: "promiseExit" });
   const startConnection = useAtomSet(startConnectionOAuthAtom, { mode: "promiseExit" });
   const reconnect = useAtomSet(reconnectAccountAtom, { mode: "promiseExit" });
@@ -59,12 +65,13 @@ export function OAuthFields({
         <SharedFields<OAuthStartResult & { readonly connection?: AccountConnectionId }, OAuthError>
           providerName={provider.definition.name}
           {...(account ? { account } : {})}
-          Failure={Failure}
+          Failure={connection ? ConnectionLinkFailure : Failure}
           setup={setup}
           setupAction={action}
+          access={access}
           disabled={disabled}
           {...(onPendingChange ? { onPendingChange } : {})}
-          redirectUri={new URL(OAuthCallbackPath, window.location.origin).href}
+          redirectUri={new URL(OAuthCallbackPath, page.origin).href}
           requiresClient={(cause) => {
             const failure = Cause.findErrorOption(cause);
             const required =
@@ -75,24 +82,24 @@ export function OAuthFields({
             if (required) refresh();
             return required;
           }}
-          start={({ label, ...client }: OAuthSubmission) =>
+          start={(client: OAuthSubmission) =>
             connection
-              ? startConnection({ payload: { ...connection, method, label, ...client } })
+              ? startConnection({ ...connection, method, ...client })
               : account
                 ? reconnect({ params: { account: account.id }, payload: client })
-                : start({ payload: { provider: provider.id, method, label, ...client } })
+                : start({ payload: { provider: provider.id, method, ...client } })
           }
           onAuthorized={(value) => {
             refresh();
             if (value.status === "completed") {
               onSaved(value.account);
-              return;
+              return "done";
             }
             if (connection) Effect.runSync(openConnectionOAuth(value.authorizationUrl, connection));
             else if (value.connection !== undefined)
-              Effect.runSync(
-                openOAuth(value.authorizationUrl, value.connection, account?.id, returnTo),
-              );
+              Effect.runSync(openOAuth(value.authorizationUrl, account?.id, returnTo));
+            else return "done";
+            return "navigating";
           }}
         />
       )}

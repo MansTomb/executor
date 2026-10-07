@@ -85,7 +85,7 @@ the sum of recorded durations. Results contain at most 1,000 groups, ordered by
 count. `truncated: true` indicates omitted groups. `matchedEvents` remains the
 exact total for the filtered retained events.
 
-The generated Executor management app exposes `queries.analytics_summary`,
+The generated Executor management app exposes `analytics.summary`,
 with `path: { app }` and `query: { from: String(from), to: String(to), event, groupBy }`.
 Its generated query fields use HTTP string values. Hosted organization
 selection follows that app's existing context. Reads require authentication,

@@ -13,6 +13,7 @@ import {
   OwnerId,
   JsonObject,
   CredentialsError,
+  StorageError,
 } from "./shared.ts";
 import { AccountConnectionDestination } from "./account-connection.ts";
 import type { Effect, Redacted } from "effect";
@@ -26,6 +27,9 @@ import type { OAuthClientId, OAuthAttemptId } from "./oauth.ts";
 export const StoredAccount = Schema.Struct({
   ...Account.fields,
   encryptedCredentials: Schema.RedactedFromValue(Schema.Uint8Array),
+  credentialGeneration: Schema.Int,
+  /** Hosts the account was connected for, or null when it was connected without hosts. */
+  allowedHosts: Schema.NullOr(Schema.Array(Schema.String)),
 });
 /** Parsed account storage record; encrypted bytes remain redacted in memory. */
 export type StoredAccount = typeof StoredAccount.Type;
@@ -58,6 +62,19 @@ export const StoredApp = Schema.Struct({
 /** Parsed configured app storage record, without derived requirements. */
 export type StoredApp = typeof StoredApp.Type;
 
+/**
+ * The `accountConnections.state` column. `failure` holds an `AccountConnectionFailure` encoded in
+ * the error vocabulary of the release that recorded it. Readers decode it apart from the status:
+ * a failure whose reason, stage or code a later release removed is left out, never breaking the
+ * connection. See notes/oauth.md, "Failure reasons".
+ */
+export const StoredConnectionState = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("pending"), failure: Schema.optional(Schema.Json) }),
+  Schema.Struct({ status: Schema.Literal("cancelled") }),
+  Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
+]);
+export type StoredConnectionState = typeof StoredConnectionState.Type;
+
 /** Frozen target intent. Single selections are compared at completion; collections merge with current IDs. */
 export const StoredConnectionTarget = Schema.Struct({
   ...AccountConnectionDestination.fields,
@@ -67,6 +84,18 @@ export const StoredConnectionTarget = Schema.Struct({
 }).pipe(Schema.encodeKeys({ profile: "installation" }));
 export type StoredConnectionTarget = typeof StoredConnectionTarget.Type;
 
+/** Atomic product writes beside SDK writes are host-only, outside the public HTTP/Promise facade. */
+export const StorageHost = Symbol("executor.StorageHost");
+/**
+ * Hosts keep product tables in the same database as the executor. This is the one tracked
+ * transaction boundary: product SQL inside it shares the executor's connection, and SDK operations
+ * called inside it join the same transaction. Wrapping SDK calls in a raw SQL transaction fails.
+ */
+export interface StorageHost {
+  readonly transaction: <A, E, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | StorageError, R>;
+}
 /** The host owns encryption and key custody. Ciphertexts are bound to their stable resource identity. */
 export interface Credentials {
   readonly encrypt: (

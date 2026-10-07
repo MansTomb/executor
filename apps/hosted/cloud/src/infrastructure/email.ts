@@ -4,7 +4,7 @@ import { AlchemyContext } from "alchemy/AlchemyContext";
 import { retain } from "alchemy/RemovalPolicy";
 import { RuntimeContext } from "alchemy";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { cloudEmulators } from "./emulators.ts";
 import {
   EmailDeliveryFailed,

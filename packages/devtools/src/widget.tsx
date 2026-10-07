@@ -1,3 +1,4 @@
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { UserPicker } from "./users.tsx";
 import { stopImpersonatingAtom } from "./auth.ts";
 import { LoopbackOrigin } from "@executor-js/utils/url-policy";
@@ -5,8 +6,8 @@ import { LoopbackOrigin } from "@executor-js/utils/url-policy";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Button } from "@executor-js/ui/components/button";
 import { Effect, Exit, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { Popover } from "radix-ui";
 import { useState, type ReactNode } from "react";
 import { DevtoolsState, DevtoolsSuccess, type OperatorIdentity } from "./contracts.ts";
@@ -26,7 +27,7 @@ const stateAtom = runtime
       return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(DevtoolsState)));
     }).pipe(Effect.mapError(() => new DevtoolsUnavailable())),
   )
-  .pipe(Atom.refreshOnWindowFocus);
+  .pipe(revalidated);
 
 type Action = { readonly kind: "operator" | "pair" };
 

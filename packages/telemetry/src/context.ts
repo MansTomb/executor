@@ -8,7 +8,7 @@ import {
   HttpClientRequest,
   HttpServerResponse,
   HttpTraceContext,
-} from "effect/unstable/http";
+} from "effect/http";
 
 /** Trusted in-process capability containing no product authority, database or credentials. */
 export interface InvocationTelemetry {

@@ -3,21 +3,25 @@ import { createWriteStream } from "node:fs";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, Redacted, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   localConfiguration,
   LocalConfigurationError,
+  rotateApiKey,
 } from "../../server/src/implementation/bootstrap.ts";
 import {
   readDesktopBootstrap,
   startLocalServer,
   type LocalOAuthCallback,
 } from "../../server/src/node.ts";
-import { DesktopCallback, DesktopFailed } from "./contracts/desktop.ts";
+import {
+  DesktopCallback,
+  DesktopConfigurationFailed,
+  DesktopFailed,
+  RotationResult,
+} from "./contracts/desktop.ts";
 
 const server = Effect.gen(function* () {
-  const settings = yield* localConfiguration(process.platform);
-  const bootstrap = yield* readDesktopBootstrap;
   const callbackPipe = yield* Effect.acquireRelease(
     Effect.sync(() => {
       const pipe = createWriteStream("", { fd: 4, autoClose: true });
@@ -27,6 +31,24 @@ const server = Effect.gen(function* () {
     }),
     (pipe) => Effect.sync(() => pipe.destroy()),
   );
+  const send = (message: string) =>
+    Effect.tryPromise({
+      try: () =>
+        new Promise<void>((resolve, reject) =>
+          callbackPipe.write(`${message}\n`, (error) => (error ? reject(error) : resolve())),
+        ),
+      catch: () => new DesktopFailed({ stage: "oauth" }),
+    });
+  // The parent chooses its recovery actions from this reason; the message stays on stderr.
+  const settings = yield* localConfiguration(process.platform).pipe(
+    Effect.tapErrorTag("LocalConfigurationError", (error) =>
+      Schema.encodeEffect(Schema.fromJsonString(DesktopConfigurationFailed))({
+        version: 1,
+        configuration: error.reason,
+      }).pipe(Effect.flatMap(send), Effect.ignore),
+    ),
+  );
+  const bootstrap = yield* readDesktopBootstrap;
   const development =
     process.env.EXECUTOR_DESKTOP_DEV === "1"
       ? yield* Effect.promise(() => import("../../server/src/implementation/development.ts")).pipe(
@@ -52,17 +74,7 @@ const server = Effect.gen(function* () {
           version: 1,
           url: Redacted.make(callback.href),
         }).pipe(
-          Effect.flatMap((message) =>
-            Effect.tryPromise({
-              try: () =>
-                new Promise<void>((resolve, reject) =>
-                  callbackPipe.write(`${message}\n`, (error) =>
-                    error ? reject(error) : resolve(),
-                  ),
-                ),
-              catch: () => new DesktopFailed({ stage: "oauth" }),
-            }),
-          ),
+          Effect.flatMap(send),
           Effect.as(
             HttpServerResponse.text(
               "<!doctype html><title>Executor</title><p>Return to Executor to finish connecting your account.</p>",
@@ -90,24 +102,45 @@ const server = Effect.gen(function* () {
     });
   const local = yield* startLocalServer(settings, bootstrap, { web: development, oauthCallback });
   yield* Console.log(JSON.stringify({ version: 1, url: local.url }));
-  yield* Effect.never;
+  return yield* Effect.never;
 });
 
-NodeRuntime.runMain(
-  Effect.scoped(server).pipe(
-    Effect.provide(NodeServices.layer),
-    Effect.catch((error) =>
-      Console.error(
-        Schema.is(LocalConfigurationError)(error)
+/** Replace the saved API key after the parent has stopped the server; report on stdout. */
+const rotation = rotateApiKey(process.platform).pipe(
+  Effect.as(RotationResult.make({ version: 1, rotated: true, message: "" })),
+  Effect.catch((error) =>
+    Effect.succeed(
+      RotationResult.make({
+        version: 1,
+        rotated: false,
+        message: Schema.is(LocalConfigurationError)(error)
           ? error.message
-          : "Executor desktop server could not start. Check its configuration.",
-      ).pipe(
-        Effect.andThen(
-          Effect.sync(() => {
-            process.exitCode = 1;
-          }),
+          : "Executor could not rotate the API key. The API key was not changed.",
+      }),
+    ),
+  ),
+  Effect.flatMap(Schema.encodeEffect(Schema.fromJsonString(RotationResult))),
+  Effect.flatMap(Console.log),
+  Effect.provide(NodeServices.layer),
+);
+
+if (process.argv.includes("--rotate-api-key")) NodeRuntime.runMain(rotation);
+else
+  NodeRuntime.runMain(
+    Effect.scoped(server).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.catch((error) =>
+        Console.error(
+          Schema.is(LocalConfigurationError)(error)
+            ? error.message
+            : "Executor desktop server could not start. Check its configuration.",
+        ).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              process.exitCode = 1;
+            }),
+          ),
         ),
       ),
     ),
-  ),
-);
+  );

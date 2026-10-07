@@ -8,22 +8,26 @@ import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
+import { appsManifest } from "../support/apps-release.ts";
 
 const files = [
   {
     path: "context.ts",
-    content: `import { defineDatabase, defineProvider, secrets, table, object, string,
+    content: `import { defineProvider, secrets, object, string,
   type QueryContext, type MutationContext, type WebhookContext } from "apps";
 const service = defineProvider({ name: "Context fixture", auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
-export const requirements = { accounts: { service }, database: defineDatabase({
-  messages: table({ body: string(), source: string() })
-}) };
+export const requirements = { accounts: { service } };
 export type QueryCtx = QueryContext<typeof requirements>;
 export type MutationCtx = MutationContext<typeof requirements>;
 export type WebhookCtx = WebhookContext<typeof requirements>;
 `,
+  },
+  {
+    path: "migrations/0001_messages.sql",
+    content:
+      "CREATE TABLE messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL, source TEXT NOT NULL);\n",
   },
   {
     path: "handlers.ts",
@@ -32,51 +36,56 @@ import type { QueryCtx, MutationCtx, WebhookCtx } from "./context.ts";
 const input = object({ body: string() });
 const source = (ctx: Pick<WebhookCtx, "accounts">) =>
   ctx.accounts.service.fields.token === "synthetic-context-b" ? "second" : "first";
+const insert = "INSERT INTO messages (body, source) VALUES (?, ?)";
 export const list = query({ input: object({}) }, async (ctx: QueryCtx) =>
-  ctx.db.messages.withIndex("by_creation").collect());
-export const save = mutation({ input }, async (ctx: MutationCtx, value) =>
-  ctx.db.messages.insert({ ...value, source: source(ctx) }));
-export const broken = mutation({ input }, async (ctx: MutationCtx, value) => {
-  await ctx.db.messages.insert({ ...value, source: source(ctx) });
-  throw new Error("Synthetic rollback");
+  ctx.sql.exec("SELECT body, source FROM messages ORDER BY seq").toArray());
+export const save = mutation({ input }, async (ctx: MutationCtx, value) => {
+  ctx.sql.exec(insert, value.body, source(ctx));
+  return null;
 });
-export const invalid = mutation({ input, output: string() }, async (ctx: MutationCtx, value) => {
-  await ctx.db.messages.insert({ ...value, source: source(ctx) });
-  return 123;
+export const broken = mutation({ input }, async (ctx: MutationCtx, value) =>
+  ctx.sql.transaction((tx) => {
+    tx.exec(insert, value.body, source(ctx));
+    throw new Error("Synthetic rollback");
+  }));
+export const invalid = mutation({ input, output: string() }, async () => 123);
+export const guarded = mutation({ input, approval: () => "denied" }, async (ctx: MutationCtx, value) => {
+  ctx.sql.exec(insert, value.body, source(ctx));
+  return null;
 });
-export const guarded = mutation({ input, approval: () => "denied" }, async (ctx: MutationCtx, value) =>
-  ctx.db.messages.insert({ ...value, source: source(ctx) }));
-export const forbidden = query({ input }, async (ctx, value) => ctx.db.messages.insert({ ...value, source: "bad" }));
+export const forbidden = query({ input }, async (ctx: QueryCtx, value) =>
+  ctx.sql.exec(insert, value.body, "bad").toArray());
 const empty = object({});
 export const messages = {
   account: "service", config: empty, state: empty,
   async register(ctx) {
     if ("elicit" in ctx) throw new Error("Interactive webhook context");
-    await ctx.db.messages.insert({ body: "registered", source: source(ctx) });
+    ctx.sql.exec(insert, "registered", source(ctx));
     return {};
   },
   async handle(ctx, { request }) {
     if (request.headers.get("x-fixture-signature") !== "context-check") return new Response(null, { status: 401 });
     const value = input.parse(await request.json());
     if ("elicit" in ctx) throw new Error("Interactive webhook context");
-    await ctx.db.messages.insert({ ...value, source: source(ctx) });
+    ctx.sql.exec(insert, value.body, source(ctx));
     return Response.json({ source: source(ctx) });
   },
   async unregister(ctx) {
-    await ctx.db.messages.insert({ body: "unregistered", source: source(ctx) });
+    ctx.sql.exec(insert, "unregistered", source(ctx));
   },
 } satisfies Webhook<WebhookCtx, typeof empty, typeof empty>;
 `,
   },
   {
     path: "index.ts",
-    content: `import { defineApp } from "apps";
+    content: `import { defineApp, router } from "apps";
 import { requirements } from "./context.ts";
 import { list, save, broken, invalid, guarded, forbidden, messages } from "./handlers.ts";
 export default defineApp(requirements, {
-  queries: { list, forbidden }, mutations: { save, broken, invalid, guarded }
+  tools: router({ list, forbidden, save, broken, invalid, guarded }),
 });`,
   },
+  appsManifest,
 ];
 
 const Rows = Schema.Array(Schema.Struct({ body: Schema.String, source: Schema.String }));
@@ -181,13 +190,22 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         const saved = yield* submit((yield* body(Resource, connection)).id, "synthetic-context-a");
         expect(saved.status).toBe(200);
         created.account = (yield* body(Resource, saved)).id;
-        const call = (tool: string, input: Record<string, string> = {}) =>
+        const kinds = {
+          list: "query",
+          forbidden: "query",
+          save: "mutation",
+          broken: "mutation",
+          invalid: "mutation",
+          guarded: "mutation",
+        } as const;
+        const call = (tool: keyof typeof kinds, input: Record<string, string> = {}) =>
           api.request(actors.owner, "POST", `${prefix}/apps/${app}/tools/call`, {
             profile: profile.id,
             tool,
+            kind: kinds[tool],
             input,
           });
-        expect((yield* call("mutations.save", { body: "before" })).status).toBe(200);
+        expect((yield* call("save", { body: "before" })).status).toBe(200);
         const reconnected = yield* api.request(
           actors.owner,
           "POST",
@@ -197,16 +215,11 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         expect(
           (yield* submit((yield* body(Resource, reconnected)).id, "synthetic-context-b")).status,
         ).toBe(200);
-        expect((yield* call("mutations.save", { body: "after" })).status).toBe(200);
-        for (const tool of [
-          "queries.forbidden",
-          "mutations.broken",
-          "mutations.invalid",
-          "mutations.guarded",
-        ]) {
+        expect((yield* call("save", { body: "after" })).status).toBe(200);
+        for (const tool of ["forbidden", "broken", "invalid", "guarded"] as const) {
           expect((yield* call(tool, { body: tool })).status).toBeGreaterThanOrEqual(400);
         }
-        const list = yield* call("queries.list");
+        const list = yield* call("list");
         expect(list.status).toBe(200);
         expect(yield* body(Rows, list)).toEqual([
           { body: "before", source: "first" },
@@ -220,8 +233,8 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
               ? {
                   ...file,
                   content: file.content.replace(
-                    "mutations: { save, broken, invalid, guarded }",
-                    "mutations: { save, broken, invalid, guarded }, webhooks: { messages }",
+                    "tools: router({ list, forbidden, save, broken, invalid, guarded }),",
+                    "tools: router({ list, forbidden, save, broken, invalid, guarded }), webhooks: { messages },",
                   ),
                 }
               : file,
@@ -259,7 +272,7 @@ layer(HostedLive, { excludeTestServices: true })("App handler context", (it) => 
         );
         expect(delivered.status).toBe(200);
         expect(delivered.body).toEqual({ source: "second" });
-        expect(yield* body(Rows, yield* call("queries.list"))).toEqual([
+        expect(yield* body(Rows, yield* call("list"))).toEqual([
           { body: "before", source: "first" },
           { body: "after", source: "second" },
           { body: "registered", source: "second" },

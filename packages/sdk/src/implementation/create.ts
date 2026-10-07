@@ -1,18 +1,28 @@
+import { AppNotFound } from "../contracts/apps.ts";
 import { AppId } from "../contracts/shared.ts";
 import { ProfileHost } from "../contracts/profiles.ts";
 import { makeProfileSetup } from "./profile-setup.ts";
 import { WorkflowHost } from "../contracts/workflow-runtime.ts";
+import { RepositoryHost } from "../contracts/source.ts";
+import { StorageHost } from "../contracts/storage.ts";
+import { gitSourceStorage } from "./git-sources.ts";
+import { makeRegistry } from "./registry.ts";
+import { remoteRegistry } from "./remote-registry.ts";
+import { aesGcmCredentials } from "./credentials.ts";
+import { hostedExecutorOrigin } from "../contracts/registry.ts";
+import { defaultToolListingPolicy } from "../contracts/declarations.ts";
+import { storedApp } from "./apps.ts";
+import { initializeAppRepository, recoverAppRepositories } from "./initial-source.ts";
 import { makeWorkflowRuns } from "./workflows.ts";
 /** Compose native operations once for in-process and HTTP callers. */
 import { Crypto, Effect, Schema } from "effect";
 import type { Executor, ExecutorOptions, RemoteExecutorOptions } from "../contracts/executor.ts";
-import { AppNotFound } from "../contracts/apps.ts";
-import { query } from "./database.ts";
-import { NotImplemented } from "../contracts/shared.ts";
+import { CredentialsError, NotImplemented, StorageError } from "../contracts/shared.ts";
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
 import { makeAccountConnections } from "./account-connections.ts";
 import { makeAccounts } from "./accounts.ts";
+import { makeAccountHealth } from "./account-health.ts";
 import { makeProfiles } from "./profiles.ts";
 import { makeApps } from "./apps.ts";
 import { makeOwners } from "./owners.ts";
@@ -20,90 +30,138 @@ import { makeSchedules } from "./schedules.ts";
 import { makeTools } from "./tools.ts";
 import { makeSkills } from "./skills.ts";
 import { toEffectRuntime } from "./runtime.ts";
-import { database } from "./database.ts";
+import { database, query } from "./database.ts";
 import { makeOAuth } from "./oauth.ts";
 import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
+import { makeListings } from "./listings.ts";
 
 /** Capture host cryptography; caller owns database and platform resource lifetimes. */
 export const createExecutor = (
   options: ExecutorOptions,
-): Effect.Effect<Executor, never, Crypto.Crypto> =>
+): Effect.Effect<Executor, CredentialsError, Crypto.Crypto> =>
   Effect.gen(function* () {
     const crypto = yield* Crypto.Crypto;
-    const db = database(options.storage);
-    const runtime = toEffectRuntime(options.runtime, options.blobs, (app, records) =>
-      Effect.gen(function* () {
-        const row = yield* query(() =>
-          db.findFirst("apps", {
-            where: (b) => b("id", "=", Schema.decodeUnknownSync(AppId)(app)),
-          }),
-        );
-        if (row !== null)
-          yield* options.storage.analytics.append({ app: row.id, owner: row.owner }, records);
-      }).pipe(Effect.catchCause(() => Effect.void)),
+    const credentials =
+      options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
+    const db = database(options.database);
+    const sources = gitSourceStorage(options.git);
+    const origin = options.origin ?? hostedExecutorOrigin;
+    const catalog = makeRegistry(
+      options.registry ?? remoteRegistry(hostedExecutorOrigin),
+      origin,
+      db,
+      sources,
+      options.blobs,
+    );
+    const toolListings = { ...defaultToolListingPolicy, ...options.cache?.toolListings };
+    const cache = options.cache?.memory ?? makeDeclarationCache();
+    const runtime = toEffectRuntime(options.runtime, options.blobs, cache, (app, records) =>
+      query(() =>
+        db.findFirst("apps", { where: (b) => b("id", "=", Schema.decodeUnknownSync(AppId)(app)) }),
+      ).pipe(
+        Effect.flatMap((selected) =>
+          selected === null
+            ? Effect.void
+            : options.database.analytics.append({ app, owner: selected.owner }, records),
+        ),
+        Effect.catchCause(() => Effect.void),
+      ),
     );
     const oauth = makeOAuth(
       db,
-      options.credentials,
+      credentials,
       crypto,
       options.oauth,
-      options.lifecycle,
+      options.hooks,
       options.background,
     );
     const declarations = makeDeclarations({
-      cache: options.declarations ?? makeDeclarationCache(),
+      cache,
+      durable: options.cache?.durable,
       background: options.background,
-      resolveAccount: oauth.resolve,
+      resolveAccount: oauth.resolveSelected,
       accountUsable: oauth.usable,
       crypto,
-      lifecycle: options.lifecycle,
+      lifecycle: options.hooks,
     });
     const workflows = makeWorkflowRuns(
-      options.storage,
+      options.database,
       runtime,
-      oauth.resolve,
-      options.credentials,
+      oauth.resolveSelected,
+      credentials,
       crypto,
       declarations,
       options.workflows,
-      options.appStorage,
-      options.lifecycle,
+      options.hooks,
     );
     const webhooks = makeWebhooks(
-      options.storage,
+      options.database,
       runtime,
-      oauth.resolve,
-      options.credentials,
+      oauth.resolveSelected,
+      credentials,
       crypto,
-      options.webhookOrigin,
+      options.origin,
       declarations,
-      options.appStorage,
       workflows.controls,
-      options.lifecycle,
+      options.hooks,
     );
     const apps = {
-      ...makeApps(db, runtime, crypto, options.sources, options.blobs, options.lifecycle),
+      ...makeApps(
+        db,
+        runtime,
+        crypto,
+        sources,
+        options.git,
+        catalog.reads,
+        options.blobs,
+        options.hooks,
+      ),
       profiles: makeProfiles(db, crypto),
       workflows: { list: workflows.definitions },
       workflowRuns: workflows.runs,
     };
     const tools = makeTools(
-      options.storage,
-      oauth.resolve,
+      options.database,
+      oauth,
       runtime,
-      options.credentials,
+      credentials,
       crypto,
-      options.appStorage,
+      makeListings({
+        cache,
+        background: options.background,
+        declarations,
+        resolveAccount: oauth.resolveSelected,
+        lifecycle: options.hooks,
+        policy: toolListings,
+      }),
       workflows.controls,
-      options.lifecycle,
+      options.hooks,
     );
-    const schedules = makeSchedules(options.storage, apps, tools, options.credentials, crypto);
+    const connections = makeAccountConnections(db, credentials, crypto, options.hooks);
+    const { checkCredentials, ...accountHealth } = makeAccountHealth(db, runtime, oauth, apps.list);
+    const schedules = makeSchedules(options.database, apps, tools, credentials, crypto);
     const setup = makeProfileSetup(db, crypto, apps.profiles, {
       webhooks: webhooks.webhooks,
       webhookDefinitions: webhooks.liveDefinitions,
       schedules: schedules.operations,
+      reconcileSchedules: schedules.reconcile,
       runs: workflows.runs,
+      accountNeedingReconnect: tools.accountNeedingReconnect,
     });
+    // App source defines schedules. Each activation removes saved settings for schedules the new
+    // deployment no longer declares. The activation has committed, so a deployment that cannot be
+    // evaluated keeps them and the activation still succeeds. Profiles reconcile in setup.
+    const activated = (app: AppId) =>
+      schedules
+        .activated(app)
+        .pipe(
+          Effect.catch((error) =>
+            Effect.logWarning(
+              "Kept saved schedules: the activated deployment was not evaluated",
+              error,
+            ),
+          ),
+        );
     return {
       analytics: {
         summary: (input) =>
@@ -117,36 +175,68 @@ export const createExecutor = (
               }),
             );
             if (app === null) return yield* new AppNotFound({ app: input.app });
-            return yield* options.storage.analytics.summary({ ...input, owner: app.owner });
+            return yield* options.database.analytics.summary({ ...input, owner: app.owner });
           }),
       },
       [ProfileHost]: { tick: setup.tick },
       [WorkflowHost]: workflows.host,
+      [RepositoryHost]: {
+        request: (input, request) =>
+          Effect.gen(function* () {
+            const app = yield* storedApp(db, input);
+            yield* initializeAppRepository(db, sources, options.blobs, app);
+            return yield* options.git.request(app.code, request);
+          }),
+        recover: recoverAppRepositories({
+          database: options.database,
+          sources,
+          blobs: options.blobs,
+        }),
+      },
+      [StorageHost]: {
+        transaction: (effect) =>
+          db.transaction(effect).pipe(
+            Effect.withSpan("storage.transaction"),
+            Effect.catchTag("SqlError", () => new StorageError()),
+          ),
+      },
       scheduler: schedules.dispatcher,
       schedules: schedules.operations,
-      accounts: makeAccounts(
-        db,
-        options.credentials,
-        crypto,
-        options.lifecycle,
-        oauth.revokeRemoved,
-      ),
-      accountConnections: {
-        ...makeAccountConnections(db, options.credentials, crypto, options.lifecycle),
-        ...oauth.connections,
+      accounts: {
+        ...makeAccounts(db, credentials, crypto, options.hooks, oauth.revokeRemoved),
+        ...accountHealth,
       },
-      apps: { ...apps, profiles: setup.operations },
+      accountConnections: {
+        ...connections,
+        ...oauth.connections,
+        findOAuth: (input) => Effect.flatMap(oauth.findOAuth(input), connections.get),
+      },
+      apps: {
+        ...apps,
+        deploy: (input) =>
+          apps
+            .deploy(input)
+            .pipe(
+              Effect.tap(({ app, deployment }) =>
+                app.activeDeployment === deployment.id ? activated(app.id) : Effect.void,
+              ),
+            ),
+        activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
+        profiles: setup.operations,
+        checkCredentials,
+      },
       owners: makeOwners(db),
+      publications: catalog.publications,
+      registry: catalog.registry,
       skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
       webhooks: webhooks.webhooks,
       webhookSetup: webhooks.webhookSetup,
       appData: makeAppData(
-        options.storage,
-        oauth.resolve,
+        options.database,
+        oauth.resolveSelected,
         runtime,
-        options.appStorage,
         workflows.controls,
-        options.lifecycle,
+        options.hooks,
       ),
       tools,
     };

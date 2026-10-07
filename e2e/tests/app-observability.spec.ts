@@ -11,22 +11,24 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
+import { withApps } from "../support/apps-release.ts";
 
 const files = [
   {
     path: "package.json",
-    content: JSON.stringify({ dependencies: { react: "^19.2.0", "react-dom": "^19.2.0" } }),
+    content: JSON.stringify({
+      dependencies: withApps({ react: "^19.2.0", "react-dom": "^19.2.0" }),
+    }),
   },
   {
     path: "index.ts",
-    content: `import { defineApp, defineDatabase, table, query, mutation, object, string, array } from "apps";
-const database = defineDatabase({ items: table({ text: string() }) });
-export const list = query({ input: object({}), output: array(string()) }, async ({ db }) => {
+    content: `import { defineApp, query, mutation, object, string, array, router } from "apps";
+export const list = query({ input: object({}), output: array(string()) }, async ({ sql }) => {
   await new Promise(resolve => setTimeout(resolve, 75));
-  return (await db.items.withIndex("by_creation").collect()).map(row => row.text);
+  return sql.exec("SELECT text FROM items ORDER BY seq").toArray().map(row => row.text);
 });
-export const add = mutation({ input: object({ text: string() }), output: string() }, async ({ db }, input) => {
-  await db.items.insert(input); return input.text;
+export const add = mutation({ input: object({ text: string() }), output: string() }, async ({ sql }, input) => {
+  sql.exec("INSERT INTO items (text) VALUES (?)", input.text); return input.text;
 });
 export const hostCache = query({ input: object({ key: string() }), output: string() }, async (_, { key }) => {
   try {
@@ -34,7 +36,14 @@ export const hostCache = query({ input: object({ key: string() }), output: strin
     return (await cache.match(key)) === undefined ? "isolated" : "visible";
   } catch { return "unavailable"; }
 });
-export default defineApp({ accounts: {}, database }, { queries: { list, hostCache }, mutations: { add } });`,
+export default defineApp({ accounts: {} }, { tools: router({
+   list, hostCache,
+   add,
+ }) });`,
+  },
+  {
+    path: "migrations/0001_items.sql",
+    content: "CREATE TABLE items (seq INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL);\n",
   },
   {
     path: "ui/index.html",
@@ -208,7 +217,7 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         if (assetTraceId === undefined) return yield* Effect.die("The asset has no request trace");
         if (mapName === undefined)
           return yield* Effect.die("The deployed browser entry has no source map");
-        expect(entry.cacheControl).toBe("private, no-cache, must-revalidate");
+        expect(entry.cacheControl).toBe("private, max-age=31536000, immutable");
         const etag = entry.etag;
         if (etag === undefined) return yield* Effect.die("The immutable asset has no ETag");
         const revalidated = yield* browser.use(
@@ -414,16 +423,26 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         yield* (yield* warmPage)(url);
         yield* browser.use("Close the initial stream", (page) => page.goto("about:blank"));
         for (const sample of [1, 2]) {
-          const requestHeader = yield* browser.use(`Measure normal reload ${sample}`, (page) =>
-            Promise.all([
-              page
-                .waitForRequest((request) => request.url().endsWith("/_executor/api/subscribe"))
-                .then((request) => request.headers()["traceparent"]),
-              page.goto(url),
-            ]).then(([header]) => header),
+          const [requestHeader, timing] = yield* browser.use(
+            `Measure normal reload ${sample}`,
+            (page) =>
+              Promise.all([
+                page
+                  .waitForRequest((request) => request.url().endsWith("/_executor/api/subscribe"))
+                  .then((request) => request.headers()["traceparent"]),
+                page
+                  .waitForResponse((response) =>
+                    response.url().endsWith("/_executor/api/subscribe"),
+                  )
+                  .then((response) => response.headerValue("server-timing")),
+                page.goto(url),
+              ]),
           );
           const reloadTraceId = requestHeader?.match(/^00-([a-f0-9]{32})-/)?.[1];
           if (reloadTraceId === undefined) return yield* Effect.die("Reload trace context missing");
+          const serverSpan = timing?.match(/executor-span;desc="([a-f0-9]{16})"/)?.[1];
+          if (serverSpan === undefined)
+            return yield* Effect.die("The reload did not identify its open server span");
           yield* browser.use(`Normal reload ${sample} displays data`, (page) =>
             page.getByRole("status").filter({ hasText: "Ready" }).waitFor(),
           );
@@ -433,17 +452,32 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
               page.evaluate(navigationTiming),
             ),
           );
+          // Browser and server spans reach the collector separately, and the server's request
+          // span ends only with the stream. Close it and wait for the whole trace, so the counts
+          // below include every server span, including a late repeated query.
+          yield* browser.use(`Close normal reload ${sample}`, (page) => page.goto("about:blank"));
           const reloadTrace = yield* telemetry.query(reloadTraceId).pipe(
-            Effect.flatMap((result) =>
-              result.data.some(
-                (row) =>
-                  row.span.operationName === "ui.app.first_result" &&
-                  row.span.tags["executor.milestone.reached"] === "true",
-              )
+            Effect.flatMap((result) => {
+              const spans = result.data.map((row) => row.span);
+              const ids = new Set(spans.map((span) => span.spanId));
+              return spans.some(
+                (span) =>
+                  span.operationName === "ui.app.first_result" &&
+                  span.tags["executor.milestone.reached"] === "true",
+              ) &&
+                spans.some(
+                  (span) => span.spanId === serverSpan && span.operationName === "http.server POST",
+                ) &&
+                spans.every(
+                  (span) =>
+                    !span.operationName.startsWith("[missing parent") &&
+                    (span.parentSpanId === null || ids.has(span.parentSpanId)),
+                )
                 ? Effect.succeed(result)
-                : Effect.fail(new Error("Reload timing has not reached the collector")),
-            ),
+                : Effect.fail(new Error("The reload trace has not fully reached the collector"));
+            }),
             Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
+            Effect.timeout("60 seconds"),
           );
           yield* evidence.json(`app-normal-reload-${sample}.json`, reloadTrace);
           if (target.metadata.target === "cloud") {
@@ -454,16 +488,24 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
               reloadTrace.data.filter((row) => row.span.operationName === "runtime.cloud.query"),
               "Notification registration does not repeat an unchanged initial query",
             ).toHaveLength(1);
-            expect(
-              loads,
-              "A warm query does not load or transfer its retained server build",
-            ).toHaveLength(0);
+            // The managed Worker serves every request from one isolate. Real Cloudflare requests
+            // may enter a new isolate, which may decode the cached build but must not refetch it.
+            if (target.metadata.mode === "attached")
+              for (const row of loads)
+                expect(
+                  row.span.tags["executor.build.cache"],
+                  "A warm query in a new isolate decodes its cached server build",
+                ).toBe("hit");
+            else
+              expect(
+                loads,
+                "A warm query does not load or transfer its retained server build",
+              ).toHaveLength(0);
             expect(
               reloadTrace.data.some((row) => row.span.operationName === "storage.blob.get"),
               "Warm queries must not reread the server bundle from R2",
             ).toBe(false);
           }
-          yield* browser.use(`Close normal reload ${sample}`, (page) => page.goto("about:blank"));
         }
       }),
     ),

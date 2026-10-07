@@ -1,23 +1,24 @@
 import { organizationAppCreation, personalAccountCreation } from "./resource-lifecycle.ts";
 import type { HostedApiDocument } from "../contracts/api.ts";
 import { managedAccountKey } from "./api-keys.ts";
+import { pinnedOnly } from "@executor-js/app-management/data-steps";
 import { sourceFilesEqual } from "@executor-js/sdk/core";
 import {
   AccountId,
   AppId,
   DeploymentId,
   StorageError,
+  StorageHost,
   type Executor,
-  type ExecutorDatabase,
-  type SourceFile,
 } from "@executor-js/sdk/core";
 import { Effect, Redacted, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import {
   OrganizationDefaults,
   OrganizationDefaultsPending,
 } from "../contracts/organization-defaults.ts";
 import { organizationOwner } from "../contracts/organization.ts";
+import { ScheduleWakeup } from "../contracts/schedules.ts";
 
 /** Only a new or changed installation generates the Executor app, so its OpenAPI compiler loads then. */
 const executorApp = Effect.promise(() => import("./executor-app.ts"));
@@ -34,15 +35,16 @@ const Accounts = Schema.Struct({ accounts: Schema.Record(Schema.String, AccountI
 export const organizationDefaults = (
   executor: Executor,
   origin: string,
-  storage: ExecutorDatabase,
-  skills: readonly SourceFile[],
   document: Effect.Effect<HostedApiDocument>,
   requireVerifiedEmail = true,
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    return OrganizationDefaults.of((organization, user) =>
-      Effect.gen(function* () {
+    return OrganizationDefaults.of((organization, user) => {
+      // Upgrading the installed app makes its profiles pending, and member setup saves a
+      // profile. Either is saved setup intent, which must wake profile setup once it commits.
+      let intent = false;
+      return Effect.gen(function* () {
         const rows = yield* sql`select
           coalesce((metadata::jsonb -> 'executorDefaults' ->> 'installed')::boolean, false) as initialized,
           metadata::jsonb -> 'executorDefaults' ->> 'app' as app,
@@ -61,7 +63,7 @@ export const organizationDefaults = (
         const owner = organizationOwner(organization);
         if (!state.initialized) {
           const { defaultExecutorAppSource } = yield* executorApp;
-          const source = yield* defaultExecutorAppSource(origin, skills, yield* document);
+          const source = yield* defaultExecutorAppSource(origin, yield* document);
           const existing = (yield* executor.apps.list({ owner, name: "Executor" }))[0];
           if (existing === undefined) {
             yield* executor.apps.deploy({ owner, name: "Executor", files: source.files }).pipe(
@@ -78,10 +80,15 @@ export const organizationDefaults = (
           const approved = sourceFilesEqual(installedSource.files, source.files)
             ? installedSource.id
             : null;
+          // Concurrent installers all reach this write; the unique app name gave them one app.
+          // The first record wins, so a later one cannot replace what member setup recorded since.
           yield* sql`update "organization" set metadata = jsonb_set(
             coalesce(metadata::jsonb, '{}'::jsonb), '{executorDefaults}',
             jsonb_build_object('installed', true, 'app', ${installed.id}::text, 'deployment', ${approved}::text)
-          )::text where id = ${organization}`.pipe(Effect.mapError(() => new StorageError()));
+          )::text where id = ${organization}
+            and not coalesce((metadata::jsonb -> 'executorDefaults' ->> 'installed')::boolean, false)`.pipe(
+            Effect.mapError(() => new StorageError()),
+          );
         }
         if (user === undefined) return;
         // The stored ID follows renames; deletion never recreates an initialized app.
@@ -93,23 +100,57 @@ export const organizationDefaults = (
                 .pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(undefined)));
         if (app === undefined) return;
         let current = app;
-        // The recorded deployment is immutable. Recheck source only after it changes.
-        if (state.deployment !== app.activeDeployment) {
+        // The recorded deployment is the one Executor installed or verified. While it is still
+        // active nobody has deployed over it, so the current template may replace it.
+        if (state.deployment !== null && state.deployment === app.activeDeployment) {
+          const deployment = yield* executor.apps.source({ owner, app: app.id });
+          if (deployment.id !== app.activeDeployment) return;
+          const { defaultExecutorAppSource } = yield* executorApp;
+          const source = yield* defaultExecutorAppSource(origin, yield* document);
+          if (!sourceFilesEqual(deployment.files, source.files)) {
+            // A failed upgrade keeps the working installation, and member setup continues.
+            const upgraded = yield* Effect.gen(function* () {
+              const workspace = yield* executor.apps.workspace({ owner, app: app.id });
+              // Unsaved edits mean someone is changing this copy; leave it to them. The framework
+              // pin is a system commit, not an edit.
+              if (!pinnedOnly(workspace.files, deployment.files)) return undefined;
+              const deployed = yield* executor.apps.deploy({
+                owner,
+                app: app.id,
+                files: source.files,
+              });
+              intent = true;
+              return deployed.app;
+            }).pipe(
+              Effect.catch(() =>
+                Effect.logWarning("Executor app upgrade failed").pipe(Effect.as(undefined)),
+              ),
+            );
+            if (upgraded !== undefined) {
+              current = upgraded;
+              yield* sql`update "organization" set metadata = jsonb_set(
+                coalesce(metadata::jsonb, '{}'::jsonb), '{executorDefaults,deployment}',
+                to_jsonb(${upgraded.activeDeployment}::text)
+              )::text where id = ${organization}`.pipe(Effect.mapError(() => new StorageError()));
+            }
+          }
+        } else if (state.deployment !== app.activeDeployment) {
           const deployment = yield* executor.apps.source({ owner, app: app.id });
           if (deployment.id !== app.activeDeployment) return;
           const { defaultExecutorAppSource, executorAppSource } = yield* executorApp;
-          const source = yield* defaultExecutorAppSource(origin, skills, yield* document);
+          const source = yield* defaultExecutorAppSource(origin, yield* document);
           if (!sourceFilesEqual(deployment.files, source.files)) {
             // Upgrade only the untouched, unconfigured catalog version. Preserve user edits and connections.
-            const catalog = yield* executorAppSource(origin, skills, yield* document);
+            const catalog = yield* executorAppSource(origin, yield* document);
             if (!sourceFilesEqual(deployment.files, catalog.files)) return;
             const workspace = yield* executor.apps.workspace({ owner, app: app.id });
-            if (!sourceFilesEqual(workspace.files, deployment.files)) return;
+            if (!pinnedOnly(workspace.files, deployment.files)) return;
             current = (yield* executor.apps.deploy({
               owner,
               app: app.id,
               files: source.files,
             })).app;
+            intent = true;
           }
         }
         const requirement = current.requirements.accounts.service;
@@ -122,17 +163,13 @@ export const organizationDefaults = (
                 .get({ owner, account: id })
                 .pipe(Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)));
         };
-        const existingProfile = yield* storage
-          .orm("4.0.0")
-          .findFirst("profiles", {
-            where: (b) =>
-              b.and(
-                b("app", "=", app.id),
-                b("subject", "=", user.userId),
-                b("idempotencyKey", "=", "executor-default"),
-              ),
-          })
-          .pipe(Effect.mapError(() => new StorageError()));
+        const existingProfile =
+          (yield* executor.apps.profiles.list({
+            app: app.id,
+            owner,
+            subject: user.userId,
+            idempotencyKey: "executor-default",
+          }))[0] ?? null;
         const saved = yield* savedAccount(state.accounts);
         // A recorded account that was deliberately deleted is not a new-user setup.
         // Keep that intent: inventory reads must not recreate credentials or choose a replacement.
@@ -151,20 +188,24 @@ export const organizationDefaults = (
         )
           return;
         // Build/network work finished above. Only account creation or selection repair needs the lock.
-        yield* storage
-          .orm("4.0.0")
+        yield* executor[StorageHost]
           .transaction(
             Effect.gen(function* () {
+              // Only metadata changes, so take the non-key lock. It still serializes member
+              // setup, but not a role change whose trigger checks the organization key; with
+              // `for update` that check and this setup's member lock deadlocked.
               const rows =
                 yield* sql`select coalesce(metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb) as accounts
-            from "organization" where id = ${organization} for update`.pipe(
+            from "organization" where id = ${organization} for no key update`.pipe(
                   Effect.mapError(() => new StorageError()),
                 );
               if (rows.length !== 1) return;
               const state = yield* Schema.decodeUnknownEffect(Accounts)(rows[0]).pipe(
                 Effect.mapError(() => new StorageError()),
               );
-              yield* sql`select id from executor_apps where id = ${app.id} and owner = ${owner} for update`.pipe(
+              // Serialize member setup per app without touching the SDK's rows; the SDK read
+              // below runs inside this transaction and observes a committed deployment.
+              yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-defaults:${app.id}`}, 0))`.pipe(
                 Effect.mapError(() => new StorageError()),
               );
               const locked = yield* executor.apps.get({ owner, app: app.id });
@@ -212,6 +253,7 @@ export const organizationDefaults = (
                 idempotencyKey: "executor-default",
                 accounts: { service: account.id },
               });
+              intent = true;
               const accounts = JSON.stringify({ ...state.accounts, [user.userId]: account.id });
               yield* sql`update "organization" set metadata = jsonb_set(jsonb_set(
             coalesce(metadata::jsonb, '{}'::jsonb), '{executorKeyAccounts}', ${accounts}::jsonb),
@@ -220,10 +262,12 @@ export const organizationDefaults = (
               return saved === undefined;
             }),
           )
-          .pipe(
-            Effect.catchTag("SqlError", () => Effect.fail(new StorageError())),
-            Effect.uninterruptible,
-          );
-      }).pipe(Effect.scoped),
-    );
+          .pipe(Effect.uninterruptible);
+      }).pipe(
+        Effect.scoped,
+        Effect.ensuring(
+          Effect.suspend(() => (intent ? Effect.flatten(ScheduleWakeup) : Effect.void)),
+        ),
+      );
+    });
   });

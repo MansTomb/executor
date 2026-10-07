@@ -1,6 +1,6 @@
 /** OAuth discovery for ordinary API clients, independent of browser sessions. */
 import { Effect } from "effect";
-import { HttpServerResponse } from "effect/unstable/http";
+import { HttpServerResponse } from "effect/http";
 import { ApiAuthentication } from "../contracts/auth.ts";
 
 /** RFC 9728 metadata for the organization management API. */

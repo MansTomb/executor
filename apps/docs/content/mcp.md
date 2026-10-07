@@ -17,7 +17,9 @@ The transport is streamable HTTP. See
 ## The tools
 
 The endpoint does not expose one MCP tool per app tool. However many apps you
-add, the tool list stays the same size.
+add, the tool list stays the same size. When a client connects, the server's
+MCP instructions introduce Executor to the agent. They are the Executor app's
+`executor` skill, which points to its `code-mode` and `app-authoring` skills.
 
 - **`skills`** reads the instructions an app ships. Call `skills({})` for a list
   of what is visible, `skills({ app: "support-inbox" })` for one app's skills,
@@ -39,11 +41,14 @@ Inside the program, app tools are ordinary async functions:
 return await tools.search({ query: "vercel projects" });
 ```
 
-Search returns the exact callable path and the TypeScript signature for each
-tool. The paths look like this:
+Search returns a page of tools: each one's exact callable path, the first line
+of its description and its input type. Each app and profile is listed once.
+`next` continues to the following page, and
+`tools.search.describe({ paths })` returns a tool's whole signature, including
+its output type. The paths look like this:
 
 ```js
-const projects = await tools.vercel.queries.listProjects({});
+const projects = await tools.vercel.listProjects({});
 return projects.projects.map((project) => project.name);
 ```
 
@@ -58,7 +63,7 @@ not cached across changes, so run `tools.search` again in a new `execute` after
 you add or reconfigure an app.
 
 Some limits are fixed by the server and a client cannot raise them: 65,536
-characters of program source, 100 tool calls, 30 seconds, and 65,536 bytes of
+characters of program source, 100 tool calls, 5 minutes, and 65,536 bytes of
 output.
 
 ## Signing in from the browser

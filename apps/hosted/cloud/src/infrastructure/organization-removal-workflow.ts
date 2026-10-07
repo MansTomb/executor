@@ -1,4 +1,3 @@
-import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
 /**
  * Organization removal as one durable workflow. It is the same mechanism as
  * `AppWorkflows`: an Alchemy `Cloudflare.Workflow` class hosted by the API
@@ -8,24 +7,29 @@ import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
  * all, so it needs no workflow here.
  */
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Cause, Effect, Layer, Schema } from "effect";
+import { Cause, Context, Effect, Option, Schema } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import {
+  Authentication,
+  HostedExecutor,
   OrganizationBilling,
+  OrganizationIcons,
   OrganizationId,
   OrganizationRemovalFailed,
+  OrganizationRemovals,
   OrganizationRemovalUnavailable,
   removeOrganizationDurably,
   type OrganizationRemovalStepRunner,
 } from "@executor-js/hosted-server";
 import { Billing } from "../contracts/billing.ts";
-import { billingLive } from "../implementation/billing.ts";
 import { cloudSentry } from "../implementation/error-reporting.ts";
-import { cloudAuth } from "./auth.ts";
-import { cloudAuthDatabase } from "./auth-database.ts";
-import { cloudEmail } from "./email.ts";
-import { cloudExecutor } from "./executor.ts";
-import { AppDataSupervisor } from "./app-data.ts";
+import { EventCleanup, sqlCancellation } from "./event-cleanup.ts";
+
+/** One failed attempt. The engine retries only typed failures it can serialize. */
+class RemovalAttemptFailed extends Schema.TaggedError<RemovalAttemptFailed>()(
+  "RemovalAttemptFailed",
+  {},
+) {}
 
 /**
  * One durable step. The engine owns the journal and the retries; a body that
@@ -51,40 +55,45 @@ const runner =
           Cause.hasInterrupts(cause)
             ? Effect.interrupt
             : Effect.logError("Organization removal step failed", cause).pipe(
-                Effect.andThen(
-                  Effect.die(new OrganizationRemovalFailed({ organization, step: name })),
-                ),
+                Effect.andThen(Effect.fail(new RemovalAttemptFailed())),
               ),
         ),
       ),
       { retries },
-    );
+    ).pipe(Effect.mapError(() => new OrganizationRemovalFailed({ organization, step: name })));
 
 export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval>()(
   "OrganizationRemoval",
   Effect.gen(function* () {
     const reportErrors = yield* cloudSentry;
-    const email = yield* cloudEmail.pipe(Effect.orDie);
-    const auth = yield* cloudAuth(email.send);
-    const executor = yield* cloudExecutor(
-      yield* AppDataSupervisor,
-      yield* cloudArtifactsTokensLive,
+    // The Worker that yields this class supplies the services; Alchemy captures them. Only
+    // these: the Worker's context also holds its own scope, and providing that to a run would
+    // replace the run's scope, so per-execution resources would outlive the run.
+    const services = yield* Effect.context<
+      HostedExecutor | OrganizationIcons | OrganizationRemovals | Authentication | Billing
+    >().pipe(
+      Effect.map(
+        Context.pick(
+          HostedExecutor,
+          OrganizationIcons,
+          OrganizationRemovals,
+          Authentication,
+          Billing,
+        ),
+      ),
     );
-    const billing = yield* billingLive.pipe(Effect.orDie);
     // Cancellation reaches the workflow as the host's billing service, not as a
     // branch on the deployment. A host without one keeps the inert default.
-    const cancellation = Layer.effect(
-      OrganizationBilling,
-      Effect.map(Billing, (service) => ({
-        cancel: (organization: OrganizationId) => service.cancel(organization),
-      })),
-    ).pipe(Layer.provide(billing));
-    const services = Layer.mergeAll(executor, auth.identity, cancellation);
+    const billing = Context.get(services, Billing);
+    const cancellation = OrganizationBilling.of({
+      cancel: (organization: OrganizationId) => billing.cancel(organization),
+    });
     return (input: { organization: string }) =>
       Effect.suspend(() => {
         const organization = OrganizationId.make(input.organization);
         return removeOrganizationDurably(organization, runner(organization)).pipe(
           Effect.provide(services),
+          Effect.provideService(OrganizationBilling, cancellation),
           // Report through the same Sentry boundary the API uses, carrying the
           // organization and the step in the failure itself, and then leave the
           // instance failed: nothing else watches a workflow that stops part
@@ -93,38 +102,95 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
           Effect.orDie,
         );
       });
-  }).pipe(Effect.provide(cloudAuthDatabase)),
+  }),
 ) {}
 
-/** Adopt the stable removal instance, including when a create response was lost. */
-export const startOrganizationRemoval = (organization: OrganizationId, instance: string) =>
-  Effect.gen(function* () {
-    const workflow = yield* OrganizationRemoval;
-    const status = workflow.get(instance).pipe(
-      Effect.flatMap((run) => run.status()),
-      Effect.map((state) => state.status),
+/** Start an organization's removal on the host's workflow binding. */
+export class OrganizationRemovalStart extends Context.Service<
+  OrganizationRemovalStart,
+  (
+    organization: OrganizationId,
+    instance: string,
+  ) => Effect.Effect<void, OrganizationRemovalUnavailable>
+>()("executor/cloud/OrganizationRemovalStart") {}
+
+/**
+ * How long one Workflows call may take. A create or a status read normally answers in well under
+ * a second, but about one create in a few hundred hangs for 12 or 30 seconds and then fails
+ * without creating the instance. A call past this deadline counts as refused, so a stalled call
+ * cannot use up the time a fresh one would need.
+ */
+const callDeadline = "3 seconds";
+
+/**
+ * Create the stable removal instance. A refused create may still have taken, its answer lost, or
+ * an earlier start may already have made it, so the status read decides: only an instance
+ * Workflows does not know is still pending.
+ */
+export const startOrganizationRemoval =
+  (workflow: Effect.Success<typeof OrganizationRemoval>) =>
+  (organization: OrganizationId, instance: string) =>
+    workflow.create({ id: instance, params: { organization } }).pipe(
+      Effect.timeout(callDeadline),
+      Effect.asVoid,
       Effect.catchCause((cause) =>
-        Cause.hasInterrupts(cause) ? Effect.interrupt : Effect.succeed("unknown" as const),
-      ),
-    );
-    if ((yield* status) !== "unknown") return;
-    yield* workflow
-      .create({ id: instance, params: { organization } })
-      .pipe(
-        Effect.catchCause((cause) =>
-          Cause.hasInterrupts(cause)
-            ? Effect.interrupt
-            : Effect.flatMap(status, (current) =>
-                current === "unknown"
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : workflow.get(instance).pipe(
+              Effect.flatMap((run) => run.status()),
+              Effect.timeout(callDeadline),
+              Effect.catchCause((cause) =>
+                Cause.hasInterrupts(cause)
+                  ? Effect.interrupt
+                  : Effect.succeed({ status: "unknown" }),
+              ),
+              Effect.flatMap((state) =>
+                state.status === "unknown"
                   ? Effect.fail(new OrganizationRemovalUnavailable())
                   : Effect.void,
               ),
+            ),
+      ),
+      Effect.withSpan("organization.removal.start"),
+    );
+
+/**
+ * Start a removal the request has just accepted, once its response is sent. The tombstone is
+ * already the durable start record, so the owner never waits on the provider. Within the event's
+ * cleanup window the start is dispatched again until the instance exists; the minute job takes
+ * whatever is still pending after that. Cron alone is not enough: a deployment's Cron Triggers
+ * take minutes to begin, and until then nothing else would start the removal.
+ */
+export const dispatchAcceptedRemoval = (
+  start: OrganizationRemovalStart["Service"],
+  organization: OrganizationId,
+  instance: string,
+) =>
+  Effect.flatMap(EventCleanup, (cleanup) =>
+    Effect.addFinalizer(() =>
+      cleanup.deadline.pipe(
+        Effect.flatMap((deadline) =>
+          deadline.within(
+            start(organization, instance).pipe(
+              Effect.tapError(() => Effect.sleep("500 millis")),
+              Effect.eventually,
+            ),
+            // The write's jobs and Better Auth's cleanup run after this in the same window.
+            { max: "10 seconds", reserve: sqlCancellation },
+          ),
         ),
-      );
-  });
+        Effect.flatMap((started) =>
+          Option.isSome(started)
+            ? Effect.void
+            : Effect.logWarning("Organization removal start pending", { organization }),
+        ),
+      ),
+    ),
+  );
 
 /** Tombstones are the durable start journal; recover a provider refusal or process loss. */
 export const dispatchOrganizationRemovals = Effect.gen(function* () {
+  const start = yield* OrganizationRemovalStart;
   const sql = yield* Effect.flatten(GroupDatabase);
   const pending = yield* sql`select organization_id, instance_id from hosted_organization_removal
     where status = 'running' order by started_at limit 50`.pipe(
@@ -142,7 +208,7 @@ export const dispatchOrganizationRemovals = Effect.gen(function* () {
   yield* Effect.forEach(
     pending,
     (record) =>
-      startOrganizationRemoval(record.organization_id, record.instance_id).pipe(
+      start(record.organization_id, record.instance_id).pipe(
         Effect.catch(() =>
           Effect.logWarning("Organization removal start remains pending", {
             organization: record.organization_id,

@@ -19,12 +19,14 @@ import {
   SubmitAccountConnection,
   StartConnectionOAuth,
   CompleteConnectionOAuth,
+  FindConnectionOAuth,
 } from "../contracts/account-connection.ts";
 import { ScheduleInputs } from "../contracts/schedules.ts";
 import { AppInputs } from "../contracts/apps.ts";
 import { OwnerInputs } from "../contracts/owner.ts";
+import { PublicationInputs, RegistryInputs } from "../contracts/registry.ts";
 import { ElicitationFailed, ToolInputs, type ToolInvocationOptions } from "../contracts/tools.ts";
-import { RequestInvalid } from "../contracts/shared.ts";
+import { OwnerId, RequestInvalid } from "../contracts/shared.ts";
 import { AppDataInput } from "../contracts/app-data.ts";
 import { AppSkillInputs } from "../contracts/skills.ts";
 
@@ -83,7 +85,13 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       update: (input) => run(AccountInputs.update, input, executor.accounts.update),
       replaceCredentials: (input) =>
         run(AccountInputs.replaceCredentials, input, executor.accounts.replaceCredentials),
-      remove: (input) => run(AccountInputs.get, input, executor.accounts.remove),
+      remove: (input) => run(AccountInputs.remove, input, executor.accounts.remove),
+      signIn: (input) => run(AccountInputs.get, input, executor.accounts.signIn),
+      providers: (input = {}) => run(AccountInputs.providers, input, executor.accounts.providers),
+      health: (input) => run(AccountInputs.get, input, executor.accounts.health),
+      listHealth: (input = {}) =>
+        run(AccountInputs.listHealth, input, executor.accounts.listHealth),
+      check: (input) => run(AccountInputs.check, input, executor.accounts.check),
     },
     accountConnections: {
       oauthSetup: (input) => run(CheckOAuthSetup, input, executor.accountConnections.oauthSetup),
@@ -93,6 +101,7 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       submit: (input) => run(SubmitAccountConnection, input, executor.accountConnections.submit),
       startOAuth: (input) =>
         run(StartConnectionOAuth, input, executor.accountConnections.startOAuth),
+      findOAuth: (input) => run(FindConnectionOAuth, input, executor.accountConnections.findOAuth),
       completeOAuth: (input) =>
         run(CompleteConnectionOAuth, input, executor.accountConnections.completeOAuth),
     },
@@ -116,6 +125,12 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       workflowRuns: {
         start: (input) => run(StartWorkflow, input, executor.apps.workflowRuns.start),
         get: (input) => run(WorkflowTarget, input, executor.apps.workflowRuns.get),
+        pinned: (input) =>
+          run(
+            Schema.Struct({ ...WorkflowTarget.fields, owner: Schema.optional(OwnerId) }),
+            input,
+            executor.apps.workflowRuns.pinned,
+          ),
         list: (input) =>
           run(Schema.toType(ListWorkflowRuns), input, executor.apps.workflowRuns.list),
         terminate: (input) => run(WorkflowTarget, input, executor.apps.workflowRuns.terminate),
@@ -127,12 +142,28 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       deploy: (input) => run(AppInputs.deploy, input, executor.apps.deploy),
       get: (input) => run(AppInputs.get, input, executor.apps.get),
       list: (input = {}) => run(AppInputs.list, input, executor.apps.list),
+      checkCredentials: (input) =>
+        run(AppInputs.checkCredentials, input, executor.apps.checkCredentials),
       remove: (input) => run(AppInputs.get, input, executor.apps.remove),
       activate: (input) => run(AppInputs.activate, input, executor.apps.activate),
       rename: (input) => run(AppInputs.rename, input, executor.apps.rename),
       deployments: (input) => run(AppInputs.deployments, input, executor.apps.deployments),
       deployment: (input) => run(AppInputs.source, input, executor.apps.deployment),
       source: (input) => run(AppInputs.source, input, executor.apps.source),
+      history: (input) => run(AppInputs.history, input, executor.apps.history),
+      revision: (input) => run(AppInputs.revision, input, executor.apps.revision),
+    },
+    publications: {
+      status: () => Effect.runPromise(executor.publications.status()),
+      preview: (input) => run(PublicationInputs.preview, input, executor.publications.preview),
+      publish: (input) => run(PublicationInputs.publish, input, executor.publications.publish),
+      owned: (input) => run(PublicationInputs.owned, input, executor.publications.owned),
+      unpublish: (input) =>
+        run(PublicationInputs.unpublish, input, executor.publications.unpublish),
+    },
+    registry: {
+      list: (input = {}) => run(RegistryInputs.list, input, executor.registry.list),
+      snapshot: (input) => run(RegistryInputs.snapshot, input, executor.registry.snapshot),
     },
     webhookSetup: {
       read: (input) => run(WebhookTarget, input, executor.webhookSetup.read),

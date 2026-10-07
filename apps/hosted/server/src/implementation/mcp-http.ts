@@ -5,23 +5,25 @@ import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
 import {
   restrictMcpBackend,
-  permitsDelivery,
+  deliveryRefusal,
   GrantForbidden,
-  requestedMcpMode,
+  requestedMcpAddress,
   mcpResource,
   mcpResourceMetadataUrl,
+  type McpAddress,
 } from "@executor-js/mcp-auth";
-import { defaultMcpLimits, makeMcp, type McpBackend, type McpOptions } from "@executor-js/mcp";
-import { Context, Effect, Option, Schema } from "effect";
-import { ElicitationFailed } from "@executor-js/sdk/core";
-import { McpProtocol } from "effect/unstable/ai";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import {
-  McpAuthentication,
-  McpUnauthorized,
-  McpForbidden,
-  type McpAccess,
-} from "../contracts/mcp.ts";
+  defaultMcpLimits,
+  makeMcp,
+  refusedMcpRequest,
+  type McpBackend,
+  type McpOptions,
+} from "@executor-js/mcp";
+import { annotateSkillRead, executorIntro } from "@executor-js/app-templates/executor";
+import { Context, Effect, Option, Result, Schema } from "effect";
+import { ElicitationFailed } from "@executor-js/sdk/core";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import { McpAuthentication, McpUnauthorized, type McpAccess } from "../contracts/mcp.ts";
 import { CurrentOrganization, OrganizationReference } from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { hostedMcpBackend } from "./mcp.ts";
@@ -31,13 +33,18 @@ import { hostedMcpBackend } from "./mcp.ts";
 type HostedBackend = Effect.Success<typeof hostedMcpBackend>;
 type RequestError =
   | GrantForbidden
-  | McpForbidden
   | Effect.Error<ReturnType<HostedBackend[keyof HostedBackend]>>
   | Effect.Error<ReturnType<McpAuthentication["Service"]["authenticate"]>>;
 const unavailable = () => Effect.fail(new McpUnauthorized());
-const RequestCaller = Context.Reference<string>("hosted/McpRequestCaller", {
-  defaultValue: () => "unavailable",
+const RequestCaller = Context.Reference<string | undefined>("hosted/McpRequestCaller", {
+  defaultValue: () => undefined,
 });
+// Programs belong to the caller across MCP sessions, so a request without one must not share a partition.
+const requestCaller = Effect.flatMap(RequestCaller, (caller) =>
+  caller === undefined
+    ? Effect.die("MCP request has no authenticated caller")
+    : Effect.succeed(caller),
+);
 const RequestBackend = Context.Reference<McpBackend<RequestError>>("hosted/McpRequestBackend", {
   defaultValue: () => ({
     listSkills: unavailable,
@@ -62,7 +69,8 @@ const requestBackend: McpBackend<RequestError> = {
   listApps: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listApps(input)),
   listTargets: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listTargets(input)),
   indexTools: (input) => Effect.flatMap(RequestBackend, (backend) => backend.indexTools(input)),
-  listTools: (input) => Effect.flatMap(RequestBackend, (backend) => backend.listTools(input)),
+  listTools: (input, options) =>
+    Effect.flatMap(RequestBackend, (backend) => backend.listTools(input, options)),
   callTool: (input, options) =>
     Effect.flatMap(RequestBackend, (backend) => backend.callTool(input, options)),
   resumeInvocation: (request, response, options) =>
@@ -76,8 +84,10 @@ export const makeHostedMcp = (beforeExecute?: McpOptions["beforeExecute"]) =>
   makeMcp({
     backend: requestBackend,
     ...(beforeExecute === undefined ? {} : { beforeExecute }),
-    caller: RequestCaller,
+    caller: requestCaller,
+    instructions: executorIntro,
     limits: defaultMcpLimits,
+    annotateSkillRead,
     browser: {
       url: (address) =>
         Effect.flatMap(RequestApprovalUrl, (url) =>
@@ -86,12 +96,6 @@ export const makeHostedMcp = (beforeExecute?: McpOptions["beforeExecute"]) =>
             : Effect.succeed(url(address)),
         ),
     },
-    protocols: [
-      McpProtocol.v2026_07_28,
-      McpProtocol.v2025_11_25,
-      McpProtocol.v2025_06_18,
-      McpProtocol.v2025_03_26,
-    ],
   }).pipe(Effect.orDie);
 
 /** An organization-pathed MCP URL names its organization; bare /mcp leaves the choice to the token. */
@@ -111,22 +115,17 @@ export const mcpSessionKey = ({ userId, clientId, access, grant }: McpAccess) =>
 /** Supply fresh authorized operations to an existing native MCP transport. */
 export const dispatchHostedMcp = <E, R>(
   access: McpAccess,
+  address: McpAddress,
   handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
 ) =>
   Effect.gen(function* () {
     const authentication = yield* McpAuthentication;
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const url = new URL(request.url, authentication.origin);
-    const mode = requestedMcpMode(url);
-    const organization = requestedMcpOrganization(url);
     const scoped = (fresh: McpAccess) =>
       Effect.gen(function* () {
-        if (
-          mode === undefined ||
-          !permitsDelivery(fresh.grant, mode) ||
-          mcpSessionKey(fresh) !== mcpSessionKey(access)
-        )
-          return yield* new McpForbidden();
+        // A grant serves only the MCP URL it was issued for, and says why it cannot serve this one.
+        const refusal = deliveryRefusal(fresh.grant, address);
+        if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
         const backend = yield* hostedMcpBackend.pipe(
           Effect.provideService(CurrentOrganization, fresh.access),
           Effect.provideService(CurrentAuthorization, grantAuthorization(fresh.grant.policy)),
@@ -134,7 +133,10 @@ export const dispatchHostedMcp = <E, R>(
         );
         return restrictMcpBackend<RequestError, never>(backend, Effect.succeed(fresh.grant));
       });
-    const backend = yield* scoped(access);
+    // Clients print a refusal's body after their own prefix, so it keeps the typed cause.
+    const scope = yield* Effect.result(scoped(access));
+    if (Result.isFailure(scope)) return yield* refusedMcpRequest(scope.failure);
+    const backend = scope.success;
     const services = yield* Effect.context<HostedExecutor | GroupDatabase>().pipe(
       Effect.map(Context.pick(HostedExecutor, GroupDatabase)),
     );
@@ -142,8 +144,13 @@ export const dispatchHostedMcp = <E, R>(
     // are still checked by the hosted backend. Never retain this adapter in the session.
     // Calls and elicitation can run after a wait, so recheck token/grant/membership
     // before executing or releasing them, including calls after an approved one.
+    // A recheck names the organization this request resolved, by its ID; it never resolves the
+    // URL's or X-Executor-Organization's slug again, so a slug renamed during the request cannot
+    // move it to another organization. The same bearer keeps its user, client and grant.
+    const headers = new Headers(request.headers);
+    headers.delete("x-executor-organization");
     const current = authentication
-      .authenticate(new Headers(request.headers), mode, organization)
+      .authenticate(headers, address.mode, access.access.organization)
       .pipe(Effect.flatMap(scoped), Effect.provideContext(services));
     const authorized: McpBackend<RequestError> = {
       ...backend,
@@ -156,6 +163,7 @@ export const dispatchHostedMcp = <E, R>(
           Effect.catchTags({
             McpUnauthorized: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
             McpForbidden: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
+            GrantForbidden: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
             AuthenticationUnavailable: () =>
               Effect.fail(new ElicitationFailed({ reason: "transport" })),
           }),
@@ -178,9 +186,17 @@ export const dispatchHostedMcp = <E, R>(
     );
   });
 
+const invalidAddress = HttpServerResponse.jsonUnsafe(
+  { error: "Unsupported elicitation_mode or connection." },
+  { status: 400 },
+);
+
 /** Authenticate every MCP HTTP method through OAuth or PAT validation; never fall back to a browser cookie. */
 export const authenticatedMcp = <E, R>(
-  handle: (access: McpAccess) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+  handle: (
+    access: McpAccess,
+    address: McpAddress,
+  ) => Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
 ) =>
   Effect.gen(function* () {
     const auth = yield* McpAuthentication;
@@ -189,58 +205,31 @@ export const authenticatedMcp = <E, R>(
     if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
       return HttpServerResponse.empty({ status: 403 });
     const url = new URL(request.url, auth.origin);
-    const mode = requestedMcpMode(url);
-    if (mode === undefined)
-      return HttpServerResponse.jsonUnsafe(
-        { error: "Unsupported elicitation_mode." },
-        { status: 400 },
-      );
-    const access = yield* auth.authenticate(
-      new Headers(request.headers),
-      mode,
-      requestedMcpOrganization(url),
+    const address = requestedMcpAddress(url);
+    if (address === undefined) return invalidAddress;
+    const access = yield* Effect.result(
+      auth.authenticate(new Headers(request.headers), address.mode, requestedMcpOrganization(url)),
     );
-    return yield* handle(access);
-  }).pipe(
-    Effect.catchTag("McpUnauthorized", () =>
-      Effect.gen(function* () {
-        const { origin } = yield* McpAuthentication;
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        const mode = requestedMcpMode(new URL(request.url, origin));
-        if (mode === undefined)
-          return HttpServerResponse.jsonUnsafe(
-            { error: "Unsupported elicitation_mode." },
-            { status: 400 },
-          );
-        return HttpServerResponse.empty({
-          status: 401,
-          headers: {
-            "www-authenticate": `Bearer resource_metadata="${mcpResourceMetadataUrl(origin, mode)}", scope="mcp offline_access"`,
-          },
-        });
-      }),
-    ),
-    Effect.catchTag("McpForbidden", () =>
-      Effect.succeed(HttpServerResponse.empty({ status: 403 })),
-    ),
-    Effect.catchTag("AuthenticationUnavailable", () =>
-      Effect.succeed(HttpServerResponse.empty({ status: 503 })),
-    ),
-    Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
-  );
+    if (Result.isSuccess(access)) return yield* handle(access.success, address);
+    if (access.failure._tag === "McpUnauthorized")
+      return HttpServerResponse.empty({
+        status: 401,
+        headers: {
+          "www-authenticate": `Bearer resource_metadata="${mcpResourceMetadataUrl(auth.origin, address)}", scope="mcp offline_access"`,
+        },
+      });
+    // Clients print a refusal's body after their own prefix, so it keeps the typed cause.
+    return yield* refusedMcpRequest(access.failure);
+  }).pipe(Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")));
 
 /** RFC 9728 resource metadata for the request's configured auth origin. */
 export const mcpProtectedResource = Effect.gen(function* () {
   const { origin } = yield* McpAuthentication;
   const request = yield* HttpServerRequest.HttpServerRequest;
-  const mode = requestedMcpMode(new URL(request.url, origin));
-  if (mode === undefined)
-    return HttpServerResponse.jsonUnsafe(
-      { error: "Unsupported elicitation_mode." },
-      { status: 400 },
-    );
+  const address = requestedMcpAddress(new URL(request.url, origin));
+  if (address === undefined) return invalidAddress;
   return HttpServerResponse.jsonUnsafe({
-    resource: mcpResource(origin, mode),
+    resource: mcpResource(origin, address),
     authorization_servers: [`${origin}/api/auth`],
     scopes_supported: ["mcp", "offline_access"],
     bearer_methods_supported: ["header"],

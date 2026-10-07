@@ -7,6 +7,8 @@ Upstream `main` currently contains the older 1.x architecture.
 The maintained branch is `selfhost`. Local patches:
 
 - `433ab7f6f`, `c77c0baec`: retain up to 16 idle app workers for five minutes.
+  The October upstream merge ports this policy to `app-worker-residency.ts`;
+  upstream capacity eviction is retained, with the fork limit and idle expiry.
   Evict idle workers under capacity pressure, preserve active calls, and dispose
   forwarded RPC results. Named dynamic workers in workerd 1.20260901.1 otherwise
   survive indefinitely. Declaration checks use uncached workers.
@@ -71,3 +73,59 @@ compatibility fix. The error-boundary E2Es exercise thrown
 causes, a timeout after an external mutation and refused account renewal. Existing
 OpenAPI, provider, discovery, worker-lifetime and timeout scenarios cover the
 shared contracts.
+
+## Production interceptors and analytics
+
+The maintained branch also includes the already-deployed
+`feat/mcp-operation-interceptor-release` work through `fa2031490`:
+
+- `8cd2985c0`: Promise MCP operation interceptors preserve native validation,
+  selected-account isolation, fallback and transport failure classification.
+  `redirect: "error"` remains supported through manual redirect handling,
+  preserving existing app code and preventing redirects from being followed.
+  The ClickUp app routes supported task reads through REST without caching tasks
+  and retains MCP fallback for other operations.
+- `b8d1ffb3e`: durable, best-effort app analytics with authorized summaries,
+  bounded emissions and groups, and 30-day retention. Native MCP requests and
+  intercepted host operations contribute transport and outcome measurements.
+
+## Upstream integration on 2026-10-07
+
+Upstream `v2` at `8853b9db4` contains 312 exported commits since the identical
+`4c9392fed` baseline. That baseline has the same tree as fork `fab44e5a3`, but
+upstream exported a separate Git history. An unchanged-tree merge connects the
+histories before the production patches and upstream changes are merged.
+
+Upstream replaces the pinned Effect build with Effect 4.0.1. This fork follows
+that upstream version. The merge also adopts the router and account APIs, the
+search/describe split, account credential generations and checks, legacy app
+protocol metadata, and upstream lifecycle and discovery fixes. Fork discovery
+uses authorized summaries with schemas loaded for selected tools. Search returns
+input detail; `tools.search.describe({ paths })` returns complete signatures.
+Newly built management apps use the nested `analytics.summary` and
+`accounts.reconnect` paths. Existing builds retain their original callable paths.
+
+Read-only authorization reads selected metadata live and binds execution to the
+approved query kind. A dynamic query that becomes a mutation before execution is
+refused. Complete bulk schema reads also stay live, and SDK catalog responses use
+one deployment snapshot for both schemas and identity.
+
+No fork patch is retired in this merge. The error-boundary assertions retain
+redaction, callable operation attribution and reconnect identity while accepting
+upstream's failure presentation. The timeout check uses upstream's five-minute
+budget and still requires unknown mutation outcomes and a safe read before retry.
+The worker-lifetime check also verifies expiry after five idle minutes.
+
+The shipped fork schema 4.0.2 contains analytics. Its immutable baseline is kept.
+The next migration, 4.0.3, adds upstream credential generations and account
+checks, followed by additive upgrades through 4.0.6. Actual old-image upgrade
+verification covers retained encrypted accounts, keys, sessions, legacy app
+builds, active deployments and analytics across two candidate starts. Artificial
+migration downgrades are unsupported because upstream's down steps retain added
+columns. Rollback uses a stopped-volume backup and the previous immutable image.
+It discards writes made after that backup.
+
+The reliability soak uses 60 deployments, 200 MCP sessions and 500 searches in
+a 4 GiB container, without an inspector or manual GC. A release requires no OOM
+or restart, the focused fork scenarios, native upgrade and backup restoration,
+and a 15-minute production watch with one read per connected app.

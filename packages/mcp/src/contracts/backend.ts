@@ -8,6 +8,7 @@ import type {
   ToolPage,
   ToolIndex,
   ToolInvocationOptions,
+  ToolListOptions,
   ElicitationFailed,
   AppSkillCatalog,
   AppSkillDocument,
@@ -46,12 +47,20 @@ export interface McpBackend<E extends Error> {
   ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug">>, E>;
   /** Enumerate only the caller's execution targets; skills use the same app and account authority. */
   readonly listTargets: (input: McpTargetInput) => Effect.Effect<readonly McpTarget[], E>;
-  /** Authorize the app and its selected accounts before evaluating each catalog page. */
+  /**
+   * The live catalog's names and descriptions, without schemas. Authorize the app and its
+   * selected accounts before evaluating it; it is never served from an earlier request.
+   */
   readonly indexTools: (
     input: Parameters<Executor["tools"]["index"]>[0],
   ) => Effect.Effect<ToolIndex, E>;
+  /**
+   * Authorize the app and its selected accounts before evaluating each catalog page. A `tools`
+   * filter evaluates only those tools' schemas, live; the `live` option evaluates every tool live.
+   */
   readonly listTools: (
     input: Parameters<Executor["tools"]["list"]>[0],
+    options?: ToolListOptions,
   ) => Effect.Effect<ToolPage, E>;
   /** Check execution permission again; prior discovery does not authorize this call. */
   readonly callTool: (

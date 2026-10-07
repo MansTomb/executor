@@ -3,10 +3,15 @@ import type { Route } from "playwright";
 import { Browser } from "./browser.ts";
 import { driver } from "./platform.ts";
 
-/** Hold real reads until the scenario observes the UI; a refresh cycle can include concurrent requests. */
+/**
+ * Hold real reads until the scenario observes the UI; a refresh cycle can include concurrent requests.
+ * `fail` drops the connection, which the dashboard explains as a lost connection when the read went
+ * on its own, but as an unanswered read when it shared a batch. `undeclared` answers with a status
+ * no endpoint declares, an unexpected failure either way.
+ */
 export const holdQuery = (
   paths: readonly string[] | RegExp,
-  outcome: "continue" | "fail",
+  outcome: "continue" | "fail" | "undeclared",
   options: {
     readonly method?: "GET" | "POST" | "PATCH";
     readonly allRequests?: boolean;
@@ -25,6 +30,7 @@ export const holdQuery = (
         ([key, value]) => url.searchParams.get(key) === value,
       );
     const intercept = (route: Route) => {
+      // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Playwright route handlers must return a Promise
       const request = Effect.runPromise(
         Effect.gen(function* () {
           if (
@@ -38,7 +44,11 @@ export const holdQuery = (
           yield* Deferred.succeed(requested, new URL(route.request().url()).pathname);
           yield* Deferred.await(release);
           yield* driver("Release the held query", () =>
-            outcome === "fail" ? route.abort("failed") : route.fallback(),
+            outcome === "fail"
+              ? route.abort("failed")
+              : outcome === "undeclared"
+                ? route.fulfill({ status: 599, contentType: "text/plain", body: "undeclared" })
+                : route.fallback(),
           );
         }),
       );
@@ -72,5 +82,18 @@ export const refreshVisiblePage = Effect.flatMap(Browser, (browser) =>
       if (document.visibilityState !== "visible") throw new Error("The test page is not visible");
       window.dispatchEvent(new Event("visibilitychange"));
     }),
+  ),
+);
+
+/** Hosted pages re-read idle queries every 30 seconds while visible. */
+export const idleReconciliationMillis = 30_000;
+/** Install before navigation so scenarios can reach periodic reconciliation without waiting. */
+export const installBrowserClock = Effect.flatMap(Browser, (browser) =>
+  browser.use("Control the browser clock", (page) => page.context().clock.install()),
+);
+/** Deliver the next idle reconciliation to every page in the browser context. */
+export const advanceToReconciliation = Effect.flatMap(Browser, (browser) =>
+  browser.use("Advance to the next idle reconciliation", (page) =>
+    page.context().clock.runFor(idleReconciliationMillis),
   ),
 );

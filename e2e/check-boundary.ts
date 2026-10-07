@@ -1,5 +1,5 @@
 /** Check every test/helper import using Effect's filesystem and scoped Node runtime. */
-import ts from "typescript";
+import ts from "typescript-5";
 import { scenarios, type TestPlan } from "./test-plan.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -8,6 +8,7 @@ import { Console, Effect, FileSystem, Path, Schema, type PlatformError } from "e
 const allowed = new Set([
   "playwright",
   "autumn-js",
+  "fflate",
   "@effect/vitest",
   "@kitlangton/terminal-control",
   "@modelcontextprotocol/sdk/client/index.js",
@@ -15,11 +16,12 @@ const allowed = new Set([
   "@modelcontextprotocol/sdk/client/streamableHttp.js",
   "vitest",
   "vitest/config",
-  "effect/unstable/http",
-  "effect/unstable/cli",
+  "effect/http",
+  "effect/cli",
   "effect",
-  "effect/unstable/process",
-  "typescript",
+  "effect/encoding",
+  "effect/process",
+  "typescript-5",
   "@effect/platform-node/NodeRuntime",
   "@effect/platform-node/NodeServices",
   "@effect/platform-node/NodeHttpServer",
@@ -36,6 +38,12 @@ const check = Effect.gen(function* () {
   const root = path.resolve("e2e");
   const problems: string[] = [];
   const plan = new Map<string, typeof TestPlan.Type>(Object.entries(scenarios));
+  const legacyStorage = path.join("support", "legacy-storage.ts");
+  for (const [name, scenario] of plan)
+    if (scenario.legacyStorage === true && scenario.targets.cloud.status === "scheduled")
+      problems.push(
+        `test-plan.ts: scenarios.${name} writes legacy storage, which Cloud does not expose`,
+      );
   const walk = (directory: string): Effect.Effect<void, PlatformError.PlatformError> =>
     Effect.gen(function* () {
       for (const name of yield* fs.readDirectory(directory)) {
@@ -71,10 +79,22 @@ const check = Effect.gen(function* () {
           // This external upstream fixture generates its contract with Effect, not product code.
           if (
             label === `support${path.sep}openapi-error-upstream.ts` &&
-            specifier === "effect/unstable/httpapi"
+            specifier === "effect/http-api"
           )
             return;
           if (label.startsWith(`viewer${path.sep}`) && specifier === "media-chrome/react") return;
+          // The only database driver: runner-applied legacy rows for declared scenarios.
+          if (label === legacyStorage && specifier === "@electric-sql/pglite") return;
+          if (
+            specifier.startsWith(".") &&
+            path.resolve(path.dirname(file), specifier) === path.join(root, legacyStorage) &&
+            !label.startsWith(`tests${path.sep}`) &&
+            label !== `support${path.sep}managed-server.ts`
+          ) {
+            // A wrapper would hide direct database writes from the scenario declaration check.
+            problems.push(`${label}: only scenarios and the runner may use legacy storage`);
+            return;
+          }
           if (
             specifier.startsWith(".") &&
             path.resolve(path.dirname(file), specifier).startsWith(root + path.sep)
@@ -82,7 +102,69 @@ const check = Effect.gen(function* () {
             return;
           problems.push(`${label}: forbidden E2E import ${specifier}`);
         };
+        // The host's apps release is data in the apps package manifest, imported as JSON: the
+        // fixtures declare the version the hosts ship. No implementation is imported.
+        const appsManifest = (node: ts.ImportDeclaration) =>
+          label === `support${path.sep}apps-release.ts` &&
+          ts.isStringLiteral(node.moduleSpecifier) &&
+          path.resolve(path.dirname(file), node.moduleSpecifier.text) ===
+            path.resolve("packages/apps/package.json") &&
+          node.attributes?.elements.some(
+            (attribute) =>
+              attribute.name.text === "type" &&
+              ts.isStringLiteral(attribute.value) &&
+              attribute.value.text === "json",
+          ) === true;
+        // Names bound to legacy storage in this scenario file; each use needs a declaration.
+        const legacyNames = new Set<string>();
+        if (label.startsWith(`tests${path.sep}`))
+          for (const statement of source.statements) {
+            if (
+              !ts.isImportDeclaration(statement) ||
+              !ts.isStringLiteral(statement.moduleSpecifier) ||
+              path.resolve(path.dirname(file), statement.moduleSpecifier.text) !==
+                path.join(root, legacyStorage)
+            )
+              continue;
+            const clause = statement.importClause;
+            if (clause?.name) legacyNames.add(clause.name.text);
+            const bindings = clause?.namedBindings;
+            if (bindings && ts.isNamespaceImport(bindings)) legacyNames.add(bindings.name.text);
+            if (bindings && ts.isNamedImports(bindings))
+              for (const element of bindings.elements) legacyNames.add(element.name.text);
+          }
+        const scenarioOf = (node: ts.Node) => {
+          for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
+            if (!ts.isCallExpression(parent)) continue;
+            const title = parent.arguments[0];
+            if (!title || !ts.isPropertyAccessExpression(title) || title.name.text !== "title")
+              continue;
+            const entry = title.expression;
+            if (
+              ts.isPropertyAccessExpression(entry) &&
+              ts.isIdentifier(entry.expression) &&
+              entry.expression.text === "scenarios"
+            )
+              return entry.name.text;
+          }
+          return undefined;
+        };
         const visit = (node: ts.Node) => {
+          if (
+            ts.isIdentifier(node) &&
+            legacyNames.has(node.text) &&
+            !ts.isImportSpecifier(node.parent) &&
+            !ts.isImportClause(node.parent) &&
+            !ts.isNamespaceImport(node.parent) &&
+            !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) &&
+            !(ts.isPropertyAssignment(node.parent) && node.parent.name === node)
+          ) {
+            const name = scenarioOf(node);
+            if (name === undefined)
+              problems.push(`${label}: legacy storage must be used inside a planned scenario`);
+            else if (plan.get(name)?.legacyStorage !== true)
+              problems.push(`${label}: scenarios.${name} must declare legacyStorage`);
+          }
           if (
             label.startsWith(`tests${path.sep}`) &&
             ts.isCallExpression(node) &&
@@ -90,22 +172,9 @@ const check = Effect.gen(function* () {
             node.expression.text === "withHostedCase"
           ) {
             // The case and native setup hook must agree before we start a server.
-            for (let parent: ts.Node | undefined = node.parent; parent; parent = parent.parent) {
-              if (!ts.isCallExpression(parent)) continue;
-              const title = parent.arguments[0];
-              if (!title || !ts.isPropertyAccessExpression(title) || title.name.text !== "title")
-                continue;
-              const entry = title.expression;
-              if (
-                !ts.isPropertyAccessExpression(entry) ||
-                !ts.isIdentifier(entry.expression) ||
-                entry.expression.text !== "scenarios"
-              )
-                continue;
-              if (plan.get(entry.name.text)?.fixtures !== "actors")
-                problems.push(`${label}: scenarios.${entry.name.text} must declare actor fixtures`);
-              break;
-            }
+            const name = scenarioOf(node);
+            if (name !== undefined && plan.get(name)?.fixtures !== "actors")
+              problems.push(`${label}: scenarios.${name} must declare actor fixtures`);
           }
           if (
             !label.startsWith(`viewer${path.sep}`) &&
@@ -128,7 +197,7 @@ const check = Effect.gen(function* () {
             );
           if (ts.isImportTypeNode(node))
             module(ts.isLiteralTypeNode(node.argument) ? node.argument.literal : undefined);
-          if (ts.isImportDeclaration(node)) module(node.moduleSpecifier);
+          if (ts.isImportDeclaration(node) && !appsManifest(node)) module(node.moduleSpecifier);
           if (ts.isExportDeclaration(node) && node.moduleSpecifier) module(node.moduleSpecifier);
           if (
             ts.isImportEqualsDeclaration(node) &&

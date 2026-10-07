@@ -79,7 +79,8 @@ in these files, never resolved credentials. Vault and item references also stay
 out of tracked scripts. Edit values in 1Password, then restart the affected
 process. Keep encryption/signing keys stable.
 
-Cloud uses Alchemy's PlanetScale database, role, and Hyperdrive resources.
+Cloud uses Alchemy's PlanetScale database and role resources; Workers connect
+through PlanetScale's PgBouncer.
 `bun run hosted:cloud:dev` starts the cloud Worker, local Postgres, migrations,
 and frontend through Alchemy with service emulators and no credentials.
 `bun run hosted:cloud:dev:1password` uses `.env.cloud-development.op` instead;
@@ -169,30 +170,14 @@ Live queries track storage reads and update after committed writes. The dashboar
 uses typed subscriptions; apps can declare async queries and mutations. See
 [reactive storage](notes/reactive-storage.md) for the author model and runtime boundaries.
 
-## Node runtime
+## App runtime
 
-`nodeRuntime({ workDirectory })` from `@executor-js/sdk/node` supplies the runtime
-definition to `createExecutor`. Binary storage is supplied separately as `blobs`.
+Every product runs authored apps and workflows in workerd, never in the host
+Node process. Local and self-host use `workerdApps` from `@executor-js/sdk/node`;
+cloud uses Dynamic Workers. Binary storage is supplied separately as `blobs`.
 Standalone runtime callers use `createAppRuntime({ runtime, blobs })` for Promise
-`build`, `inspect`, `query`, `mutate`, and `call` operations. Native operations
-consume the `BlobStore` Effect service. See [blob storage](notes/blob-storage.md)
-for adapter contracts and the explicit conversion of older Node build directories.
-The [runtime walkthrough](playground/sdk/runtime.ts) builds a synthetic app,
-uses two accounts, changes its upstream catalog and reloads the retained build.
-Run it with Node 22.23 or newer from the repository root:
-
-```sh
-node --input-type=module -e 'import {runtimeWalkthrough} from "./playground/sdk/runtime.ts"; console.log(await runtimeWalkthrough("./.reference/runtime-builds"))'
-```
-
-This runtime executes trusted app code in the host Node process. Apps can use
-child processes; the example uses Effect's process service. It provides no
-sandbox. Files, paths and npm installation use Effect platform services, with
-Node layers supplied at the public adapter boundary. `build` installs optional
-`package.json` dependencies with npm lifecycle scripts disabled, bundles the app
-and framework handler as ESM, and retains the output, npm packages and lockfile.
-It reads declared requirements without running the dynamic factory. Ordinary
-inspection and calls load that output without rebuilding or installing packages.
+`build`, `inspect`, `query`, `mutate`, and `call` operations. See
+[app runtime](notes/app-runtime.md) and [blob storage](notes/blob-storage.md).
 
 `apps/host` exposes `createAppHandler` and `hostContext` for other hosts. Its
 framework-owned Request/Response protocol supports requirements, inspection and
@@ -202,10 +187,9 @@ The handler evaluates the app factory for every inspect/call, validates native
 tool input, and returns parsed JSON. Error envelopes contain fixed error tags,
 never author exceptions or credentials. It does not add app-authored HTTP routes.
 
-Builds use the host's Effect and platform installations and remain tied to their
-location and compatibility. Dependencies that install a second copy of the
-host framework or Effect are rejected. Native dependencies or packages needing install
-scripts are not covered by this first adapter. JSON Schema metadata preserves
+Builds use the `apps` release the app declares and remain tied to their location
+and compatibility. Dependencies that install the Executor SDK are rejected. Native dependencies or packages needing install
+scripts are not supported. JSON Schema metadata preserves
 defaults, but Effect v4 can represent optional undefined branches as nullable;
 native decoding remains authoritative. Outbound MCP works through this same
 handler (apps calling out to remote MCP servers), and Cloudflare hosting is
@@ -255,8 +239,8 @@ MCP supports model-mediated resume and native client prompts; browser approval
 pages remain separate work. See [MCP approvals](notes/mcp-resume.md).
 
 App authors import schema helpers such as `object`, `string`, and `array`
-from `apps`. Effect validation stays internal. The host supplies `apps` to
-basic source deployments; extra dependencies can use an optional package.json.
+from `apps`. Effect validation stays internal. Every app's `package.json`
+declares the exact `apps` version it uses, alongside any other dependencies.
 
 ## Boundaries and deferred work
 
@@ -290,9 +274,12 @@ Run the [local server](apps/local/server/README.md), then connect a Streamable
 HTTP MCP client to `http://127.0.0.1:4312/mcp` using the configured bearer key.
 Append `?elicitation_mode=native` to use native client approval prompts. The default
 `model` mode returns pending approvals for the agent to answer through `resume`.
-It exposes `skills` for app-authoring docs and `execute({ code })` for programs.
-Call `skills({})` to list documents or `skills({ name: "app-authoring" })` to read
-the guide. Discover callable paths inside execute:
+It exposes `skills` for app documents and `execute({ code })` for programs. The
+server's MCP instructions introduce Executor; they are the Executor app's
+`executor` skill. Call `skills({})` to list documents and
+`skills({ app: "executor", name: "executor" })` to read that entry point, which
+links to the `code-mode` and `app-authoring` skills. Discover callable paths
+inside execute:
 
 ```js
 return await tools.search({ query: "Executor" });

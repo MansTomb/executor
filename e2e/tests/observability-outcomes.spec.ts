@@ -13,6 +13,7 @@ import { mcpOutcomeFixture } from "../support/mcp-outcome-fixture.ts";
 import { WorkflowRun } from "../support/workflow-app.ts";
 import { Target } from "../support/platform.ts";
 import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
+import { withApps } from "../support/apps-release.ts";
 
 const Analytics = Schema.fromJsonString(
   Schema.Struct({
@@ -54,34 +55,25 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
             {
               path: "package.json",
               content: JSON.stringify({
-                dependencies: {
-                  "@modelcontextprotocol/sdk": "1.30.0",
-                  effect: "4.0.0-rc.115",
-                },
+                dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }),
               }),
             },
             {
               path: "index.ts",
-              content: `import { defineApp, query, mutation, workflow, object } from "apps";
-import { mcpOperations } from "apps/mcp";
+              content: `import { defineApp, query, mutation, workflow, object, router, withApprovals } from "apps";
+import { mcpRouter } from "apps/mcp";
 import { always } from "apps/operations/approval";
-import { Effect } from "effect";
 export default defineApp({ accounts: {} }, async () => {
-  const remote = await mcpOperations({ url: ${JSON.stringify(`${upstream}/mcp`)} });
-  return { ...remote, dynamicTools: {
-    ...remote.dynamicTools,
-    resolve: name => remote.dynamicTools.resolve(name).pipe(Effect.map(operation =>
-      name === "mutations.approvedFailure" && operation !== undefined
-        ? { ...operation, approval: context => Effect.promise(async () => always()(context)) }
-        : operation
-    )),
-  }, queries: {
+  const remote = await mcpRouter({ url: ${JSON.stringify(`${upstream}/mcp`)} });
+  return { tools: router({
+    remote: withApprovals(remote, (_, name) => name === "approvedFailure" ? always() : undefined),
     lookalike: query({ input: object({}) }, async () => ({ isError: true, content: [] })),
     bulk: query({ input: object({}) }, async ({ fetch }) => {
       for (let index = 0; index < 340; index++) await (await fetch(${JSON.stringify(`${upstream}/ping`)})).text();
       return { requests: 340 };
     }),
-  }, workflows: { observed: workflow({ input: object({}) }, async (ctx) => ctx.step.do("observed-step", async () => "done")) }, mutations: { crash: mutation({ input: object({}) }, async () => { throw new Error("private-fixture-message"); }) } };
+    crash: mutation({ input: object({}) }, async () => { throw new Error("private-fixture-message"); }),
+  }), workflows: { observed: workflow({ input: object({}) }, async (ctx) => ctx.step.do("observed-step", async () => "done")) } };
 });`,
             },
           ],
@@ -113,14 +105,15 @@ export default defineApp({ accounts: {} }, async () => {
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }),
           );
         for (const [tool, failed] of [
-          ["queries.failure", true],
-          ["queries.lookalike", false],
+          ["remote.failure", true],
+          ["lookalike", false],
         ] as const) {
           const called = yield* api.request(
             actors.owner,
             "POST",
             `${prefix}/apps/${app.id}/tools/call`,
-            { tool, input: {} },
+            // The upstream tool is read-only, like the local lookalike.
+            { tool, kind: "query", input: {} },
           );
           expect(called.status).toBe(200);
           expect(called.body).toMatchObject({ isError: true });
@@ -171,7 +164,7 @@ export default defineApp({ accounts: {} }, async () => {
           actors.owner,
           "POST",
           `${prefix}/apps/${app.id}/tools/call`,
-          { tool: "queries.bulk", input: {} },
+          { tool: "bulk", kind: "query", input: {} },
         );
         expect(bulk.status).toBe(200);
         expect(bulk.body).toEqual({ requests: 340 });
@@ -185,7 +178,7 @@ export default defineApp({ accounts: {} }, async () => {
           actors.owner,
           "POST",
           `${prefix}/apps/${app.id}/tools/call`,
-          { tool: "mutations.crash", input: {} },
+          { tool: "crash", kind: "mutation", input: {} },
         );
         expect(failure.status).toBeGreaterThanOrEqual(500);
         const failureTrace = yield* latestTrace();
@@ -281,8 +274,8 @@ export default defineApp({ accounts: {} }, async () => {
         };
         const handled = yield* execute(
           "Handle an upstream tool error without changing its value",
-          `const upstream = await ${appTools}.queries.failure({});
-const ordinary = await ${appTools}.queries.lookalike({});
+          `const upstream = await ${appTools}.remote.failure({});
+const ordinary = await ${appTools}.lookalike({});
 return { upstream, ordinary, handled: upstream.isError === true };`,
         );
         yield* evidence.json("mcp-handled-tool-error.json", handled.structuredContent);
@@ -297,8 +290,8 @@ return { upstream, ordinary, handled: upstream.isError === true };`,
             handled: true,
           },
           toolCalls: [
-            { name: `${app.slug}.queries.failure`, outcome: "failure" },
-            { name: `${app.slug}.queries.lookalike`, outcome: "success" },
+            { name: `${app.slug}.remote.failure`, outcome: "failure" },
+            { name: `${app.slug}.lookalike`, outcome: "success" },
           ],
         });
         const handledTrace = yield* waitFor(yield* latestTrace(), "mcp.execute");
@@ -311,7 +304,7 @@ return { upstream, ordinary, handled: upstream.isError === true };`,
         yield* evidence.json("mcp-handled-tool-error-trace.json", handledTrace);
         const discarded = yield* execute(
           "Discard an upstream error value while retaining its failed call outcome",
-          `await ${appTools}.queries.failure({}); return "handled";`,
+          `await ${appTools}.remote.failure({}); return "handled";`,
         );
         const discardedResult = yield* Schema.decodeUnknownEffect(McpCompleted)(
           discarded.structuredContent,
@@ -319,15 +312,15 @@ return { upstream, ordinary, handled: upstream.isError === true };`,
         expect(discardedResult.execution).toEqual({
           ok: true,
           value: "handled",
-          toolCalls: [{ name: `${app.slug}.queries.failure`, outcome: "failure" }],
+          toolCalls: [{ name: `${app.slug}.remote.failure`, outcome: "failure" }],
         });
         yield* evidence.json("mcp-discarded-tool-error.json", discarded.structuredContent);
         const parallel = yield* execute(
           "Keep parallel invocations of the same tool independent",
           `return await Promise.all([
-${appTools}.queries.failure({ fail: true }),
-${appTools}.queries.failure({ fail: false }),
-${appTools}.queries.failure({ fail: true })
+${appTools}.remote.failure({ fail: true }),
+${appTools}.remote.failure({ fail: false }),
+${appTools}.remote.failure({ fail: true })
 ]);`,
         );
         const parallelResult = yield* Schema.decodeUnknownEffect(McpCompleted)(
@@ -337,16 +330,17 @@ ${appTools}.queries.failure({ fail: true })
           ok: true,
           value: [upstreamFailure, upstreamSuccess, upstreamFailure],
           toolCalls: [
-            { name: `${app.slug}.queries.failure`, outcome: "failure" },
-            { name: `${app.slug}.queries.failure`, outcome: "success" },
-            { name: `${app.slug}.queries.failure`, outcome: "failure" },
+            { name: `${app.slug}.remote.failure`, outcome: "failure" },
+            { name: `${app.slug}.remote.failure`, outcome: "success" },
+            { name: `${app.slug}.remote.failure`, outcome: "failure" },
           ],
         });
         yield* evidence.json("mcp-parallel-tool-outcomes.json", parallel.structuredContent);
         const paused = yield* execute(
           "Request approval before an upstream semantic failure",
-          `return await ${appTools}.mutations.approvedFailure({});`,
+          `return await ${appTools}.remote.approvedFailure({});`,
         );
+        yield* evidence.json("mcp-approval-pending.json", paused.structuredContent);
         const pending = yield* Schema.decodeUnknownEffect(
           Schema.Struct({
             status: Schema.Literal("approval-required"),
@@ -374,7 +368,7 @@ ${appTools}.queries.failure({ fail: true })
         expect(resumedResult.execution).toEqual({
           ok: true,
           value: upstreamFailure,
-          toolCalls: [{ name: `${app.slug}.mutations.approvedFailure`, outcome: "failure" }],
+          toolCalls: [{ name: `${app.slug}.remote.approvedFailure`, outcome: "failure" }],
         });
         yield* evidence.json("mcp-resumed-tool-error.json", resumed.structuredContent);
         const syntax = yield* client.use("A syntax error remains an MCP result", (client, signal) =>

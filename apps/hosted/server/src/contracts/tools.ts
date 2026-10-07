@@ -30,11 +30,14 @@ import {
   ToolName,
   ToolIndex,
   ToolNotFound,
+  ToolListingTimedOut,
+  ToolKind,
+  ToolKindMismatch,
   ToolPage,
   Tool,
 } from "@executor-js/sdk/core";
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import {
   OrganizationReference,
   OrganizationForbidden,
@@ -50,6 +53,7 @@ const discoveryErrors = [
   AppNotDeployed,
   DeploymentNotFound,
   AppEvaluationFailed,
+  ToolListingTimedOut,
   AppProviderFailed,
   AccountNotFound,
   AccountRequired,
@@ -102,6 +106,8 @@ export const HostedTools = HttpApiGroup.make("tools")
       params,
       payload: Schema.Struct({
         tool: ToolName,
+        /** "query" for tools the catalog marks readOnly, otherwise "mutation". Omitted, it is read from the catalog. */
+        kind: Schema.optional(ToolKind),
         input: Json,
         deployment: Schema.optional(DeploymentId),
         profile: Schema.optional(ProfileId),
@@ -111,6 +117,7 @@ export const HostedTools = HttpApiGroup.make("tools")
       error: [
         ...discoveryErrors,
         ToolNotFound,
+        ToolKindMismatch,
         InputInvalid,
         ToolCallFailed,
         ToolElicitationFailed,

@@ -1,3 +1,4 @@
+import { openThroughBrowser } from "../support/in-app-navigation.ts";
 /** The same dashboard controls and browser approval, driven through the hosted product. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
@@ -9,12 +10,13 @@ import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
+import { appsManifest } from "../support/apps-release.ts";
 
 class Pending extends Schema.TaggedError<Pending>()("Pending", {}) {}
-const source = `import { defineApp, mutation, object, interval } from "apps";
+const source = `import { defineApp, mutation, object, interval, router } from "apps";
 import { always } from "apps/operations/approval";
 const send = mutation({ input: object({}), approval: always() }, async () => ({ done: true }));
-export default defineApp({ accounts: {} }, async () => ({  mutations: { send }, schedules: { digest: interval({ hours: 1 }, send, {}) } }));`;
+export default defineApp({ accounts: {} }, async () => ({  tools: router({ send }), schedules: { digest: interval({ hours: 1 }, send, {}) } }));`;
 layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (it) => {
   it.effect(scenarios.scheduleLoading.title, (context) =>
     withHostedCase(
@@ -26,7 +28,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
         const prefix = `/api/organizations/${actors.organization.id}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Schedule layout ${randomUUID().slice(0, 8)}`,
-          files: [{ path: "index.ts", content: source }],
+          files: [{ path: "index.ts", content: source }, appsManifest],
         });
         expect(deployed.status).toBe(200);
         const app = yield* body(Schema.Struct({ id: Schema.String }), deployed);
@@ -81,8 +83,9 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
                 "continue",
                 { allRequests: true },
               );
-              yield* browser.use("Open Schedules with its reads held", (page) =>
-                page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=schedules`),
+              yield* openThroughBrowser(
+                "Open Schedules with its reads held",
+                `/org/${actors.organization.slug}/apps/${app.id}?view=schedules`,
               );
               yield* metadata.requested;
               expect(
@@ -159,7 +162,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
               );
               const refresh = yield* holdQuery(
                 paths.map((path) => `${path}/schedules`),
-                "fail",
+                "undeclared",
               );
               yield* refreshVisiblePage;
               yield* refresh.requested;
@@ -204,7 +207,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
         const name = `Schedule states ${randomUUID().slice(0, 8)}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name,
-          files: [{ path: "index.ts", content: source }],
+          files: [{ path: "index.ts", content: source }, appsManifest],
         });
         expect(deployed.status).toBe(200);
         const app = yield* body(Schema.Struct({ id: Schema.String }), deployed);
@@ -226,9 +229,10 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
             ).toBe(0);
           });
         yield* browser.login(actors.owner);
-        const failed = yield* holdQuery(paths, "fail");
-        yield* browser.use("Open schedules with definition discovery held", (page) =>
-          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=schedules`),
+        const failed = yield* holdQuery(paths, "undeclared");
+        yield* openThroughBrowser(
+          "Open schedules with definition discovery held",
+          `/org/${actors.organization.slug}/apps/${app.id}?view=schedules`,
         );
         yield* failed.requested;
         yield* browser.use("Definition discovery is loading", (page) =>
@@ -247,7 +251,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
         yield* browser.use("The declared schedule appears", (page) =>
           page.getByRole("heading", { name: "digest", exact: true }).waitFor(),
         );
-        const refreshFailure = yield* holdQuery(paths, "fail");
+        const refreshFailure = yield* holdQuery(paths, "undeclared");
         yield* refreshVisiblePage;
         yield* refreshFailure.requested;
         yield* refreshFailure.release;
@@ -265,9 +269,10 @@ layer(HostedLive, { excludeTestServices: true })("Hosted schedule dashboard", (i
           files: [
             {
               path: "index.ts",
-              content: `import { defineApp } from "apps";
+              content: `import { defineApp, router } from "apps";
 export default defineApp({ accounts: {} }, async () => ({  }));`,
             },
+            appsManifest,
           ],
         });
         expect(empty.status).toBe(200);
@@ -275,8 +280,9 @@ export default defineApp({ accounts: {} }, async () => ({  }));`,
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${emptyApp.id}`).pipe(Effect.orDie),
         );
-        yield* browser.use("Open the app without schedules", (page) =>
-          page.goto(`/org/${actors.organization.slug}/apps/${emptyApp.id}?view=schedules`),
+        yield* openThroughBrowser(
+          "Open the app without schedules",
+          `/org/${actors.organization.slug}/apps/${emptyApp.id}?view=schedules`,
         );
         yield* browser.use("Successful discovery can report an empty list", (page) =>
           page.getByRole("heading", { name: "No schedules yet", exact: true }).waitFor(),
@@ -307,12 +313,13 @@ export default defineApp({ accounts: {} }, async () => ({  }));`,
           files: [
             {
               path: "index.ts",
-              content: `import { defineApp, defineProvider, secrets, object, string } from "apps";
+              content: `import { defineApp, defineProvider, secrets, object, string, router } from "apps";
 const service = defineProvider({ name: "Schedule fixture", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
 export default defineApp({ accounts: { service } }, async () => ({  }));`,
             },
+            appsManifest,
           ],
         });
         expect(deployed.status).toBe(200);
@@ -328,8 +335,9 @@ export default defineApp({ accounts: { service } }, async () => ({  }));`,
           )).status,
         ).toBe(409);
         yield* browser.login(actors.owner);
-        yield* browser.use("Open schedules without a selected account", (page) =>
-          page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=schedules`),
+        yield* openThroughBrowser(
+          "Open schedules without a selected account",
+          `/org/${actors.organization.slug}/apps/${app.id}?view=schedules`,
         );
         yield* browser.use("Account setup explains the blocked discovery", (page) =>
           page
@@ -351,8 +359,109 @@ export default defineApp({ accounts: { service } }, async () => ({  }));`,
           page.getByRole("button", { name: "Go to Accounts", exact: true }).click(),
         );
         yield* browser.use("The account selection action is available", (page) =>
-          page.getByRole("button", { name: "Add Schedule fixture account", exact: true }).waitFor(),
+          page.getByRole("button", { name: "Connect new account", exact: true }).waitFor(),
         );
+      }),
+    ),
+  );
+
+  it.effect(scenarios.scheduleSourceRemoval.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          browser = yield* Browser,
+          actors = yield* Actors;
+        const prefix = `/api/organizations/${actors.organization.id}`;
+        const files = (definition: string) => [
+          {
+            path: "index.ts",
+            content: `import { defineApp, mutation, object, interval, cron, router } from "apps";
+const send = mutation({ input: object({}) }, async () => ({ done: true }));
+export default defineApp({ accounts: {} }, ${definition});`,
+          },
+          appsManifest,
+        ];
+        const declaring = (...schedules: readonly string[]) =>
+          files(
+            `async () => ({ tools: router({ send }), schedules: { ${schedules.join(", ")} } })`,
+          );
+        const everyThreeHours = `everyThreeHours: interval({ hours: 3 }, send, {})`;
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: `Schedule removal ${randomUUID().slice(0, 8)}`,
+          files: declaring(
+            everyThreeHours,
+            `morning: cron({ expression: "0 9 * * *", timezone: "UTC" }, send, {})`,
+            `evening: cron({ expression: "0 18 * * *", timezone: "UTC" }, send, {})`,
+          ),
+        });
+        expect(deployed.status).toBe(200);
+        const app = yield* body(Schema.Struct({ id: Schema.String }), deployed);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+        );
+        const schedules = `${prefix}/apps/${app.id}/schedules`;
+        for (const name of ["everyThreeHours", "morning", "evening"])
+          expect(
+            (yield* api.request(actors.owner, "PATCH", `${schedules}/${name}`, { enabled: true }))
+              .status,
+          ).toBe(200);
+        const saved = api.request(actors.owner, "GET", schedules).pipe(
+          Effect.flatMap((response) =>
+            body(
+              Schema.Array(Schema.Struct({ name: Schema.String, enabled: Schema.Boolean })),
+              response,
+            ),
+          ),
+          Effect.map((rows) => rows.toSorted((a, b) => a.name.localeCompare(b.name))),
+        );
+        const redeploy = (deployment: ReturnType<typeof files>) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(
+              actors.owner,
+              "POST",
+              `${prefix}/apps/${app.id}/deploy`,
+              { files: deployment },
+            );
+            expect(response.status, JSON.stringify(response.body)).toBe(200);
+          });
+
+        // A deployment that cannot be evaluated proves nothing about its schedules.
+        yield* redeploy(files(`async () => { throw new Error("Evaluation fails on purpose"); }`));
+        expect(yield* saved).toEqual([
+          { name: "evening", enabled: true },
+          { name: "everyThreeHours", enabled: true },
+          { name: "morning", enabled: true },
+        ]);
+        yield* browser.login(actors.owner);
+        yield* openThroughBrowser(
+          "Open schedules while the active deployment fails to evaluate",
+          `/org/${actors.organization.slug}/apps/${app.id}?view=schedules`,
+        );
+        yield* browser.use("Saved schedules stay pausable", (page) =>
+          page.getByRole("heading", { name: "morning", exact: true }).waitFor(),
+        );
+        yield* browser.checkpoint("Saved schedules kept after a failed evaluation");
+
+        yield* redeploy(declaring(everyThreeHours));
+        expect(yield* saved).toEqual([{ name: "everyThreeHours", enabled: true }]);
+        yield* refreshVisiblePage;
+        yield* browser.use("Discovery of the new deployment succeeds", (page) =>
+          page.getByText("Tools could not be loaded", { exact: true }).waitFor({ state: "hidden" }),
+        );
+        yield* browser.use("Removed schedules leave the list", (page) =>
+          page.getByRole("heading", { name: "morning", exact: true }).waitFor({ state: "hidden" }),
+        );
+        expect(
+          yield* browser.use("Only the declared schedule is listed", (page) =>
+            Promise.all(
+              ["everyThreeHours", "morning", "evening"].map((name) =>
+                page.getByRole("heading", { name, exact: true }).count(),
+              ),
+            ),
+          ),
+        ).toEqual([1, 0, 0]);
+        yield* browser.checkpoint("Schedules removed from app source");
       }),
     ),
   );
@@ -367,7 +476,7 @@ export default defineApp({ accounts: { service } }, async () => ({  }));`,
         const prefix = `/api/organizations/${actors.organization.id}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Browser schedules ${randomUUID().slice(0, 8)}`,
-          files: [{ path: "index.ts", content: source }],
+          files: [{ path: "index.ts", content: source }, appsManifest],
         });
         expect(deployed.status).toBe(200);
         const app = yield* body(Schema.Struct({ id: Schema.String }), deployed);

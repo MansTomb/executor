@@ -4,14 +4,18 @@ import posthog from "posthog-js";
 import { BrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
 import { useAtomValue } from "@effect/atom-react";
 import { sessionAtom } from "@executor-js/hosted-web/contracts/auth";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Schema, Option } from "effect";
 import { useEffect } from "react";
+import type { SupportLink } from "@executor-js/ui/dashboard/support-dialog";
 import { dashboardReplay, replayPageAllowed } from "./analytics-replay.ts";
 
+// The PostHog SDK is a browser-global singleton; these mirror its state for this document.
+/* oxlint-disable executor/no-module-level-mutable-state -- browser-only; server renders never start analytics */
 let started = false;
 let identified = false;
 let recorder: Promise<unknown> | undefined;
+/* oxlint-enable executor/no-module-level-mutable-state */
 
 const replayAllowed = () => identified && replayPageAllowed(new URL(location.href));
 
@@ -162,7 +166,7 @@ export const pageContext = (pathname: string, search = "") => {
     "connect",
     "settings",
     "groups",
-    "api-keys",
+    "account",
     "approvals",
     "billing",
   ]);
@@ -206,6 +210,20 @@ export const capturePageview = (pathname: string) => {
   if (started)
     posthog.capture("$pageview", {
       ...pageContext(pathname, location.search),
+    });
+};
+
+/** Record that the support dialog opened. */
+export const captureSupportOpened = () => {
+  if (started) posthog.capture("support_opened", pageContext(location.pathname, location.search));
+};
+
+/** Record which fixed support channel was followed. */
+export const captureSupportLinkClicked = (label: SupportLink) => {
+  if (started)
+    posthog.capture("support_link_clicked", {
+      label,
+      ...pageContext(location.pathname, location.search),
     });
 };
 

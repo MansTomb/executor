@@ -3,7 +3,7 @@ import type { ApiKeyId } from "./api-keys.ts";
 import type { AuthorizationPolicy } from "@executor-js/authorization";
 import type { OrganizationAccess, OrganizationReference } from "./organization.ts";
 import { Context, Effect, Schema } from "effect";
-import { HttpApiMiddleware } from "effect/unstable/httpapi";
+import { HttpApiMiddleware } from "effect/http-api";
 import type { OrganizationId, OrganizationRole, OrganizationForbidden } from "./organization.ts";
 
 /** A hosted login identity, separate from SDK provider accounts and owners. */

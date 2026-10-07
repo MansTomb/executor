@@ -19,7 +19,7 @@ Ask what I want to do. Start with the smallest useful version. Explain what it w
 
 Help me sign in at ${siteOrigin}/login and connect Executor to you over MCP. If your client needs a restart to load its tools, tell me and wait until they are available.
 
-Read Executor's app-authoring guide through its skills tool. Check what this Executor host supports. Use its management tools to build and deploy the app. Connect any required accounts through the secure connection flow and select them for the app. Never ask me to paste credentials into this chat or put them in source code.
+Read the Executor app's executor skill through Executor's skills tool, then its app-authoring skill. Check what this Executor host supports. Use its management tools to build and deploy the app. Connect any required accounts through the secure connection flow and select them for the app. Never ask me to paste credentials into this chat or put them in source code.
 
 Explain what the app can read or change, and ask before actions that send, delete, or publish anything. Verify the result with a safe call. Keep its source so I can ask you or another agent to change it later. Add features only when they serve the task I asked for.
 
@@ -29,17 +29,48 @@ Docs: ${siteOrigin}/docs`;
 export const GITHUB_URL = "https://github.com/UsefulSoftwareCo/executor";
 
 /** One-line description of the product, used as the Markdown tagline. */
-export const tagline = "Built by your agents. Run by Executor.";
+export const tagline = "Your agents' cloud.";
 
-/** Shared introduction for the landing page and its Markdown representation. */
-export const introduction =
-  "Bring your own agents. Build tools, automations, and apps once. Run them on Executor and use them across all your agents.";
+/** What Executor holds for an agent, in the order the hero lists them. */
+export const introductionItems = [
+  { label: "connectors" },
+  { label: "skills" },
+  { label: "automations" },
+  { label: "personal software" },
+  { label: "browser", comingSoon: true },
+  { label: "computer", comingSoon: true },
+] as const;
 
-/** Introduce personal software through a familiar starting point and a growing app. */
+const listItems = (labels: ReadonlyArray<string>) =>
+  `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+
+/** Shared introduction for metadata and Markdown; lists only what ships today. */
+export const introduction = `Your ${listItems(
+  introductionItems.filter((item) => !("comingSoon" in item)).map((item) => item.label),
+)}, all in one place.`;
+
+/** Capabilities an app can include, with tools first. */
+export const appParts = [
+  { title: "Tools", body: "Call anything, it's just JavaScript." },
+  { title: "Skills", body: "Give your agent instructions it can use again." },
+  { title: "Apps", body: "A page for people, beside the tools for agents." },
+  { title: "Storage", body: "Keep data and state between runs." },
+  { title: "Triggers", body: "Run on a schedule or respond to webhooks." },
+  { title: "Workflows", body: "Durable work across multiple steps." },
+] as const;
+
+/**
+ * The homepage leads with what an app can be, then shows one growing step by
+ * step.
+ */
 export const homepageStory = {
+  apps: {
+    title: "What's an Executor app?",
+    body: "A tool your agent can call. An automation that runs on its own. An interface you can use. They can all be parts of the same app, built around what you need.",
+  },
   start: {
     title: "Start with something useful.",
-    body: "Bring a tool you already use, give your agent a skill, or ask it to build something you wish existed. Start small. You can change it as you go.",
+    body: "Bring a tool you already use, give your agent a skill, or ask it to build something you wish existed. Most apps start as one small piece.",
   },
   build: {
     title: "Ask for what you actually need.",
@@ -52,24 +83,10 @@ export const homepageStory = {
     body: "Give that tool a schedule. Keep a history of what it finds. Add a page you can open. Executor runs the app, even after the conversation ends.",
     prompt: "Run this every weekday at 9. Save the results and build me a page to read them.",
   },
-  apps: {
-    title: "That's an Executor app.",
-    body: "A tool your agent can call. An automation that runs on its own. An interface you can use. They can all be parts of the same app, built around what you need.",
-  },
 } as const;
 
 /** Plain definition shared by the illustrated section and Markdown overview. */
 export const appDefinition = homepageStory.apps.body;
-
-/** Capabilities an app can include, with tools first. */
-export const appParts = [
-  { title: "Tools", body: "Call anything, it's just JavaScript." },
-  { title: "Skills", body: "Give your agent instructions it can use again." },
-  { title: "UI", body: "A page for your app, at its own URL." },
-  { title: "Storage", body: "Keep data and state between runs." },
-  { title: "Triggers", body: "Run on a schedule or respond to webhooks." },
-  { title: "Workflows", body: "Durable work across multiple steps." },
-] as const;
 
 /** Cache-Control for the Markdown endpoints. Short, so copy edits land fast. */
 export const MARKDOWN_CACHE_CONTROL = "public, max-age=300";

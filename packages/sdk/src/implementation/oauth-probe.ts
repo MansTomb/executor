@@ -1,10 +1,11 @@
 /** Header-only OAuth discovery for resources that advertise auth on GET or MCP initialization. */
 import { Effect } from "effect";
-import { FetchHttpClient, HttpBody, HttpClient } from "effect/unstable/http";
-import { bearerChallenged, bearerResourceMetadata } from "./oauth-challenge.ts";
+import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
+import { bearerChallenge } from "./oauth-challenge.ts";
 
 /**
- * Probe an already policy-checked endpoint with the host's checked HTTP client.
+ * Probe an already policy-checked endpoint with the host's checked HTTP client. The result keeps
+ * the status, a Retry-After header for a rate-limited answer, and any Bearer challenge.
  * Never follow redirects or invoke tools. Release streaming bodies and any probe session.
  * An unauthorized response without a Bearer metadata challenge does not imply OAuth.
  */
@@ -18,12 +19,17 @@ export const probeOAuthChallenge = (endpoint: string | URL, client: HttpClient.H
         .pipe(
           Effect.map((response) => ({
             status: response.status,
-            resourceMetadata: bearerResourceMetadata(response.headers["www-authenticate"]),
-            bearer: bearerChallenged(response.headers["www-authenticate"]),
+            retryAfter: response.headers["retry-after"],
+            ...bearerChallenge(response.headers["www-authenticate"]),
           })),
         ),
     );
-    if (get.resourceMetadata !== undefined || ![401, 403, 405].includes(get.status)) return get;
+    if (
+      get.resourceMetadata !== undefined ||
+      get.scopes !== undefined ||
+      ![401, 403, 405].includes(get.status)
+    )
+      return get;
     return yield* Effect.scoped(
       Effect.gen(function* () {
         const response = yield* HttpClient.withScope(client).post(endpoint, {
@@ -52,8 +58,8 @@ export const probeOAuthChallenge = (endpoint: string | URL, client: HttpClient.H
         }
         return {
           status: response.status,
-          resourceMetadata: bearerResourceMetadata(response.headers["www-authenticate"]),
-          bearer: get.bearer || bearerChallenged(response.headers["www-authenticate"]),
+          retryAfter: response.headers["retry-after"],
+          ...bearerChallenge(response.headers["www-authenticate"]),
         };
       }),
     );

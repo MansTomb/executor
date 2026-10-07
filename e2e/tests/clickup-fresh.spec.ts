@@ -1,6 +1,7 @@
+import { withApps } from "../support/apps-release.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -30,7 +31,13 @@ layer(HostedLive, { excludeTestServices: true })("ClickUp integration", (it) => 
               const content = yield* fs.readFileString(`e2e/fixtures/clickup/${name}`);
               return {
                 path: name.replace(/\.txt$/, ""),
-                content: content
+                content: (name === "package.json.txt"
+                  ? JSON.stringify({
+                      ...JSON.parse(content),
+                      dependencies: withApps(JSON.parse(content).dependencies),
+                    })
+                  : content
+                )
                   .replaceAll("https://mcp.clickup.com", upstream.origin)
                   .replaceAll("https://api.clickup.com", upstream.origin),
               };
@@ -115,7 +122,7 @@ layer(HostedLive, { excludeTestServices: true })("ClickUp integration", (it) => 
         const call = (include: readonly string[] = ["attachments"]) =>
           api.request(actors.owner, "POST", `${path}/tools/call`, {
             profile: profile.id,
-            tool: "queries.clickup_get_task",
+            tool: "clickup_get_task",
             input: {
               accountId: mcp.id,
               input: { task_id: "abc123", workspace_id: "5678", include },
@@ -216,17 +223,17 @@ layer(HostedLive, { excludeTestServices: true })("ClickUp integration", (it) => 
         const described = yield* api.request(
           actors.owner,
           "GET",
-          `${prefix}/apps/${management.app.id}/tools/queries.analytics_summary?profile=${management.profile.id}`,
+          `${prefix}/apps/${management.app.id}/tools/analytics.summary?profile=${management.profile.id}`,
         );
         expect(described.status, JSON.stringify(described.body)).toBe(200);
-        expect(described.body).toMatchObject({ name: "queries.analytics_summary" });
+        expect(described.body).toMatchObject({ name: "analytics.summary" });
         const throughTool = yield* api.request(
           actors.owner,
           "POST",
           `${prefix}/apps/${management.app.id}/tools/call`,
           {
             profile: management.profile.id,
-            tool: "queries.analytics_summary",
+            tool: "analytics.summary",
             input: {
               path: { app: app.id },
               query: { from: String(from), to: String(Date.now()), event: "upstream_request" },

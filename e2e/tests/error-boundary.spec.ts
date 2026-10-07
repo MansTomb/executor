@@ -1,3 +1,4 @@
+import { appsManifest } from "../support/apps-release.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -19,7 +20,7 @@ const Failure = Schema.Struct({
   }),
 });
 
-const setup = (source: string) =>
+const setup = (source: string, timeout = 55_000) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors,
@@ -33,7 +34,7 @@ const setup = (source: string) =>
     );
     const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
       name: "Error boundary",
-      files: [{ path: "index.ts", content: source }],
+      files: [appsManifest, { path: "index.ts", content: source }],
     });
     expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
     const app = yield* body(App, deployed);
@@ -50,7 +51,7 @@ const setup = (source: string) =>
       client.use("Exercise the error boundary", (client, signal) =>
         client.callTool({ name: "execute", arguments: { code } }, undefined, {
           signal,
-          timeout: 55_000,
+          timeout,
         }),
       );
     return { app, prefix, execute };
@@ -65,11 +66,11 @@ layer(HostedLive, { excludeTestServices: true })("Error boundary", (it) => {
           api = yield* Api,
           actors = yield* Actors;
         const { app, prefix, execute } =
-          yield* setup(`import {defineApp,defineProvider,secrets,query,object,string} from "apps";
+          yield* setup(`import {defineApp,defineProvider,secrets,query,object,string,router} from "apps";
 const service=defineProvider({name:"Reports",auth:{key:secrets({label:"Password",fields:object({password:string()})})}});
-export default defineApp({accounts:{service}},async()=>({queries:{read:query({input:object({privateValue:string()})},async({accounts},input)=>{
+export default defineApp({accounts:{service}},async()=>({tools: router({ queries: router({read:query({input:object({privateValue:string()})},async({accounts},input)=>{
 throw new Error("Could not read the report",{cause:new Error("Report was deleted; token=synthetic-secret; private="+input.privateValue+"; "+JSON.stringify({password:accounts.service.fields.password,detail:accounts.service.fields.password,secret:"unselected secret"}))});
-})}}));`);
+})}) })}));`);
         const path = `${prefix}/apps/${app.id}`;
         const profile = yield* createProfile(actors.owner, path);
         const connection = yield* body(
@@ -99,7 +100,7 @@ throw new Error("Could not read the report",{cause:new Error("Report was deleted
         );
         const failure = yield* body(Failure, { status: 200, body: result.structuredContent });
         expect(failure.execution.error.message).toBe(
-          `${operation}: ToolCallFailed (HTTP 502): Could not read the report Caused by: Report was deleted; token=[redacted]; private=[redacted]; {"password":"[redacted]","detail":"[redacted]","secret":"[redacted]"} Recovery: Check whether the tool already made changes before retrying.`,
+          `${operation}: ToolCallFailed (HTTP 502): The app threw Error: Could not read the report (caused by Error: Report was deleted; token=[redacted]; private=[redacted]; {"password":"[redacted]","detail":"[redacted]","secret":"[redacted]"}) Recovery: Fix the input or the app code that threw this error, then retry.`,
         );
         yield* evidence.json("thrown-app-error.json", result.structuredContent);
         const caught = yield* execute(
@@ -111,8 +112,10 @@ throw new Error("Could not read the report",{cause:new Error("Report was deleted
             value: {
               operation,
               message:
-                'Could not read the report Caused by: Report was deleted; token=[redacted]; private=[redacted]; {"password":"[redacted]","detail":"[redacted]","secret":"[redacted]"}',
-              recovery: { action: "Check whether the tool already made changes before retrying." },
+                'The app threw Error: Could not read the report (caused by Error: Report was deleted; token=[redacted]; private=[redacted]; {"password":"[redacted]","detail":"[redacted]","secret":"[redacted]"})',
+              recovery: {
+                action: "Fix the input or the app code that threw this error, then retry.",
+              },
             },
           },
         });
@@ -120,31 +123,37 @@ throw new Error("Could not read the report",{cause:new Error("Report was deleted
     ),
   );
 
-  it.effect(scenarios.mutationTimeoutBoundary.title, (context) =>
-    withHostedCase(
-      context,
-      Effect.gen(function* () {
-        const evidence = yield* Evidence;
-        const gate = yield* requestGate;
-        const { app, execute } = yield* setup(`import {defineApp,mutation,object} from "apps";
-export default defineApp({accounts:{}},async()=>({mutations:{write:mutation({input:object({})},async({fetch})=>{
+  it.effect(
+    scenarios.mutationTimeoutBoundary.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const evidence = yield* Evidence;
+          const gate = yield* requestGate;
+          const { app, execute } = yield* setup(
+            `import {defineApp,mutation,object,router} from "apps";
+export default defineApp({accounts:{}},async()=>({tools: router({ mutations: router({write:mutation({input:object({})},async({fetch})=>{
 await fetch(${JSON.stringify(gate.origin + "/done")});
 await fetch(${JSON.stringify(gate.origin + "/wait")});
 return {written:true};
-})}}));`);
-        const result = yield* execute(
-          `return await tools[${JSON.stringify(app.slug)}].mutations.write({});`,
-        );
-        yield* gate.arrived;
-        expect(yield* gate.completed).toBe(1);
-        const failure = yield* body(Failure, { status: 200, body: result.structuredContent });
-        expect(failure.execution.error.kind).toBe("TimeoutExceeded");
-        expect(failure.execution.error.message).toBe(
-          `Execution timed out after 30000ms. ${app.slug}.mutations.write: outcome unknown. Recovery: Check current state with a safe read before repeating any mutation. A timeout does not establish that a mutation failed or that retrying is safe.`,
-        );
-        yield* evidence.json("mutation-timeout.json", result.structuredContent);
-      }).pipe(Effect.provide(McpClient.layer)),
-    ),
+})}) })}));`,
+            315_000,
+          );
+          const result = yield* execute(
+            `return await tools[${JSON.stringify(app.slug)}].mutations.write({});`,
+          );
+          yield* gate.arrived;
+          expect(yield* gate.completed).toBe(1);
+          const failure = yield* body(Failure, { status: 200, body: result.structuredContent });
+          expect(failure.execution.error.kind).toBe("TimeoutExceeded");
+          expect(failure.execution.error.message).toBe(
+            `Execution timed out after 300000ms. ${app.slug}.mutations.write: outcome unknown. Recovery: Check current state with a safe read before repeating any mutation. A timeout does not establish that a mutation failed or that retrying is safe.`,
+          );
+          yield* evidence.json("mutation-timeout.json", result.structuredContent);
+        }).pipe(Effect.provide(McpClient.layer)),
+      ),
+    { timeout: 350_000 },
   );
 
   it.effect(scenarios.expiredAccountBoundary.title, (context) =>
@@ -157,9 +166,9 @@ return {written:true};
         const issuer = yield* clientCredentialsIssuer;
         yield* issuer.configure({ expiresIn: 1 });
         const { app, prefix, execute } =
-          yield* setup(`import {defineApp,defineProvider,oauth2,query,object} from "apps";
+          yield* setup(`import {defineApp,defineProvider,oauth2,query,object,router} from "apps";
 const service=defineProvider({name:"Reports",auth:{machine:oauth2({grant:"client_credentials",tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:[],tokenEndpointAuthMethod:"client_secret_basic"})}});
-export default defineApp({accounts:{service}},async()=>({queries:{read:query({input:object({})},async()=>({ok:true}))}}));`);
+export default defineApp({accounts:{service}},async()=>({tools: router({ queries: router({read:query({input:object({})},async()=>({ok:true}))}) })}));`);
         const path = `${prefix}/apps/${app.id}`;
         const profile = yield* createProfile(actors.owner, path);
         const connection = yield* body(
@@ -184,6 +193,7 @@ export default defineApp({accounts:{service}},async()=>({queries:{read:query({in
             .pipe(Effect.orDie),
         );
         yield* issuer.configure({ rejected: true });
+        yield* issuer.awaitExpiry;
         const operation = `${app.slug}.profiles.${profile.id}.queries.read`;
         const result = yield* execute(
           `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].queries.read({});`,
@@ -192,7 +202,7 @@ export default defineApp({accounts:{service}},async()=>({queries:{read:query({in
         expect(failure.execution.error.message).toContain(operation);
         expect(failure.execution.error.message).toContain("Expired Reports");
         expect(failure.execution.error.message).toContain(connected.account.id);
-        expect(failure.execution.error.message).toContain("accounts_reconnect");
+        expect(failure.execution.error.message).toContain("accounts.reconnect");
         expect(failure.execution.error.message).toContain("browser link");
         yield* evidence.json("expired-account.json", result.structuredContent);
       }).pipe(Effect.provide(McpClient.layer)),

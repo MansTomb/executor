@@ -10,8 +10,8 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { FixtureControl } from "./contracts.ts";
 export { FixtureControl, FixtureActor, FixtureActors } from "./contracts.ts";

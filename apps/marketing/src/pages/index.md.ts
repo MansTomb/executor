@@ -67,6 +67,12 @@ ${machineSummaries.map(([label, href]) => `- [${label}](${href})`).join("\n")}
 
 ${introduction}
 
+## ${homepageStory.apps.title}
+
+${appDefinition}
+
+${appParts.map(({ title, body }) => `- **${title}:** ${body}`).join("\n")}
+
 ## ${homepageStory.start.title}
 
 ${homepageStory.start.body}
@@ -84,12 +90,6 @@ Example: "${homepageStory.build.prompt}" Your agent builds a reusable tool that 
 ${homepageStory.automate.body}
 
 Example: "${homepageStory.automate.prompt}"
-
-## ${homepageStory.apps.title}
-
-${appDefinition}
-
-${appParts.map(({ title, body }) => `- **${title}:** ${body}`).join("\n")}
 
 ## ${appStructure.title}
 

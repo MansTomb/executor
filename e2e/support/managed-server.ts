@@ -19,23 +19,38 @@ import {
   Semaphore,
   Stream,
 } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   HttpClient,
   HttpRouter,
   HttpServer,
   HttpServerRequest,
   HttpServerResponse,
-} from "effect/unstable/http";
+} from "effect/http";
 import type { Target } from "./platform.ts";
+import { startAnalyticsCollector } from "./analytics-collector.ts";
+import {
+  applyLegacyStatements,
+  LegacyResults,
+  LegacyStatements,
+  productDatabase,
+} from "./legacy-storage.ts";
+import { scenarios } from "../test-plan.ts";
 
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
 }) {}
+
+/** Operator settings a scenario may turn on between product generations. */
+export const OperatorSettings = Schema.Struct({
+  EXECUTOR_OAUTH_CLIENT_METADATA_URL: Schema.NonEmptyString,
+});
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
 export const startManagedServer = (
   target: typeof Target.Service,
   mode: "product" | "development" = "product",
+  /** Operator settings for this process, applied over the runner's own. */
+  environment: Readonly<Record<string, string>> = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -50,9 +65,14 @@ export const startManagedServer = (
     const packagedEntry = yield* Config.NonEmptyString("EXECUTOR_E2E_LOCAL_ENTRY").pipe(
       Config.option,
     );
+    // The suite's loopback registry serves this checkout's apps release; see npm-registry.ts.
+    const npmRegistry = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
     const entry =
       target.metadata.target === "local" && Option.isSome(packagedEntry)
-        ? { command: [packagedEntry.value, "serve"], cwd: target.directory }
+        ? // Run the installed CLI from its package, as the desktop runs its backend from its
+          // install root. Product processes can outlive the server's reported exit on Windows
+          // while they terminate, and a working directory there cannot be removed.
+          { command: [packagedEntry.value, "serve"], cwd: path.dirname(packagedEntry.value) }
         : {
             command: [
               target.metadata.target === "local"
@@ -64,8 +84,12 @@ export const startManagedServer = (
             ],
           };
 
+    // Each product process sends its analytics to its own loopback collector, kept across restarts.
+    const analyticsPort = yield* startAnalyticsCollector(target.directory);
     const gate = yield* Semaphore.make(1);
     let current: Scope.Closeable | undefined;
+    /** The running product process, for an abrupt kill that runs none of its shutdown. */
+    let running: ChildProcessSpawner.ChildProcessHandle | undefined;
     const env = {
       PATH: runtimePath,
       NODE_ENV: "test",
@@ -89,7 +113,10 @@ export const startManagedServer = (
       EXECUTOR_ENVIRONMENT: "e2e",
       EXECUTOR_BUILD_VERSION: target.metadata.commit,
       EXECUTOR_WORKER_BUNDLE: path.resolve(".local/test-runtime/host.json"),
+      ...(Option.isSome(npmRegistry) ? { EXECUTOR_NPM_REGISTRY: npmRegistry.value } : {}),
       EXECUTOR_TEST_CLOCK_OFFSET_MS: "0",
+      EXECUTOR_ANALYTICS_TEST_PORT: String(analyticsPort),
+      ...environment,
     };
     const stop = Effect.suspend(() =>
       current === undefined
@@ -112,9 +139,9 @@ export const startManagedServer = (
           ChildProcess.make(
             target.metadata.target === "local" ? "node" : "bun",
             [
-              ...(target.metadata.target === "local"
-                ? ["--import", new URL("./wall-clock.mjs", import.meta.url).href]
-                : []),
+              // Bun accepts Node's --import preload, so self-host can advance wall time too.
+              "--import",
+              new URL("./wall-clock.mjs", import.meta.url).href,
               ...entry.command,
             ],
             {
@@ -127,6 +154,13 @@ export const startManagedServer = (
               forceKillAfter: "15 seconds",
             },
           ),
+        );
+        running = child;
+        yield* Scope.addFinalizer(
+          scope,
+          Effect.sync(() => {
+            if (running === child) running = undefined;
+          }),
         );
         const ready = yield* Deferred.make<void>();
         const output = yield* Stream.merge(child.stdout, child.stderr).pipe(
@@ -198,15 +232,18 @@ export const startManagedServer = (
         ),
       );
     });
-    const control = (action: "start" | "stop" | "restart") =>
+    const control = (action: "start" | "stop" | "restart" | "kill") =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
           return HttpServerResponse.empty({ status: 401 });
         yield* gate.withPermits(1)(
           Effect.gen(function* () {
+            // A kill models a crash or out-of-memory stop: the whole process group ends at once.
+            if (action === "kill" && running !== undefined)
+              yield* running.kill({ killSignal: "SIGKILL" });
             if (action !== "start") yield* stop;
-            if (action !== "stop") yield* start;
+            if (action === "start" || action === "restart") yield* start;
           }),
         );
         return HttpServerResponse.jsonUnsafe({ ok: true });
@@ -232,8 +269,7 @@ export const startManagedServer = (
           );
           return yield* gate.withPermits(1)(
             Effect.gen(function* () {
-              if (target.metadata.target !== "local" || current !== undefined)
-                return HttpServerResponse.empty({ status: 409 });
+              if (current !== undefined) return HttpServerResponse.empty({ status: 409 });
               const offset = Number(env.EXECUTOR_TEST_CLOCK_OFFSET_MS) + body.milliseconds;
               if (offset > 31 * 86_400_000) return HttpServerResponse.empty({ status: 400 });
               env.EXECUTOR_TEST_CLOCK_OFFSET_MS = String(offset);
@@ -242,9 +278,97 @@ export const startManagedServer = (
           );
         }),
       ),
+      // A later start reads an operator setting the install did not have, as when an operator
+      // turns it on. Only settings a scenario turns on mid-life are accepted.
+      HttpRouter.add(
+        "POST",
+        "/environment",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
+            return HttpServerResponse.empty({ status: 401 });
+          const body = yield* request.json.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(OperatorSettings)),
+          );
+          return yield* gate.withPermits(1)(
+            Effect.sync(() => {
+              if (current !== undefined) return HttpServerResponse.empty({ status: 409 });
+              Object.assign(env, body);
+              return HttpServerResponse.jsonUnsafe({ ok: true });
+            }),
+          );
+        }),
+      ),
+      // A later start runs pending data steps in another mode.
+      HttpRouter.add(
+        "POST",
+        "/data-steps",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
+            return HttpServerResponse.empty({ status: 401 });
+          const body = yield* request.json.pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(
+                Schema.Struct({ mode: Schema.Literals(["report", "apply"]) }),
+              ),
+            ),
+          );
+          return yield* gate.withPermits(1)(
+            Effect.sync(() => {
+              if (current !== undefined) return HttpServerResponse.empty({ status: 409 });
+              Object.assign(env, { EXECUTOR_DATA_STEPS: body.mode });
+              return HttpServerResponse.jsonUnsafe({ ok: true });
+            }),
+          );
+        }),
+      ),
+      HttpRouter.add(
+        "POST",
+        "/storage/legacy",
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
+            return HttpServerResponse.empty({ status: 401 });
+          // Only scenarios that declare this in the reviewed test plan may write rows directly.
+          const declared = Object.values(scenarios).some(
+            (scenario) =>
+              scenario.title === target.scenarioLabel &&
+              "legacyStorage" in scenario &&
+              scenario.legacyStorage === true,
+          );
+          if (!declared || target.metadata.target === "cloud")
+            return HttpServerResponse.empty({ status: 403 });
+          const database = productDatabase(env.EXECUTOR_DATA_DIR, target.metadata.target);
+          const body = yield* request.json.pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(Schema.Struct({ statements: LegacyStatements })),
+            ),
+          );
+          // Hold the lifecycle gate so no product generation can open the database meanwhile.
+          const rows = yield* gate.withPermits(1)(
+            stop.pipe(Effect.andThen(applyLegacyStatements(database, body.statements))),
+          );
+          return HttpServerResponse.text(
+            yield* Schema.encodeEffect(Schema.fromJsonString(LegacyResults))(rows),
+          );
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.succeed(
+              error._tag === "LegacyStatementFailed"
+                ? HttpServerResponse.text(
+                    `Statement ${error.index} failed and was rolled back: ${error.message}`,
+                    { status: 500 },
+                  )
+                : HttpServerResponse.empty({ status: 500 }),
+            ),
+          ),
+        ),
+      ),
       HttpRouter.add("POST", "/start", control("start")),
       HttpRouter.add("POST", "/stop", control("stop")),
       HttpRouter.add("POST", "/restart", control("restart")),
+      HttpRouter.add("POST", "/kill", control("kill")),
     );
     const services = yield* Layer.build(
       Layer.fresh(
@@ -260,7 +384,11 @@ export const startManagedServer = (
     return { controlOrigin: `http://127.0.0.1:${server.address.port}`, origin };
   });
 
-const startIsolatedSelfHost = (target: typeof Target.Service, entry: "product" | "development") =>
+const startIsolatedSelfHost = (
+  target: typeof Target.Service,
+  entry: "product" | "development",
+  environment: Readonly<Record<string, string>> = {},
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const port =
@@ -284,6 +412,7 @@ const startIsolatedSelfHost = (target: typeof Target.Service, entry: "product" |
     const server = yield* startManagedServer(
       { ...target, directory, metadata: { ...target.metadata, origin, target: "self-host" } },
       entry,
+      environment,
     );
     return server.origin;
   });
@@ -293,5 +422,7 @@ export const startDevelopmentServer = (target: typeof Target.Service) =>
   startIsolatedSelfHost(target, "development");
 
 /** Start an unconfigured product instance; the scenario scope owns its process and fresh data. */
-export const startFreshSelfHost = (target: typeof Target.Service) =>
-  startIsolatedSelfHost(target, "product");
+export const startFreshSelfHost = (
+  target: typeof Target.Service,
+  environment: Readonly<Record<string, string>> = {},
+) => startIsolatedSelfHost(target, "product", environment);

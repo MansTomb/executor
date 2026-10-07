@@ -1,6 +1,8 @@
 /** Portable workflow declarations, run views and durable execution capabilities. */
 import { Schema, type Effect } from "effect";
+import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { JsonObject, JsonValue } from "./schema.ts";
+import { FailureMessage, FailureName } from "./failure.ts";
 import type { AppContext, AppRequirements, QueryContext, MutationContext } from "./context.ts";
 import type { Operation } from "../implementation/operations.ts";
 import type { HostContext } from "./host.ts";
@@ -53,8 +55,21 @@ export const WorkflowStepOptions = Schema.Struct({
   timeout: Schema.optionalKey(WorkflowDuration),
 });
 export type WorkflowStepOptions = typeof WorkflowStepOptions.Type;
-/** Safe failures cross host boundaries without authored exceptions or account fields. */
+/**
+ * Where and why a run failed: the failing step and the error the app's own code raised, its
+ * message bounded and with account secrets replaced. Runs from before these fields existed have none.
+ */
+export const WorkflowFailureDetail = {
+  step: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(200))),
+  errorName: Schema.optionalKey(FailureName),
+  message: Schema.optionalKey(FailureMessage),
+};
+/** A failed run's recorded step and app error. */
+export const WorkflowRunFailure = Schema.Struct(WorkflowFailureDetail);
+export type WorkflowRunFailure = typeof WorkflowRunFailure.Type;
+/** Failures cross host boundaries as reason codes plus the app's own bounded error detail. */
 export class WorkflowFailure extends Schema.TaggedError<WorkflowFailure>()("WorkflowFailure", {
+  ...WorkflowFailureDetail,
   reason: Schema.Literals([
     "unavailable",
     "not_found",
@@ -69,8 +84,18 @@ export class WorkflowFailure extends Schema.TaggedError<WorkflowFailure>()("Work
     "engine",
   ]),
   retryable: Schema.Boolean,
-}) {}
-/** Explicitly stop retrying an authored step. Its message stays inside the app runtime. */
+}) {
+  /**
+   * The step name and error detail are the app's. Its run's owner reads them; telemetry records
+   * only the reason, however the failure was built or decoded.
+   */
+  get [RecordedMessage]() {
+    return this.step === undefined && this.errorName === undefined && !this.message
+      ? undefined
+      : `The workflow failed (${this.reason}); the app's error is not recorded`;
+  }
+}
+/** Explicitly stop retrying an authored step. Its message is reported like any step error. */
 export class NonRetryableError extends Error {
   override readonly name = "NonRetryableError";
 }
@@ -97,7 +122,7 @@ const runFields = {
   workflow: WorkflowName,
   createdAt: Schema.String,
 };
-/** Results are available only on completed runs; failure details are safe reason codes. */
+/** Results are available only on completed runs; failures carry a reason code and app error detail. */
 export const WorkflowRun = Schema.Union([
   Schema.Struct({
     ...runFields,
@@ -108,6 +133,8 @@ export const WorkflowRun = Schema.Union([
     ...runFields,
     status: Schema.Literal("errored"),
     error: WorkflowFailure.fields.reason,
+    /** The failing step and the app's own error, when the run recorded them. */
+    failure: Schema.optionalKey(WorkflowRunFailure),
   }),
   Schema.Struct({ ...runFields, status: Schema.Literal("terminated") }),
 ]);

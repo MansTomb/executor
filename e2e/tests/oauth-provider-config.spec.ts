@@ -8,6 +8,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { scenarios } from "../test-plan.ts";
+import { appsManifest } from "../support/apps-release.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 
@@ -31,10 +32,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth declarations", (it) => {
               files: [
                 {
                   path: "index.ts",
-                  content: `import { defineApp, defineProvider, oauth2 } from "apps";
+                  content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Declared OAuth",auth:{oauth:oauth2(${JSON.stringify(config)})}});
-export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
+export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
                 },
+                appsManifest,
               ],
             });
             expect(response.status).toBe(200);
@@ -66,9 +68,12 @@ export default defineApp({accounts:{service}},async()=>({queries:{}}));`,
         const url = new URL((yield* body(SignIn, response)).authorizationUrl);
         expect(url.searchParams.get("scope")).toBe("read");
         expect(url.searchParams.has("resource")).toBe(false);
+        // MCP requires `application_type` at registration. This host's callback is on a named
+        // `*.localhost` host, not a loopback redirect OpenID providers accept from native apps.
         expect((yield* issuer.metrics).lastRegistration).toEqual({
           scope: "read",
           method: "client_secret_post",
+          applicationType: "web",
         });
 
         const emptyPath = yield* connect({

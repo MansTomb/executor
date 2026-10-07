@@ -1,17 +1,26 @@
 /** Vitest hooks own isolated servers and cleanup; the test deadline owns scenario work. */
 import { Clock, Effect, Exit, FileSystem, Layer, Scope } from "effect";
+import { randomBytes } from "node:crypto";
 import { beforeEach, type TestContext } from "vitest";
 import { prepareScenario, startScenario } from "../sdk/scenario.ts";
+import { createScenario } from "../sdk/session.ts";
 import { RuntimeLive, Target } from "./platform.ts";
 import { Actors } from "./actors.ts";
 import { prepareManagementApp } from "./management-app.ts";
 import { SessionClients } from "./api.ts";
 import { scenarios, type TestPlan } from "../test-plan.ts";
 
+/** An extra Testing SDK scenario acquired by setup. The test may close its scope early. */
+export interface SdkScenarioFixture {
+  readonly scenario: Effect.Success<ReturnType<typeof createScenario>>;
+  readonly scope: Scope.Closeable;
+}
+
 interface ScenarioLifetime {
   readonly target: typeof Target.Service;
   readonly scope: Scope.Closeable;
   readonly actors: typeof Actors.Service | undefined;
+  readonly sdkScenarios: ReadonlyArray<SdkScenarioFixture>;
   readonly completed: (exit: Exit.Exit<unknown, unknown>) => void;
 }
 
@@ -28,6 +37,8 @@ export const scenarioLifetime = (context: TestContext) => {
   return context.executorScenario;
 };
 
+// Vitest's beforeEach and onTestFinished hooks are Promise APIs; this acquires each scenario's runtime.
+/* oxlint-disable executor/no-manual-effect-runtime-in-tests */
 /** Register bounded native hooks without replacing Effect Vitest's test execution. */
 export const installScenarioLifecycle = () =>
   beforeEach((context) => {
@@ -37,10 +48,15 @@ export const installScenarioLifecycle = () =>
     let readyAt: number | undefined;
     let completedAt: number | undefined;
     let save = (_finishedAt: number): Effect.Effect<void> => Effect.void;
-    context.onTestFinished(() =>
+    let discard: Effect.Effect<void> = Effect.void;
+    // A passing scenario's server data is never read again; failures keep theirs for diagnosis.
+    context.onTestFinished(({ task }) =>
       Effect.runPromise(
         Scope.close(scope, outcome).pipe(
           Effect.ensuring(Clock.currentTimeMillis.pipe(Effect.flatMap(save))),
+          Effect.andThen(
+            Effect.suspend(() => (task.result?.state === "pass" ? discard : Effect.void)),
+          ),
         ),
       ),
     );
@@ -76,14 +92,13 @@ export const installScenarioLifecycle = () =>
           const plan: typeof TestPlan.Type | undefined = Object.values(scenarios).find(
             (scenario) => scenario.title === context.task.name,
           );
-          // The CLI test exercises creation and removal itself. An unused outer
-          // server would compete with the server whose lifecycle it verifies.
-          const target = yield* (plan?.fixtures === "cli" ? prepareScenario : startScenario)(
-            base,
-            context.task.name,
-          );
-          let actors: typeof Actors.Service | undefined;
-          if (plan?.fixtures === "actors") {
+          const primary = Effect.gen(function* () {
+            // The CLI test exercises creation and removal itself. An unused outer
+            // server would compete with the server whose lifecycle it verifies.
+            const target = yield* plan?.fixtures === "cli"
+              ? prepareScenario(base, context.task.name)
+              : startScenario(base, context.task.name, undefined, plan?.serverEnvironment);
+            if (plan?.fixtures !== "actors") return { target, actors: undefined };
             const fixtures = yield* Layer.buildWithScope(
               Actors.layer.pipe(
                 Layer.provideMerge(SessionClients.layer),
@@ -91,20 +106,47 @@ export const installScenarioLifecycle = () =>
               ),
               scope,
             );
-            const provisioned = yield* Actors.pipe(Effect.provideContext(fixtures));
-            actors = provisioned;
+            const actors = yield* Actors.pipe(Effect.provideContext(fixtures));
             if (plan.managementProfiles !== undefined)
               yield* Effect.forEach(
                 plan.managementProfiles,
-                (role) => prepareManagementApp(provisioned[role], provisioned.organization.id),
+                (role) => prepareManagementApp(actors[role], actors.organization.id),
                 { concurrency: 3, discard: true },
               ).pipe(Effect.provideContext(fixtures));
-          }
+            return { target, actors };
+          });
+          // Each extra scenario owns a child scope, so a test can end it while the case continues.
+          const extra = Effect.forEach(
+            plan?.sdkScenarios ?? [],
+            (label) =>
+              Effect.gen(function* () {
+                const child = yield* Scope.fork(scope);
+                const scenario = yield* createScenario(base, {
+                  id: randomBytes(16).toString("hex"),
+                  label,
+                }).pipe(Scope.provide(child));
+                return { scenario, scope: child };
+              }),
+            { concurrency: 2 },
+          );
+          const [{ target, actors }, sdkScenarios] = yield* Effect.all([primary, extra], {
+            concurrency: 2,
+          });
+          // Cloud scenarios share the run directory; only isolated scenario directories are discarded.
+          const directories = [target, ...sdkScenarios.map(({ scenario }) => scenario.target)]
+            .map(({ directory }) => directory)
+            .filter((directory) => directory !== base.directory);
+          discard = Effect.forEach(
+            directories,
+            (directory) => fs.remove(directory, { recursive: true }),
+            { discard: true },
+          ).pipe(Effect.orDie);
           readyAt = yield* Clock.currentTimeMillis;
           context.executorScenario = {
             target,
             scope,
             actors,
+            sdkScenarios,
             completed: (exit) => {
               outcome = exit;
               completedAt = Date.now();
@@ -121,3 +163,4 @@ export const installScenarioLifecycle = () =>
       { signal: context.signal },
     );
   });
+/* oxlint-enable executor/no-manual-effect-runtime-in-tests */

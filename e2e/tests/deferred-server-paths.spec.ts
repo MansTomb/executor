@@ -1,9 +1,11 @@
 /**
- * The API document and the Executor app generator load on first use. Concurrent reads get one
- * identical document, and the installed Executor app is generated from that same document.
+ * The API document, the Executor app generator and the authoring skills load on first use.
+ * Concurrent reads get one identical document, and the installed Executor app is generated from it.
+ * The app reads the published skills at runtime; framework lookups come from the management API.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
+import { HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -20,6 +22,13 @@ const Document = Schema.Struct({
 const Source = Schema.Struct({
   files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
 });
+const SkillIndex = Schema.fromJsonString(
+  Schema.Struct({
+    skills: Schema.Array(
+      Schema.Struct({ name: Schema.String, files: Schema.Array(Schema.String) }),
+    ),
+  }),
+);
 const Configuration = Schema.fromJsonString(
   Schema.Struct({
     source: Schema.Struct({ url: Schema.String }),
@@ -87,6 +96,62 @@ layer(HostedLive, { excludeTestServices: true })("Deferred server paths", (it) =
         );
         expect(configuration.source.url).toBe(`${origin}/openapi.json`);
         expect(configuration.securitySchemes).toEqual(document.components.securitySchemes);
+
+        // The app reads its skills from the published index; the server answers framework lookups.
+        expect(files.map((file) => file.path)).not.toContain("framework-reference.json");
+        const lookup = yield* api.request(
+          actors.owner,
+          "GET",
+          `${prefix}/framework/search?text=${encodeURIComponent("defineApp")}`,
+        );
+        expect(lookup.status, JSON.stringify(lookup.body)).toBe(200);
+        expect(lookup.body).toMatchObject({
+          items: expect.arrayContaining([
+            expect.objectContaining({ symbol: expect.stringContaining("defineApp") }),
+          ]),
+        });
+        expect(files.find((file) => file.path === "index.ts")?.content).toContain(
+          `${origin}/.well-known/agent-skills/index.json`,
+        );
+        const http = yield* HttpClient.HttpClient;
+        const published = (path: string) =>
+          http.get(`${origin}/.well-known/agent-skills/${path}`).pipe(
+            Effect.flatMap((response) =>
+              Effect.map(response.text, (text) => ({
+                status: response.status,
+                contentType: response.headers["content-type"],
+                text,
+              })),
+            ),
+          );
+        const index = yield* published("index.json");
+        expect(index.status).toBe(200);
+        const { skills } = yield* Schema.decodeUnknownEffect(SkillIndex)(index.text);
+        // Every skill directory the host ships is published, with the entry skill beside the guides.
+        expect(skills.map((skill) => skill.name).sort()).toEqual([
+          "app-authoring",
+          "code-mode",
+          "executor",
+        ]);
+        expect(skills.find((skill) => skill.name === "executor")?.files.toSorted()).toEqual([
+          "SKILL.md",
+          "feedback.md",
+        ]);
+        expect(skills.find((skill) => skill.name === "app-authoring")?.files).toContain("SKILL.md");
+        for (const skill of skills)
+          for (const path of skill.files) {
+            const file = yield* published(`${skill.name}/${path}`);
+            expect(file.status).toBe(200);
+            expect(file.contentType).toBe("text/markdown; charset=utf-8");
+            expect(file.text.length).toBeGreaterThan(0);
+          }
+        expect((yield* published("app-authoring/SKILL.md")).text).toMatch(
+          /^---\nname: app-authoring\n/,
+        );
+        expect((yield* published("executor/SKILL.md")).text).toMatch(/^---\nname: executor\n/);
+        expect((yield* published("app-authoring/missing.md")).status).toBe(404);
+        // Feedback guidance belongs to the entry skill, not the authoring guide.
+        expect((yield* published("app-authoring/feedback.md")).status).toBe(404);
       }),
     ),
   );

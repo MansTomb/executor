@@ -1,5 +1,7 @@
 /** Immutable deployments, source files and expected build errors. */
 import { Schema } from "effect";
+import { ApiError } from "@executor-js/utils/api-error";
+import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { AppCodeId, AppId, BuildId, DeploymentId, OwnerId } from "./shared.ts";
 import { SourceCommit, SourceFiles } from "./source.ts";
@@ -60,26 +62,71 @@ export const DeploymentNotFound = UserFacingError.define({
 export type DeploymentNotFound = typeof DeploymentNotFound.Type;
 
 /** The app changed since the caller read it; retry against the current pointer. */
-export class AppDeploymentChanged extends Schema.TaggedError<AppDeploymentChanged>()(
-  "AppDeploymentChanged",
-  { app: AppId, expected: Schema.NullOr(DeploymentId), current: Schema.NullOr(DeploymentId) },
-  {
-    httpApiStatus: 409,
-    description:
-      "The active deployment changed. Read the latest source and reconcile changes before retrying.",
+export const AppDeploymentChanged = ApiError.define({
+  tag: "AppDeploymentChanged",
+  status: 409,
+  fields: {
+    app: AppId,
+    expected: Schema.NullOr(DeploymentId),
+    current: Schema.NullOr(DeploymentId),
   },
-) {}
+  message:
+    "The app's active deployment changed. Read the latest source and reconcile changes before retrying.",
+});
+export type AppDeploymentChanged = typeof AppDeploymentChanged.Type;
+
+/**
+ * A source location. Nested, because runtimes such as Bun set their own `line` and `column`
+ * properties on every Error instance. `line` and `column` are both 1-based, and `column` counts
+ * UTF-16 code units, as editors and stack traces print them. esbuild reports 0-based columns in
+ * UTF-8 bytes and source maps 0-based columns in UTF-16 code units; they are converted where their
+ * positions become a `SourceLocation`.
+ */
+export const SourceLocation = Schema.Struct({
+  file: Schema.String.check(Schema.isMaxLength(1024)),
+  line: Schema.optional(Schema.Int),
+  column: Schema.optional(Schema.Int),
+});
+export type SourceLocation = typeof SourceLocation.Type;
+
+/** The build step that failed. */
+export const BuildStage = Schema.Literals([
+  "source",
+  "dependencies",
+  "compile",
+  "declaration",
+  "retain",
+  /** Applying the app's SQL migrations to its database, before activation. */
+  "migrate",
+]);
 
 /** The build did not complete; nothing was retained, created or changed. */
 export class DeploymentBuildFailed extends Schema.TaggedError<DeploymentBuildFailed>()(
   "DeploymentBuildFailed",
-  { owner: OwnerId, name: Schema.NonEmptyString, reason: Schema.String },
+  {
+    owner: OwnerId,
+    name: Schema.NonEmptyString,
+    reason: Schema.String,
+    /** The build step that failed, when the runtime reported it. */
+    stage: Schema.optional(BuildStage),
+    /** The first failing source location, when known. */
+    location: Schema.optional(SourceLocation),
+    /** The stage, location and underlying failure, such as the compiler's own errors. */
+    message: Schema.String,
+  },
   {
     httpApiStatus: 422,
     description:
-      "The build failed: no deployment was retained, no new app was created, and an existing app's active deployment is unchanged. Identified by (owner, name) because a first deploy has no app id yet. `reason` is a safe summary without source or secrets.",
+      "The build failed: no deployment was retained, no new app was created, and an existing app's active deployment is unchanged. Identified by (owner, name) because a first deploy has no app id yet. `message` describes the failing stage, source location and underlying error, such as compiler output or the error the app raised while declaring its requirements. Builds bind no accounts, so it holds no credentials.",
   },
-) {}
+) {
+  /** The name is the deployer's and the message quotes their source; telemetry records the stage. */
+  get [RecordedMessage]() {
+    return this.stage === undefined
+      ? "The build failed"
+      : `The build failed at its ${this.stage} stage`;
+  }
+}
 
 /** The compiler exhausted its memory before a new deployment could be activated. */
 export const BuildMemoryExceeded = UserFacingError.define({

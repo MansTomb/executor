@@ -7,7 +7,7 @@ import { Stage } from "alchemy/Stage";
 import type { Worker } from "alchemy/Cloudflare";
 import * as Provider from "alchemy/Provider";
 import { Effect, Redacted, Schedule, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { appDomainControlSecretId } from "./app-domain-control.ts";
 
 interface DomainLifecycleProps {
@@ -15,6 +15,8 @@ interface DomainLifecycleProps {
   readonly workerName: string;
   /** The worker name is available during precreate; its hash waits for the completed upload. */
   readonly deployment: Worker<never>["Attributes"]["hash"];
+  /** The controller Worker holds the DNS journal, so it is deleted only after the drain. */
+  readonly controller: Worker<never>["Attributes"]["hash"];
 }
 
 interface DomainControl {
@@ -32,7 +34,7 @@ export class AppDomainLifecycleFailed extends Schema.TaggedError<AppDomainLifecy
   }
 }
 
-/** This resource depends on the API Worker, so Alchemy drains team DNS before deleting that Worker. */
+/** This resource depends on both Workers, so Alchemy drains team DNS before deleting either. */
 export type AppDomainLifecycle = Resource<
   "Executor.AppDomainLifecycle",
   DomainLifecycleProps,
@@ -88,6 +90,6 @@ export const AppDomainLifecycleProvider = () =>
 /** Resume only after the lifecycle barrier and Worker are committed, so failures cannot lose teardown credentials. */
 export const ResumeAppDomains = Action(
   "ResumeAppDomains",
-  (input: DomainControl & { readonly deployment: Worker<never>["Attributes"]["hash"] }) =>
+  (input: DomainControl & Pick<DomainLifecycleProps, "deployment" | "controller">) =>
     control(input, "resume"),
 );

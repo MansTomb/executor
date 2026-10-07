@@ -6,7 +6,7 @@ import { RuntimeContext } from "alchemy";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { cloudEmulators } from "./emulators.ts";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 import { Onboarding, OnboardingUnavailable, TeamIconNotFound } from "../contracts/onboarding.ts";
 import { companyLookupLive } from "../implementation/company-profile.ts";
 import { makeOnboarding } from "../implementation/onboarding.ts";

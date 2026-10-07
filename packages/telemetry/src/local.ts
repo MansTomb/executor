@@ -1,11 +1,6 @@
 /** Local composition owns persistent files and its optional bundled collector. */
 import { Config, Effect, Layer, Logger, Path } from "effect";
-import {
-  FetchHttpClient,
-  HttpClient,
-  HttpClientError,
-  HttpClientRequest,
-} from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { CurrentTelemetryClient } from "./transport.ts";
 import { telemetryConfig } from "./config.ts";
 import { startCollector } from "./collector.ts";
@@ -13,7 +8,7 @@ import { rotatingJsonLogger } from "./files.ts";
 import { telemetryLayer } from "./layer.ts";
 import { startProcessMetrics } from "./process.ts";
 
-/** Local hosts keep JSONL logs; absent explicit exporters, they own a loopback Motel process. */
+/** Local hosts keep JSONL logs; absent explicit exporters, they own a loopback Motel workerd. */
 export const localTelemetry = (directory: string, service: string) =>
   Layer.unwrap(
     Effect.gen(function* () {
@@ -33,11 +28,7 @@ export const localTelemetry = (directory: string, service: string) =>
         const bundle = yield* Config.String("EXECUTOR_MOTEL_BUNDLE").pipe(
           Config.withDefault(defaultBundle),
         );
-        const ready = yield* startCollector(
-          diagnostics,
-          bundle,
-          path.sep === "\\" ? "bun.exe" : "bun",
-        );
+        const ready = yield* startCollector(diagnostics, bundle);
         const client = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
         // This internal address never reaches the network. Resolve only telemetry
         // requests after readiness; native exporter buffers/timeouts own delivery.

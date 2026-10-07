@@ -3,26 +3,28 @@
 Save this as `index.ts`:
 
 ```ts
-import { query, defineApp, object, string } from "apps";
+import { query, defineApp, object, router, string } from "apps";
 
 const Greet = object({ name: string().default("world") });
 
 export default defineApp(
   { accounts: {} },
   {
-    queries: {
+    tools: router({
       greet: query(
         { description: "Greet someone by name", input: Greet },
         async (_ctx, { name }) => ({ message: `Hello, ${name}!` }),
       ),
-    },
+    }),
   },
 );
 ```
 
 Declare `query(options, handler)` or `mutation(options, handler)`. Options include
-`description`, `input`, optional `output`, and optional `approval`. Put the result
-in the matching `queries` or `mutations` catalog. Both become agent tools.
+`description`, `input`, optional `output`, and optional `approval`. Put them in the
+app's `tools` router; every query and mutation becomes an agent tool. The kind
+belongs to the operation, not its name: the tool above is `greet`, called as
+`tools.<app>.greet(...)`.
 Queries may fetch external APIs; they cannot write app-owned data. Return JSON-compatible values:
 objects, arrays, strings, finite numbers, booleans and null. Do not return a
 Response, Date, stream, SDK class instance, undefined or BigInt.
@@ -33,11 +35,60 @@ The schema helpers are `object`, `string`, `number`, `boolean`, `array`,
 type. `object` strips undeclared properties. `decodeJson(response, schema)`
 checks HTTP status and parses a JSON response.
 
+## Group tools with routers
+
+Nest routers to group related tools. Keys form the tool path, like tRPC:
+
+```ts
+tools: router({
+  health: query({ input: object({}) }, async () => "ok"),
+  issues: router(
+    {
+      list: query({ input: object({}) }, listIssues),
+      close: mutation({ input: object({ id: string() }) }, closeIssue),
+    },
+    {
+      title: "Issues",
+      description: "Triage issues in the Acme tracker.",
+      instructions: "Search before creating an issue. Never close one you did not open.",
+    },
+  ),
+}),
+```
+
+These tools are `health`, `issues.list` and `issues.close`. A tool named `health`
+is an ordinary query; checking that an account works is the provider's `health`
+function ([accounts.md](accounts.md#check-an-account)). Keys start with a
+letter or `_` and contain no dots; `__proto__`, `constructor` and `prototype` are
+reserved. Mount each mutation at one path. Router options are `title`,
+`description`, `instructions`, `icons` and `tags` (tag name to description).
+Agents see each router's title and description beside its tools.
+
+`instructions` become a skill read through the MCP `skills` tool. Router skills
+have their own names: `tools` for the root router and `tools-<path>` below it,
+such as `tools-issues`. A path with capitals, `_`, `-`, or over 64 characters
+gets a slug and a hash, such as `tools-issues-list-` plus ten digits for
+`issues_list`. The router's catalog entry names its skill. Don't name your own
+skills `tools` or `tools-...` unless you mean to replace a router's
+instructions: a packaged or dynamic skill with a router skill's name replaces it.
+Router instructions never fail the skills read; a source that cannot be read
+just contributes no skill.
+
+Mount a protocol source under a key to keep several sources in one app. A router
+that fails to load, such as an unreachable MCP server, is reported on its own; the
+app's other tools still load. `router(source, options)` overrides a source's own
+title, description or instructions. An app that is a single source can use it as
+`tools` directly.
+
+Declare a router in its own module with its handler contexts, for example
+`router<QueryContext<typeof requirements>, MutationContext<typeof requirements>>({...})`,
+or let `defineApp` type inline handlers.
+
 ## Ship instructions with your app
 
-Return skills in the second argument to `defineApp`, beside queries, mutations
-and workflows. Load remote skills with `dynamicSkills({ list })`, like
-`dynamicTools({ list, resolve })` for tools. Executor calls `list` only when
+Return skills in the second argument to `defineApp`, beside tools and
+workflows. Load remote skills with `dynamicSkills({ list })`, like
+`dynamicRouter({ list, resolve })` for tools. Executor calls `list` only when
 skills are read:
 
 ```ts
@@ -60,7 +111,7 @@ export default defineApp({ accounts: {} }, async (ctx) => ({
 
 Tool listing and calls then never fetch remote skills, and a skill source
 failure does not break tools. `skills` is the static catalog: an array of
-resolved skills. Dynamic skills are added to it.
+resolved skills. Dynamic skills and router instructions are added to it.
 
 Each resolved skill has `name`, `description` and `files: {path, content}[]`.
 Files are relative to the skill directory and include the full `SKILL.md` with
@@ -71,12 +122,53 @@ Names match their directories. Names are at most 64 characters, descriptions
 
 `githubSkills` resolves `ref` (default `HEAD`) once per call and reads all files
 from that commit. With `cache: ctx.cache`, it keeps each commit's file list, so
-later reads of an unchanged commit skip the file listing. `wellKnownSkills({url, fetch: ctx.fetch, signal: ctx.signal})`
+later reads of an unchanged commit skip the file listing.
+
+A private repository needs a GitHub account. Pass the account and its token;
+the token needs read access to the repository's contents. Declare GitHub's
+hosts so the app holds only a handle and Executor sends the token on each
+request of the read:
+
+```ts
+import { defineApp, defineProvider, dynamicSkills, object, secrets, string } from "apps";
+import { githubSkills } from "apps/skills";
+
+const github = defineProvider({
+  name: "GitHub",
+  hosts: ["github.com", "raw.githubusercontent.com"],
+  auth: { token: secrets({ label: "Token", fields: object({ token: string() }) }) },
+});
+
+export default defineApp({ accounts: { github } }, async (ctx) => ({
+  dynamicSkills: dynamicSkills({
+    list: () =>
+      githubSkills({
+        repo: "example-org/private-skills",
+        path: "skills",
+        account: ctx.accounts.github,
+        token: ctx.accounts.github.fields.token,
+        fetch: ctx.fetch,
+        signal: ctx.signal,
+        cache: ctx.cache,
+      }),
+  }),
+}));
+```
+
+The catalog is cached in that account's scope, so other accounts never read
+it. A token GitHub rejects fails the read naming the account. Without a token,
+a private repository reads as missing.
+
+`wellKnownSkills({url, fetch: ctx.fetch, signal: ctx.signal})`
 loads a site's `/.well-known/agent-skills/index.json`. Its directory index is
 `{skills: [{name, version?, files: ["SKILL.md", "references/example.md"]}]}`.
 Files live beneath the named directory beside that index. Helpers return complete
 UTF-8 text bundles and refuse redirects. Limits are
-1,000 files, 2 MB per response, and 20 MB total.
+1,000 files, 2 MB per response, and 20 MB total. With `cache: ctx.cache`, a
+catalog older than `freshFor` (default 5 minutes) is never served unchecked: one
+request (the index, or the ref's commit) confirms it or loads the new publication
+first. Give every index entry a `version` that changes with its files, or each
+check reloads them. A check that fails or takes over 5 s fails the read.
 
 Omit `skills` to load packaged `skills/<name>/SKILL.md` and its text resources.
 An explicit `skills` value replaces that default; `skills: []` disables it.
@@ -86,8 +178,8 @@ skills combine without extra code. A name in both fails the read.
 `folderSkills({ files: ctx.files, path: "guides" })` selects another packaged
 folder. Its immediate subdirectories must be skill directories. Loose files
 beside them, such as `README.md`, are ignored. A missing folder returns `[]`.
-`ctx.files` contains this deployment's text files on every runtime; it never
-reads host files. All sources use one parser. Only selected folders are
+`ctx.files` contains this deployment's text files outside `ui/` on every
+runtime; it never reads host files. All sources use one parser. Only selected folders are
 parsed, when the skills load. Invalid selected folders fail the read.
 
 The MCP `skills` tool lists summaries with `{}` or `{app: "installed-slug"}`.
@@ -125,7 +217,9 @@ A custom synchronous or async callback receives `toolName`, decoded `toolInput`,
 and `signal`. Return `approved`, `denied`, or `user-approval`. The constructors infer the callback input from its schema. Annotate a shared
 function with `Approval<Input>` from `apps/operations/approval`.
 Assign the same function to several tools to share a policy. Attach approval to
-MCP, OpenAPI or GraphQL operations with `withApproval(operation, policy)`.
+one shared operation with `withApproval(operation, policy)`, and to the tools of
+an MCP, OpenAPI or GraphQL router with `withApprovals(router, (tool, name) => policy)`
+([integrations.md](integrations.md#approvals-for-imported-tools)).
 
 Only the selected tool's callback runs, after input validation. Omitted approval
 permits execution. Invalid decisions and callback failures prevent the tool body
@@ -175,36 +269,39 @@ Use `ctx.cache.get({ key, schema, freshFor, staleFor, load })` for shared JSON.
 Put every result dependency in the key. Use `ctx.cache.forAccount(account)` for
 private results; the host also scopes entries to current credentials. Use the
 loader's `fetch`, `signal`, and `cache` so stale refreshes can finish after the
-request. Errors are not cached. `invalidate(key)` also fences pending loaders.
+request. Pass `stale: "revalidate"` to await the load past `freshFor` instead of
+serving the old value; the loader can `read(key, schema)` the old value to confirm
+it cheaply. Errors are not cached. `invalidate(key)` also fences pending loaders.
 
-Use `dynamicTools({ list, resolve })` for large or remote catalogs. List
-qualified tool metadata separately from resolving one query or mutation.
-`accountOperations` preserves lazy resolution. Resolving a tool does not require
-listing all tools. Input validation and approvals still run on each call.
+Use `dynamicRouter({ list, resolve })` for large or remote catalogs. List tool
+metadata separately from resolving one query or mutation. `accountRouter`
+preserves lazy resolution. Resolving a tool does not require listing all tools.
+Input validation and approvals still run on each call.
 
-Assign the resolver to the app's `dynamicTools` field. The helper returns only
-`list` and `resolve`, never static query or mutation maps. Both static maps are
-optional, so an app can contain only dynamic tools.
+A dynamic router can be the app's whole `tools` value, or be mounted under a key.
+Names are relative to the router and may contain dots. Mark queries with
+`readOnly: true`; other tools are mutations. An optional `meta()` supplies the
+router's title, description and instructions.
 
 ```ts
 export default defineApp(
   { accounts: {} },
   {
-    dynamicTools: dynamicTools({
+    tools: dynamicRouter({
       list: async () => [
         {
-          name: "queries.ping",
+          name: "ping",
           description: "Return pong",
           inputSchema: { type: "object", properties: {} },
           readOnly: true,
         },
       ],
       resolve: async (name) =>
-        name === "queries.ping" ? query({ input: object({}) }, async () => "pong") : undefined,
+        name === "ping" ? query({ input: object({}) }, async () => "pong") : undefined,
     }),
   },
 );
 ```
 
-Names include `queries.` or `mutations.`. `list` describes available tools;
-`resolve` returns the matching query or mutation declaration.
+`list` describes available tools; `resolve` returns the matching query or
+mutation declaration.

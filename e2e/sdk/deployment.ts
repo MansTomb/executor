@@ -10,8 +10,8 @@ import {
   Schedule,
   Schema,
 } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, emulatorRequest } from "../support/emulators.ts";
 

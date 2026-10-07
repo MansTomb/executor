@@ -19,6 +19,7 @@
  * Attributes outside these namespaces are the product's own and pass through.
  */
 import { Effect, Exit, Layer, Option, Schema, Tracer } from "effect";
+import { recordedCause } from "./recorded-failure.ts";
 
 class LogicalOperationFailed extends Schema.TaggedError<LogicalOperationFailed>()(
   "LogicalOperationFailed",
@@ -95,12 +96,15 @@ const allowlistedSpan = (span: Tracer.Span): Tracer.Span => ({
   },
   // A successful transport can carry a failed domain operation. The producer
   // explicitly marks that outcome; arbitrary result payloads are never inspected.
+  // A failure records the fixed message an error declares in place of an app's text.
   end: (endTime: bigint, exit: Exit.Exit<unknown, unknown>) =>
     span.end(
       endTime,
-      Exit.isSuccess(exit) && span.attributes.get("executor.outcome") === "failed"
-        ? Exit.fail(new LogicalOperationFailed())
-        : exit,
+      Exit.isSuccess(exit)
+        ? span.attributes.get("executor.outcome") === "failed"
+          ? Exit.fail(new LogicalOperationFailed())
+          : exit
+        : Exit.failCause(recordedCause(exit.cause)),
     ),
   attribute: (key: string, value: unknown) => {
     if (spanAttributeAllowed(key)) span.attribute(key, value);

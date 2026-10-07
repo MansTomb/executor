@@ -3,16 +3,18 @@ import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import type { Page } from "playwright";
 import { Browser } from "./browser.ts";
+import { openThroughBrowser } from "./in-app-navigation.ts";
 import { holdQuery, refreshVisiblePage } from "./query-transition.ts";
+import { appsManifest, firstMigration } from "./apps-release.ts";
 
 /** A small deployed app exposes static documents, dynamic workflows, data and a private page. */
 export const appBrowserFiles = [
+  firstMigration,
   {
     path: "index.ts",
-    content: `import { defineApp, defineDatabase, table, string, query, workflow, object } from "apps";
-const database = defineDatabase({ notes: table({ text: string() }) });
-export default defineApp({ accounts: {}, database }, {
-  queries: { hello: query({ input: object({}) }, async () => "Hello") },
+    content: `import { defineApp, string, query, workflow, object, router } from "apps";
+export default defineApp({ accounts: {} }, {
+  tools: router({ hello: query({ input: object({}) }, async () => "Hello") }),
   workflows: {
     report: workflow({ description: "Prepare a small report", input: object({}), output: object({ message: string() }) }, async (ctx) => ctx.step.do("compose", async () => ({ message: "Report ready" }))),
     wait: workflow({ input: object({}) }, async (ctx) => { await ctx.step.sleep("hold", "1 day"); return null; }),
@@ -41,6 +43,7 @@ export default defineApp({ accounts: {}, database }, {
     content:
       "<!doctype html><html><head><title>Example</title></head><body><h1>Example app</h1></body></html>",
   },
+  appsManifest,
 ];
 
 /** Hold and fail actual HTTP reads while preserving the user's selected file. */
@@ -61,8 +64,9 @@ export const checkAppBrowser = (input: {
       "continue",
       { allRequests: true },
     );
-    yield* browser.use("Open Skills while its catalog is loading", (page) =>
-      page.goto(`${input.url}?view=skills`),
+    yield* openThroughBrowser(
+      "Open Skills while its catalog is loading",
+      `${input.url}?view=skills`,
     );
     yield* catalog.requested;
     expect(
@@ -174,7 +178,7 @@ export const checkAppBrowser = (input: {
     yield* browser.use("Overview tools have loaded", (page) =>
       page
         .getByRole("region", { name: "App tools preview" })
-        .getByText("queries.hello", { exact: true })
+        .getByText("hello", { exact: true })
         .waitFor({ state: "visible" }),
     );
     expect(

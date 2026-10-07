@@ -1,7 +1,7 @@
 import type { SelectedAccounts } from "@executor-js/sdk";
 import { ProfileStatus } from "@executor-js/ui/dashboard/profile-status";
 import { profileMutations } from "../../contracts/profiles.ts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { Failure } from "../components/common.tsx";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -14,10 +14,15 @@ import {
 import type { DashboardAccount } from "@executor-js/local-server/contracts";
 import { Cause, Option, Schema } from "effect";
 import { ToolBrowser } from "@executor-js/ui/dashboard/tools";
+import { ToolRunner, toolRunContext } from "@executor-js/ui/dashboard/tool-runner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Key01Icon } from "@hugeicons/core-free-icons";
-import { toolDetailAtom, toolsAtom, toolListAtom } from "../../contracts/api.ts";
-import { appToolReadiness, accountSetupFailure } from "../../contracts/dashboard.ts";
+import { callToolAtom, toolDetailAtom, toolsAtom, toolCatalogAtom } from "../../contracts/api.ts";
+import {
+  appToolReadiness,
+  accountSetupFailure,
+  unfilledAccountSlots,
+} from "../../contracts/dashboard.ts";
 import { Button } from "@executor-js/ui/components/button";
 import { Link, useNavigate } from "@tanstack/react-router";
 
@@ -28,6 +33,8 @@ interface AppToolsProps {
   readonly selected: string | undefined;
   readonly profile?: ProfileId | undefined;
   readonly revision?: number | undefined;
+  /** The selected profile's name in the page's profile picker. */
+  readonly label: string;
 }
 
 function AccountSetup({
@@ -73,7 +80,9 @@ function SingleAppTools(props: AppToolsProps) {
         />
       );
     case "reconnect":
-      return <AccountReconnect accounts={readiness.accounts} />;
+      return <AccountReconnect accounts={readiness.accounts} status="Needs sign-in" />;
+    case "rejected":
+      return <AccountReconnect accounts={readiness.accounts} status="Sign-in rejected" />;
     case "unavailable":
       return (
         <p role="alert" className="text-sm text-muted-foreground">
@@ -86,7 +95,13 @@ function SingleAppTools(props: AppToolsProps) {
 }
 
 /** An expired sign-in is an account action, not an empty tool browser or retryable request. */
-function AccountReconnect({ accounts }: { readonly accounts: ReadonlyArray<DashboardAccount> }) {
+function AccountReconnect({
+  accounts,
+  status,
+}: {
+  readonly accounts: ReadonlyArray<DashboardAccount>;
+  readonly status: string;
+}) {
   return (
     <div className="accounts-section">
       {accounts.map((account) => (
@@ -99,7 +114,7 @@ function AccountReconnect({ accounts }: { readonly accounts: ReadonlyArray<Dashb
             <h2>
               {account.label || account.providerName}{" "}
               <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
-                Needs sign-in
+                {status}
               </span>
             </h2>
             <p>Sign in again to load tools.</p>
@@ -116,7 +131,15 @@ function AccountReconnect({ accounts }: { readonly accounts: ReadonlyArray<Dashb
 }
 
 /** Browse the complete live tool catalog with a stable, separate schema inspector. */
-function LiveAppTools({ app, accounts, selected, profile, revision, selection }: AppToolsProps) {
+function LiveAppTools({
+  app,
+  accounts,
+  selected,
+  profile,
+  revision,
+  selection,
+  label,
+}: AppToolsProps) {
   const navigate = useNavigate();
   const catalog = {
     app: app.id,
@@ -145,15 +168,21 @@ function LiveAppTools({ app, accounts, selected, profile, revision, selection }:
     : Option.none();
   if (Option.isSome(reconnect)) {
     const account = accounts.find((account) => account.id === reconnect.value.account);
-    if (account !== undefined) return <AccountReconnect accounts={[account]} />;
+    if (account !== undefined)
+      return <AccountReconnect accounts={[account]} status="Needs sign-in" />;
   }
   return (
     <ToolBrowser
       Failure={Failure}
       key={`${app.id}:${app.activeDeployment}:${profile}:${revision}:${JSON.stringify(selection)}`}
-      query={toolListAtom(catalog)}
+      query={toolCatalogAtom(catalog)}
       detail={(tool) => toolDetailAtom({ ...catalog, tool: tool.name })}
       selected={selected}
+      empty={
+        unfilledAccountSlots(app, selection).length > 0 ? (
+          <AccountSetup app={app} profile={profile} accounts={accounts} disconnected={false} />
+        ) : undefined
+      }
       onSelect={(tool) => {
         void navigate({
           to: "/apps/$appId",
@@ -161,6 +190,23 @@ function LiveAppTools({ app, accounts, selected, profile, revision, selection }:
           search: { view: "tools", tool, profile },
         });
       }}
+      renderAction={(tool) => (
+        <ToolRunner
+          key={tool.name}
+          tool={tool.name}
+          call={callToolAtom({
+            app: app.id,
+            profile,
+            expectedProfileRevision: revision,
+            deployment: app.activeDeployment ?? undefined,
+            tool: tool.name,
+            kind: tool.readOnly === true ? "query" : "mutation",
+          })}
+          detail={toolDetailAtom({ ...catalog, tool: tool.name })}
+          Failure={Failure}
+          context={profile === undefined ? undefined : toolRunContext(label, selection, accounts)}
+        />
+      )}
     />
   );
 }

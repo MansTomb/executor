@@ -8,20 +8,12 @@ import { Config, Effect, Schema } from "effect";
 import { cloudDevelopment } from "../contracts/development.ts";
 import { cloudDevelopmentDatabaseUrl } from "../contracts/database.ts";
 
-/** Own a persistent local Postgres instance and apply schemas before the Worker starts. */
+/** Own a persistent local Postgres instance and apply schemas before the Worker connects to it. */
 export const developmentDatabase = Effect.gen(function* () {
   const configuration = yield* cloudDevelopment;
   const password = yield* Config.Redacted("CLOUD_DEV_DATABASE_PASSWORD").pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.Redacted(Schema.NonEmptyString))),
   );
-  const origin = {
-    scheme: "postgresql" as const,
-    host: "127.0.0.1",
-    port: configuration.databasePort,
-    user: "executor",
-    password,
-    database: "executor",
-  };
   const url = cloudDevelopmentDatabaseUrl(password, configuration.databasePort);
   const external = yield* Config.Boolean("CLOUD_DEV_EXTERNAL_DATABASE").pipe(
     Config.withDefault(false),
@@ -56,7 +48,7 @@ export const developmentDatabase = Effect.gen(function* () {
     memo: false,
     timeout: "2 minutes",
   });
-  return migrations.hash.pipe(Output.map(() => origin));
+  return migrations.hash.pipe(Output.map(() => url));
 });
 
 /** Use native Worker assets for built previews; Alchemy owns Vite for source development. */

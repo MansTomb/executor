@@ -4,7 +4,7 @@ import { Settings05Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { App } from "@executor-js/sdk";
 import { Exit, type Cause } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import {
   lazy,
   Suspense,
@@ -31,12 +31,21 @@ import {
   withSkillDescription,
 } from "./skill-document.ts";
 
-// Readers never download the editor; it loads when an editable file opens.
+/**
+ * Readers never download the editor; it loads when an editable file opens. The editor reads
+ * browser storage while it renders, so a server never renders it. A server build drops each
+ * import below: every module a Worker uploads is compiled whenever one of its isolates starts.
+ */
+const serverRender = () => Promise.reject(new Error("The skill editor renders only in a browser"));
 const VisualEditor = lazy(() =>
-  import("./markdown-editor.tsx").then((module) => ({ default: module.VisualEditor })),
+  (import.meta.env.SSR ? serverRender() : import("./markdown-editor.tsx")).then((module) => ({
+    default: module.VisualEditor,
+  })),
 );
 const VimEditor = lazy(() =>
-  import("./vim-editor.tsx").then((module) => ({ default: module.VimEditor })),
+  (import.meta.env.SSR ? serverRender() : import("./vim-editor.tsx")).then((module) => ({
+    default: module.VimEditor,
+  })),
 );
 
 const vimKey = "executor:skill-editor:vim";

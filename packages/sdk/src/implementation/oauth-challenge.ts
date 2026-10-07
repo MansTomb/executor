@@ -1,10 +1,12 @@
-/**
- * Read an RFC 6750 Bearer challenge and its RFC 9728 metadata URL without mistaking another
- * scheme's parameters for Bearer. Undefined when the header is absent or malformed.
- */
-const bearerChallenge = (
+/** Read one Bearer challenge without using another scheme's parameters or ambiguous challenges. */
+export const bearerChallenge = (
   header: string | undefined,
-): { readonly bearer: boolean; readonly metadata: string | undefined } | undefined => {
+):
+  | {
+      readonly resourceMetadata?: string;
+      readonly scopes?: readonly string[];
+    }
+  | undefined => {
   if (header === undefined) return undefined;
   const parts: string[] = [];
   let part = "";
@@ -31,7 +33,8 @@ const bearerChallenge = (
   parts.push(part.trim());
   let scheme: string | undefined;
   let metadata: string | undefined;
-  let bearer = false;
+  let scope: string | undefined;
+  let bearers = 0;
   for (const part of parts) {
     if (!part) continue;
     // A new scheme is separated from its first parameter by whitespace.
@@ -39,8 +42,10 @@ const bearerChallenge = (
       ? null
       : /^([!#$%&'*+.^_`|~A-Za-z0-9-]+)(?:[ \t]+(.*))?$/.exec(part);
     const parameter = challenge ? challenge[2] : part;
-    if (challenge) scheme = challenge[1]?.toLowerCase();
-    if (challenge && scheme === "bearer") bearer = true;
+    if (challenge) {
+      scheme = challenge[1]?.toLowerCase();
+      if (scheme === "bearer" && ++bearers > 1) return undefined;
+    }
     if (parameter === undefined) continue;
     const field = /^([!#$%&'*+.^_`|~A-Za-z0-9-]+)[ \t]*=[ \t]*("(?:\\.|[^"\\])*"|[^\s,"]+)$/.exec(
       parameter,
@@ -49,18 +54,33 @@ const bearerChallenge = (
       scheme = undefined;
       continue;
     }
-    if (scheme !== "bearer" || field[1]?.toLowerCase() !== "resource_metadata") continue;
+    if (scheme !== "bearer") continue;
+    const name = field[1]?.toLowerCase();
+    if (name !== "resource_metadata" && name !== "scope") continue;
     const raw = field[2];
-    if (raw === undefined || metadata !== undefined) return undefined;
-    metadata = raw.startsWith('"') ? raw.slice(1, -1).replace(/\\(.)/g, "$1") : raw;
+    if (raw === undefined) return undefined;
+    const value = raw.startsWith('"') ? raw.slice(1, -1).replace(/\\(.)/g, "$1") : raw;
+    if (name === "resource_metadata") {
+      if (metadata !== undefined) return undefined;
+      metadata = value;
+    } else {
+      // RFC 6749 scope-token: printable ASCII excluding quote and backslash, joined by spaces.
+      if (
+        scope !== undefined ||
+        !/^[\x21\x23-\x5B\x5D-\x7E]+(?: [\x21\x23-\x5B\x5D-\x7E]+)*$/.test(value)
+      )
+        return undefined;
+      scope = value;
+    }
   }
-  return { bearer, metadata };
+  return bearers === 0
+    ? undefined
+    : {
+        ...(metadata === undefined ? {} : { resourceMetadata: metadata }),
+        ...(scope === undefined ? {} : { scopes: scope.split(" ") }),
+      };
 };
 
 /** Read Bearer metadata without mistaking another scheme's parameters for Bearer. */
 export const bearerResourceMetadata = (header: string | undefined): string | undefined =>
-  bearerChallenge(header)?.metadata;
-
-/** Whether a resource challenged with the RFC 6750 Bearer scheme. */
-export const bearerChallenged = (header: string | undefined): boolean =>
-  bearerChallenge(header)?.bearer ?? false;
+  bearerChallenge(header)?.resourceMetadata;

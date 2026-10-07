@@ -7,11 +7,12 @@ import { grantOAuthPlugins } from "@executor-js/mcp-auth/oauth";
 import {
   GrantId,
   mcpOAuthResources,
-  requestedMcpMode,
+  requestedMcpAddress,
   mcpResource,
   mcpResourceMetadataUrl,
 } from "@executor-js/mcp-auth";
 import { makeAuthDatabase } from "@executor-js/mcp-auth/node-database";
+import type { ConnectionId, ConnectionPolicy } from "@executor-js/mcp-auth/connections";
 import { pgliteLayer } from "fumadb-effect/pglite";
 import {
   Effect,
@@ -24,7 +25,8 @@ import {
   Clock,
   Option,
 } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import type { ServerConfig } from "../contracts/config.ts";
 import { localRequest, sessionCookie, type LocalAuth } from "./auth.ts";
 
@@ -34,10 +36,22 @@ export class LocalMcpUnauthorized extends Schema.TaggedError<LocalMcpUnauthorize
   {},
 ) {}
 /** Auth database failures stay distinct from invalid credentials. */
-export class LocalMcpAuthUnavailable extends Schema.TaggedError<LocalMcpAuthUnavailable>()(
-  "LocalMcpAuthUnavailable",
-  {},
-) {}
+export const LocalMcpAuthUnavailable = UserFacingError.define({
+  tag: "LocalMcpAuthUnavailable",
+  status: 503,
+  title: "MCP authorization unavailable",
+  description:
+    "Executor could not read or update its local MCP authorization storage, so it could not check MCP credentials.",
+  recovery: {
+    action:
+      "Try again. If this continues, copy the fix prompt into your agent to check Executor’s authorization storage.",
+    instructions:
+      "Inspect the local Executor instance’s MCP authorization database and safe diagnostics. Restore storage access without deleting grants, resetting credentials, or weakening authorization.",
+  },
+  retryable: true,
+});
+/** Parsed LocalMcpAuthUnavailable failure. */
+export type LocalMcpAuthUnavailable = typeof LocalMcpAuthUnavailable.Type;
 const failure = (error: unknown) =>
   isAPIError(error) && [400, 401, 403].includes(error.statusCode)
     ? new LocalMcpUnauthorized()
@@ -68,7 +82,10 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
       origin,
       scopes: ["mcp", "offline_access"],
       resources: mcpOAuthResources(origin),
-      selectResource: () => Effect.succeed("local"),
+      selectResource: (_ctx, _userId, required) =>
+        required === undefined || required === "local"
+          ? Effect.succeed("local")
+          : Effect.fail(new APIError("FORBIDDEN")),
       checkResource: (_ctx, _userId, resource) =>
         resource === "local" ? Effect.void : Effect.fail(new APIError("FORBIDDEN")),
     });
@@ -202,19 +219,20 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
       try: () => auth.api.getOAuthServerConfig(),
       catch: () => new LocalMcpAuthUnavailable(),
     }).pipe(Effect.map(HttpServerResponse.jsonUnsafe));
-    const requestMode = Effect.map(HttpServerRequest.HttpServerRequest, (request) =>
-      requestedMcpMode(new URL(request.url, origin)),
+    const requestAddress = Effect.map(HttpServerRequest.HttpServerRequest, (request) =>
+      requestedMcpAddress(new URL(request.url, origin)),
     );
-    const invalidMode = HttpServerResponse.jsonUnsafe(
-      { error: "Unsupported elicitation_mode." },
+    /** An MCP URL whose elicitation_mode or connection is repeated or unsupported. */
+    const invalidAddress = HttpServerResponse.jsonUnsafe(
+      { error: "Unsupported elicitation_mode or connection." },
       { status: 400 },
     );
-    const protectedResource = requestMode.pipe(
-      Effect.map((mode) =>
-        mode === undefined
-          ? invalidMode
+    const protectedResource = requestAddress.pipe(
+      Effect.map((address) =>
+        address === undefined
+          ? invalidAddress
           : HttpServerResponse.jsonUnsafe({
-              resource: mcpResource(origin, mode),
+              resource: mcpResource(origin, address),
               authorization_servers: [`${origin}/api/auth`],
               scopes_supported: ["mcp", "offline_access"],
               bearer_methods_supported: ["header"],
@@ -222,20 +240,50 @@ export const makeLocalMcpOAuth = (config: ServerConfig, pairing: LocalAuth, cryp
             }),
       ),
     );
-    const challenge = requestMode.pipe(
-      Effect.map((mode) =>
-        mode === undefined
-          ? invalidMode
+    const challenge = requestAddress.pipe(
+      Effect.map((address) =>
+        address === undefined
+          ? invalidAddress
           : HttpServerResponse.empty({
               status: 401,
               headers: {
-                "www-authenticate": `Bearer resource_metadata="${mcpResourceMetadataUrl(origin, mode)}", scope="mcp offline_access"`,
+                "www-authenticate": `Bearer resource_metadata="${mcpResourceMetadataUrl(origin, address)}", scope="mcp offline_access"`,
                 "cache-control": "no-store",
               },
             }),
       ),
     );
-    return { origin, authenticate, browserGrant, handler, metadata, protectedResource, challenge };
+    /** The paired dashboard's single operator owns every local connection. */
+    const connectionOwner = { userId: user.id, resource: "local" };
+    const connectionCall = <A>(run: () => Promise<A>) =>
+      Effect.tryPromise({
+        try: run,
+        catch: (cause) => (isAPIError(cause) ? cause.statusCode : ("unavailable" as const)),
+      });
+    const connections = {
+      list: connectionCall(() => auth.api.listMcpConnections({ body: connectionOwner })),
+      create: (input: { id: ConnectionId; name: string; policy: ConnectionPolicy }) =>
+        connectionCall(() =>
+          auth.api.createMcpConnection({ body: { ...connectionOwner, ...input } }),
+        ),
+      update: (input: { id: ConnectionId; name: string; policy: ConnectionPolicy }) =>
+        connectionCall(() =>
+          auth.api.updateMcpConnection({ body: { ...connectionOwner, ...input } }),
+        ),
+      revoke: (id: ConnectionId) =>
+        connectionCall(() => auth.api.revokeMcpConnection({ body: { ...connectionOwner, id } })),
+    };
+    return {
+      origin,
+      authenticate,
+      browserGrant,
+      handler,
+      metadata,
+      protectedResource,
+      challenge,
+      invalidAddress,
+      connections,
+    };
   });
 /** Provider capabilities captured by the local server, never by app code. */
 export type LocalMcpOAuth = Effect.Success<ReturnType<typeof makeLocalMcpOAuth>>;

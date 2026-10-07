@@ -1,5 +1,5 @@
 import { Clock, Effect, Schema } from "effect";
-import type { SqlClient } from "effect/unstable/sql";
+import type { SqlClient } from "effect/sql";
 import { AnalyticsRecord } from "@executor-js/telemetry";
 import { AnalyticsInputs, AnalyticsSummary } from "../contracts/analytics.ts";
 import { type OwnerId, RequestInvalid, StorageError } from "../contracts/shared.ts";

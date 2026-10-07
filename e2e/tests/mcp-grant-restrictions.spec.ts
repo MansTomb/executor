@@ -28,13 +28,11 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
         const [allowed, denied, hiddenCall] = yield* Effect.all(
           [
             execute(
-              `return await tools[${JSON.stringify(app.slug)}].mutations.echo({message: "shared policy"})`,
+              `return await tools[${JSON.stringify(app.slug)}].echo({message: "shared policy"})`,
             ),
+            execute(`return await tools[${JSON.stringify(app.slug)}].later({message: "denied"})`),
             execute(
-              `return await tools[${JSON.stringify(app.slug)}].mutations.later({message: "denied"})`,
-            ),
-            execute(
-              `return await tools[${JSON.stringify(hidden.app.slug)}].mutations.echo({message: "denied"})`,
+              `return await tools[${JSON.stringify(hidden.app.slug)}].echo({message: "denied"})`,
             ),
           ],
           { concurrency: 3 },
@@ -53,7 +51,7 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
         );
         expect(
           (yield* Schema.decodeUnknownEffect(Execution)(discovered.structuredContent)).execution,
-        ).toEqual({ ok: true, value: [`tools[${JSON.stringify(app.slug)}].mutations.echo`] });
+        ).toEqual({ ok: true, value: [`tools[${JSON.stringify(app.slug)}].echo`] });
         const hiddenSearch = yield* execute(
           `return (await tools.search({ namespace: ${JSON.stringify(hidden.app.slug)} })).items.map(item => item.path)`,
         );
@@ -70,7 +68,7 @@ layer(HostedLive, { excludeTestServices: true })("Shared authorization", (it) =>
               })).status,
             ).toBe(200);
             const revokedTool = yield* execute(
-              `return await tools[${JSON.stringify(app.slug)}].mutations.echo({message: "denied"})`,
+              `return await tools[${JSON.stringify(app.slug)}].echo({message: "denied"})`,
             );
             expect(
               (yield* Schema.decodeUnknownEffect(Execution)(revokedTool.structuredContent))

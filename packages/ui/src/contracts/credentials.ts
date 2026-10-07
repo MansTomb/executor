@@ -1,5 +1,6 @@
 import type { OAuthClientInput } from "@executor-js/sdk";
 import { Option, Schema, type Redacted } from "effect";
+import type { ReactNode } from "react";
 
 const Field = Schema.Struct({
   type: Schema.Literals(["string", "number", "integer", "boolean"]),
@@ -21,6 +22,10 @@ const Fields = Schema.Struct({
 export type AccountFormFields = {
   readonly properties: Readonly<Record<string, typeof Field.Type>>;
   readonly required?: readonly string[] | undefined;
+  /** Fields the provider marks as not secret; the form shows their values. */
+  readonly plain?: readonly string[] | undefined;
+  /** Secret fields the app reads as real values; the form says so. */
+  readonly raw?: readonly string[] | undefined;
 };
 /** Serialize only the submitted method's fields. No saved secret is read into the browser. */
 export const credentialValues = (
@@ -50,7 +55,14 @@ export const credentialsComplete = (
 ) => (fields.required ?? []).every((name) => values[name] !== undefined && values[name] !== "");
 /** Parse only form shapes we can actually render; unfamiliar schemas remain explicit. */
 export const accountFields = (
-  method: { readonly type: "secrets"; readonly fields: unknown } | { readonly type: "oauth2" },
+  method:
+    | {
+        readonly type: "secrets";
+        readonly fields: unknown;
+        readonly plain?: readonly string[];
+        readonly raw?: readonly string[];
+      }
+    | { readonly type: "oauth2" },
 ) =>
   method.type === "secrets"
     ? Option.gen(function* () {
@@ -75,14 +87,19 @@ export const accountFields = (
             ),
           );
         }
-        return { ...fields, properties };
+        return {
+          ...fields,
+          properties,
+          ...(method.plain === undefined ? {} : { plain: method.plain }),
+          ...(method.raw === undefined ? {} : { raw: method.raw }),
+        };
       })
     : undefined;
 
 /** A submission contains only the selected method's fields, redacted at the form boundary. */
+/** New accounts are named after they are saved. */
 export interface AccountSubmission {
   readonly method: string;
-  readonly label: string;
   readonly fields: Redacted.Redacted<Readonly<Record<string, string | number | boolean>>>;
 }
 /** Product OAuth renderers receive the same pending state as credential submission. */
@@ -90,10 +107,12 @@ export interface AccountOAuthProps {
   readonly method: string;
   readonly disabled: boolean;
   readonly onPendingChange: (pending: boolean) => void;
+  /** Where the sign-in goes once it is saved; the OAuth form shows it just above its action. */
+  readonly access: ReactNode;
 }
 
 /** Client selection submitted to the product's OAuth start operation. */
+/** New accounts are named after sign-in, once the connected identity is known. */
 export interface OAuthSubmission {
-  readonly label: string;
   readonly client?: OAuthClientInput;
 }

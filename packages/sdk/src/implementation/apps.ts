@@ -4,7 +4,7 @@ import { AppWebhooksActive } from "../contracts/apps.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 /** Durable configured apps and immutable deployments, sharing one execution path. */
 import { Clock, type Crypto, Effect, Schema, Struct } from "effect";
-import { SqlError } from "effect/unstable/sql";
+import { SqlError } from "effect/sql";
 import {
   App,
   DeployedApp,
@@ -28,7 +28,12 @@ import {
   SourceFiles,
 } from "../contracts/deployment.ts";
 import type { Executor } from "../contracts/executor.ts";
-import { RuntimeBuildFailed, type Runtime } from "../contracts/runtime.ts";
+import {
+  RuntimeBuildFailed,
+  RuntimeAppsDependencyMissing,
+  RuntimeProtocolUnsupported,
+  type Runtime,
+} from "../contracts/runtime.ts";
 import {
   AppCodeId,
   AppId,
@@ -40,7 +45,9 @@ import {
 import { StoredApp, StoredDeployment } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { identifyProvider } from "./provider.ts";
-import { SourceError, type AppSourceStorage } from "../contracts/source.ts";
+import { SourceError, type AppSourceStorage, type RepositoryBackend } from "../contracts/source.ts";
+import type { Registry } from "../contracts/registry.ts";
+import { resolvePublication } from "./registry.ts";
 
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { readDeploymentSource, writeDeploymentSource } from "./deployment-source.ts";
@@ -49,6 +56,33 @@ import { readInitialSource, writeInitialSource } from "./initial-source.ts";
 type DeployInput = NonNullable<Parameters<Executor["apps"]["deploy"]>[0]>;
 
 /** Read a configured app, applying an optional owner constraint. */
+
+/** Carry the runtime's stage, location and underlying failure to the deployer. */
+const deploymentBuildFailed = (owner: OwnerId, name: string, error: RuntimeBuildFailed) => {
+  const { stage, dependency, location } = error;
+  const hint =
+    dependency === undefined ? undefined : `Add ${dependency} to package.json dependencies.`;
+  const detail =
+    error.declaration !== undefined
+      ? error.declaration.message
+      : error.message.length > 0
+        ? error.message
+        : hint;
+  // Compiler messages already begin with their location.
+  const where =
+    location === undefined || detail?.includes(location.file) === true
+      ? ""
+      : ` in ${location.file}${location.line === undefined ? "" : `:${location.line}${location.column === undefined ? "" : `:${location.column}`}`}`;
+  return new DeploymentBuildFailed({
+    owner,
+    name,
+    reason: hint ?? error.declaration?.message ?? "App build failed",
+    stage,
+    ...(location === undefined ? {} : { location }),
+    message: `App build failed at the ${stage} stage${where}${detail === undefined ? "." : `: ${detail}`}`,
+  });
+};
+
 export const storedApp = (db: Query, input: Parameters<Executor["apps"]["get"]>[0]) =>
   Effect.gen(function* () {
     const row = yield* query(() =>
@@ -106,6 +140,21 @@ export const storedDeployment = (
   });
 
 const StoredDeploymentRequirements = Schema.Struct({ requirements: AppRequirements });
+
+/** Whether any deployment of the app's code applied SQL migrations. */
+const hadMigrations = (db: Query, code: AppCodeId) =>
+  query(() =>
+    db.findMany("deployments", { select: ["requirements"], where: (b) => b("code", "=", code) }),
+  ).pipe(
+    Effect.flatMap((rows) =>
+      Effect.forEach(rows, (row) =>
+        Schema.decodeUnknownEffect(StoredDeploymentRequirements)(row).pipe(
+          Effect.mapError(() => new StorageError()),
+        ),
+      ),
+    ),
+    Effect.map((deployed) => deployed.some((deployment) => deployment.requirements.sql === true)),
+  );
 const AppProjection = Schema.Struct({
   app: StoredApp,
   deployment: Schema.NullOr(StoredDeploymentRequirements),
@@ -171,10 +220,12 @@ export const makeApps = (
   runtime: Runtime,
   crypto: Crypto.Crypto,
   sources: AppSourceStorage,
+  repositories: RepositoryBackend,
+  registry: Registry,
   blobs: BlobStorage,
   lifecycle?: ResourceLifecycle,
 ) => {
-  const authoring = makeAppAuthoring(db, sources, blobs, crypto, lifecycle);
+  const authoring = makeAppAuthoring(db, sources, repositories, blobs, crypto, lifecycle);
   const deploy = (input: DeployInput, copiedFrom: AppCopyOrigin | null = null) =>
     Effect.gen(function* () {
       // Reserve an order before building. Only successful promotions advance the other counter.
@@ -223,6 +274,8 @@ export const makeApps = (
               owner: input.owner,
               name: deployName,
               reason: "Invalid source files",
+              stage: "source",
+              message: "App build failed: the source files are invalid.",
             }),
         ),
       );
@@ -230,21 +283,33 @@ export const makeApps = (
         Effect.mapError((error) =>
           Schema.is(BuildMemoryExceeded)(error)
             ? error
-            : new DeploymentBuildFailed({
-                owner: input.owner,
-                name: deployName,
-                reason:
-                  Schema.is(RuntimeBuildFailed)(error) && error.dependency !== undefined
-                    ? `Add ${error.dependency} to package.json dependencies.`
-                    : "App build failed",
-              }),
+            : Schema.is(RuntimeProtocolUnsupported)(error)
+              ? new DeploymentBuildFailed({
+                  owner: input.owner,
+                  name: deployName,
+                  reason: `${error.message} Declare a supported apps version.`,
+                  message: `${error.message} Declare a supported apps version.`,
+                })
+              : Schema.is(RuntimeAppsDependencyMissing)(error)
+                ? new DeploymentBuildFailed({
+                    owner: input.owner,
+                    name: deployName,
+                    reason: error.message,
+                    message: error.message,
+                  })
+                : deploymentBuildFailed(input.owner, deployName, error),
         ),
       );
       const entries = yield* Effect.forEach(
         Object.entries(built.requirements.accounts),
         ([slot, value]) =>
           identifyProvider(value.definition, crypto).pipe(
-            Effect.map((provider) => ({ slot, provider, cardinality: value.cardinality })),
+            Effect.map((provider) => ({
+              slot,
+              provider,
+              cardinality: value.cardinality,
+              health: value.health,
+            })),
           ),
       );
       const requirements: AppRequirements = {
@@ -254,13 +319,64 @@ export const makeApps = (
         ...(built.requirements.database === undefined
           ? {}
           : { database: built.requirements.database }),
+        ...(built.requirements.sql === true ? { sql: true as const } : {}),
         accounts: Object.fromEntries(
-          entries.map(({ slot, provider, cardinality }) => [
+          entries.map(({ slot, provider, cardinality, health }) => [
             slot,
-            { provider: provider.id, definition: provider.definition, cardinality },
+            {
+              provider: provider.id,
+              definition: provider.definition,
+              cardinality,
+              ...(health === undefined ? {} : { health }),
+            },
           ]),
         ),
       };
+      // The app's database lives in its data facet, keyed by app ID, so a new app's ID is chosen
+      // before its migrations run. A failed migration fails the deploy before anything activates.
+      const appId =
+        before?.id ??
+        AppId.make(
+          `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
+        );
+      // Migrations are the database. A build without any would drop the ones an earlier deployment
+      // applied, whichever deployment is active now, so the app's whole deployment history decides.
+      // The build is not asked: bundles of earlier protocols cannot answer. Checked again under the
+      // final app lock, since a concurrent deploy may publish migrations meanwhile.
+      const droppedMigrations = (target: Query, app: AppCodeId) =>
+        requirements.sql === true
+          ? Effect.void
+          : hadMigrations(target, app).pipe(
+              Effect.flatMap((had) => {
+                if (!had) return Effect.void;
+                const message =
+                  "App migration failed: this app's database has applied migrations, but the build has no migrations/. Applied migrations cannot be removed: restore them and deploy again. The previous deployment is still active.";
+                return Effect.fail(
+                  new DeploymentBuildFailed({
+                    owner: input.owner,
+                    name: deployName,
+                    stage: "migrate",
+                    reason: message,
+                    message,
+                  }),
+                );
+              }),
+            );
+      if (before !== null) yield* droppedMigrations(db, before.code);
+      if (requirements.sql === true)
+        yield* runtime.migrate({ app: appId, build: built.build }).pipe(
+          Effect.mapError((error) => {
+            const message = `App migration failed${error.message.length === 0 ? "." : `: ${error.message}`}`;
+            return new DeploymentBuildFailed({
+              owner: input.owner,
+              name: deployName,
+              stage: "migrate",
+              reason: message,
+              message,
+            });
+          }),
+          Effect.withSpan("sdk.apps.migrate"),
+        );
 
       const deployment = {
         id: DeploymentId.make(
@@ -295,17 +411,14 @@ export const makeApps = (
             return yield* Effect.fail(new AppNotFound({ app: input.app }));
           if (existing !== undefined && input.app === undefined)
             return yield* Effect.fail(new AppNameTaken({ owner: input.owner, name: deployName }));
-          const appId =
-            existing?.id ??
-            AppId.make(
-              `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-            );
+          if (existing !== undefined) yield* droppedMigrations(tx, existing.code);
           const createdAt = new Date(yield* Clock.currentTimeMillis);
           const promote = existing === undefined || sequence > existing.activatedSequence;
           for (const { provider } of entries) {
-            const definition = yield* Schema.decodeUnknownEffect(JsonObject)(
-              provider.definition,
-            ).pipe(Effect.mapError(() => new StorageError()));
+            // Apps sharing a provider ID can declare different hosts; the row keeps what they share.
+            const definition = yield* Schema.decodeUnknownEffect(JsonObject)(provider.shared).pipe(
+              Effect.mapError(() => new StorageError()),
+            );
             yield* query(() =>
               tx.upsert("providers", {
                 where: (b) => b("id", "=", provider.id),
@@ -368,7 +481,7 @@ export const makeApps = (
           const deployedApp = yield* Schema.decodeUnknownEffect(DeployedApp)(projected).pipe(
             Effect.mapError(() => new StorageError()),
           );
-          return { app: deployedApp, deployment: { ...deployment, files } };
+          return { app: deployedApp, deployment };
         }),
       );
     }).pipe(Effect.withSpan("sdk.apps.deploy"));
@@ -377,7 +490,9 @@ export const makeApps = (
       const from = input.from;
       const snapshot: AppCopySnapshot =
         typeof from !== "string"
-          ? from
+          ? "package" in from
+            ? yield* resolvePublication(registry, from)
+            : from
           : yield* Effect.gen(function* () {
               const parent = yield* storedApp(db, { app: from });
               if (parent.activeDeployment !== null) {
@@ -545,6 +660,9 @@ export const makeApps = (
             );
             yield* query(() => tx.deleteMany("schedules", { where: (b) => b("app", "=", app.id) }));
             yield* query(() => tx.deleteMany("profiles", { where: (b) => b("app", "=", app.id) }));
+            yield* query(() =>
+              tx.deleteMany("accountChecks", { where: (b) => b("app", "=", app.id) }),
+            );
             yield* query(() => tx.deleteMany("apps", { where: (b) => b("id", "=", app.id) }));
           }
           return { app: input.app };

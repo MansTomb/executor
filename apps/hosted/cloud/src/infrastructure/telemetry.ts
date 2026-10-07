@@ -1,5 +1,6 @@
 /** Alchemy provisions Axiom; its event scope owns the shared safe Effect exporters. */
-import { TelemetryConfig, telemetryConfig, telemetryLayer } from "@executor-js/telemetry";
+import { TelemetryConfig, telemetryConfig } from "@executor-js/telemetry";
+import { isolateTelemetry } from "@executor-js/telemetry/isolate";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Axiom from "alchemy/Axiom";
@@ -21,15 +22,22 @@ const binding = "EXECUTOR_TELEMETRY";
  * Test stages share one retained set and are told apart by the environment field, so a
  * destroyed test stage removes only its ingest token.
  */
+export const telemetryDatasets = Effect.gen(function* () {
+  const shared = Option.isSome(yield* testStage.pipe(Effect.orDie));
+  const owner = shared ? "test" : yield* Stage;
+  return {
+    shared,
+    names: {
+      traces: `executor-next-${owner}-traces`,
+      logs: `executor-next-${owner}-logs`,
+      metrics: `executor-next-${owner}-metrics`,
+    },
+  };
+});
+
 export const telemetryResources = Effect.gen(function* () {
   const stage = yield* Stage;
-  const shared = Option.isSome(yield* testStage.pipe(Effect.orDie));
-  const owner = shared ? "test" : stage;
-  const names = {
-    traces: `executor-next-${owner}-traces`,
-    logs: `executor-next-${owner}-logs`,
-    metrics: `executor-next-${owner}-metrics`,
-  };
+  const { shared, names } = yield* telemetryDatasets;
   // Axiom marks ownership per stage; every test stage takes the shared datasets over on deploy.
   const dataset = (
     id: string,
@@ -159,7 +167,13 @@ export const telemetryBindings = Effect.gen(function* () {
   };
 }).pipe(Effect.orDie);
 
-/** Alchemy builds this safe exporter in each Worker/DO event scope and flushes through waitUntil. */
+/**
+ * The isolate's safe exporters, built once here. Alchemy builds the returned Layer in each
+ * Worker/DO event scope, which flushes them through waitUntil.
+ * Provide it once, on a Worker's initialization. Each build adds another exporter to the
+ * isolate, so a Durable Object constructor must not provide it: every later event in that
+ * isolate would export its metrics once more per constructed object.
+ */
 export const cloudTelemetry = Layer.unwrap(
   Effect.gen(function* () {
     if (!globalThis.__ALCHEMY_RUNTIME__) return Layer.empty;
@@ -172,10 +186,9 @@ export const cloudTelemetry = Layer.unwrap(
     const config = yield* Schema.decodeUnknownEffect(
       Schema.Union([Schema.fromJsonString(TelemetryConfig), TelemetryConfig]),
     )(value).pipe(Effect.catch(() => Effect.die(new Error("Invalid telemetry configuration"))));
-    // Alchemy owns the exporter for the entire event, including streamed bodies.
-    // Flush periodically so long-lived streams remain observable before disconnect.
-    return Telemetry.layer(
-      Layer.mergeAll(telemetryLayer({ ...config, clock: "cloudflare-io" }, "process"), sqlTracing),
-    );
+    // Each event flushes for its entire lifetime, including streamed bodies, and
+    // periodically, so long-lived streams remain observable before disconnect.
+    const exporters = yield* isolateTelemetry({ ...config, clock: "cloudflare-io" });
+    return Telemetry.layer(Layer.mergeAll(exporters, sqlTracing));
   }),
 );

@@ -1,7 +1,7 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Durable account bindings and setup state for one use of an app. Deployments belong to the app. */
 import { Context, Schema, type Effect } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { AppId, OwnerId, ProfileId, DeploymentId, StorageError } from "./shared.ts";
 import { AppNotFound, AccountSelectionInvalid, SelectedAccounts } from "./apps.ts";
 import { AccountNotFound } from "./account.ts";
@@ -11,9 +11,18 @@ export const ProfileRevision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)
 /** Setup input is app-owned configuration, not provider credentials. */
 export const ProfileWebhookConfig = Schema.Record(Schema.NonEmptyString, Schema.Json);
 /** A profile never selects its own code version or owns a separate database. */
+/** The immutable creation request a profile was made from; later selection edits never change it. */
+export const ProfileRequest = Schema.Struct({
+  name: Schema.optional(Schema.NonEmptyString),
+  accounts: SelectedAccounts,
+  webhookConfig: ProfileWebhookConfig,
+});
+export type ProfileRequest = typeof ProfileRequest.Type;
 export const Profile = Schema.Struct({
   id: ProfileId,
   app: AppId,
+  idempotencyKey: Schema.NonEmptyString,
+  request: ProfileRequest,
   owner: OwnerId,
   subject: Schema.NonEmptyString,
   name: Schema.NullOr(Schema.NonEmptyString.check(Schema.isMaxLength(128))),
@@ -101,6 +110,7 @@ export const ProfileInputs = {
     app: AppId,
     owner: Schema.optional(OwnerId),
     subject: Schema.optional(Schema.NonEmptyString),
+    idempotencyKey: Schema.optional(Schema.NonEmptyString),
   }),
   /** List existing profiles across explicit apps; absent apps contribute no rows. */
   listMany: Schema.Struct({
@@ -150,7 +160,11 @@ export const AppProfilesGroup = HttpApiGroup.make("appProfiles")
   .add(
     HttpApiEndpoint.get("list", "/v1/apps/:app/profiles", {
       params: { app: AppId },
-      query: { owner: Schema.optional(OwnerId), subject: Schema.optional(Schema.NonEmptyString) },
+      query: {
+        owner: Schema.optional(OwnerId),
+        subject: Schema.optional(Schema.NonEmptyString),
+        idempotencyKey: Schema.optional(Schema.NonEmptyString),
+      },
       success: Schema.Array(Profile),
       error: errors,
     }),
@@ -200,5 +214,10 @@ export const AppProfilesGroup = HttpApiGroup.make("appProfiles")
 /** Host-owned durable setup wake; never an app-authored capability. */
 export const ProfileHost = Symbol.for("executor/ProfileHost");
 export interface ProfileDispatcher {
-  readonly tick: (limit: number) => Effect.Effect<void, StorageError>;
+  /**
+   * Reconcile up to `limit` profiles: saved intent first, then due retries. Succeeds with `true`
+   * when the batch was full of saved intent, so more may be waiting and the host should run
+   * another pass now instead of at its next wake.
+   */
+  readonly tick: (limit: number) => Effect.Effect<boolean, StorageError>;
 }

@@ -2,13 +2,14 @@ import { HostedAnalytics } from "./analytics.ts";
 import { HostedProfiles } from "./profiles.ts";
 import { HostedResourceAccess } from "./resource-access.ts";
 import { HostedSchedules } from "./schedules.ts";
-import { HostedAppAccess, HostedAppManagementApi } from "./app-management.ts";
+import { HostedAppAccess, HostedAppManagementApi, HostedFrameworkApi } from "./app-management.ts";
 export { HostedAppManagementApi } from "./app-management.ts";
 /** Common hosted contracts. Product reads require a hosted session. */
 import { CatalogEntry, CatalogUnavailable } from "@executor-js/catalog/contracts";
 import { Context, Schema } from "effect";
 import { HostedGroups } from "./groups.ts";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HostedMcpConnections } from "./mcp-connections.ts";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AuthenticationUnavailable, Principal, RequireUser, Unauthorized } from "./auth.ts";
 import {
   HostedOrganization,
@@ -18,13 +19,14 @@ import {
   RequireOrganization,
 } from "./organization.ts";
 import { HostedApps } from "./apps.ts";
-import { HostedAccounts } from "./accounts.ts";
+import { HostedAccounts, HostedOAuthCallbacks } from "./accounts.ts";
 import { HostedAppData } from "./app-data.ts";
 import { HostedWebhookSetup } from "./webhook-setup.ts";
 import { HostedWorkflows } from "./workflows.ts";
 import { HostedWebhooks } from "./webhooks.ts";
 import { HostedTools } from "./tools.ts";
 import { HostedSkills } from "./skills.ts";
+import { HostedFeedback } from "./feedback.ts";
 
 /** Process liveness only; this does not probe integrations.sh or future storage. */
 export const Health = Schema.Struct({ status: Schema.Literal("ok") });
@@ -51,7 +53,7 @@ export interface HostedApiDocument extends Omit<OpenApi.OpenAPISpec, "components
 
 /** Tool schemas keep parameter schemas, not parameter descriptions, so this rides on the schema. */
 const organizationDescription =
-  "Organization ID or slug. Call context_get (GET /api/context) to read the organization for the current credential.";
+  "Organization ID or slug. Call context.get (GET /api/context) to read the organization for the current credential.";
 
 /** Generate the complete product document; security follows the middleware that serves each endpoint. */
 export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup.Constraint>(
@@ -163,11 +165,14 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedAnalytics,
     HostedSchedules,
     HostedAccounts,
+    HostedOAuthCallbacks,
     HostedTools,
     HostedOrganization,
     HostedGroups,
     HostedResourceAccess,
     HostedAppData,
+    HostedMcpConnections,
+    HostedFeedback,
   )
   .add(
     HttpApiGroup.make("context").add(
@@ -197,4 +202,5 @@ export const HostedApi = HttpApi.make("executor-hosted")
       )
       .middleware(RequireUser),
   )
-  .addHttpApi(HostedAppManagementApi);
+  .addHttpApi(HostedAppManagementApi)
+  .addHttpApi(HostedFrameworkApi);

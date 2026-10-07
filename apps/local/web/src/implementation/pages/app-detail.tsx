@@ -24,7 +24,7 @@ import { QueryResult, QueryView, useQuery } from "@executor-js/ui/dashboard/cont
 import { useAtomSet } from "@effect/atom-react";
 import type { App, AppId, ProfileId } from "@executor-js/sdk";
 import type { DashboardOverview } from "@executor-js/local-server/contracts";
-import { Atom, AsyncResult } from "effect/unstable/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { Data, Option } from "effect";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon, ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
@@ -48,7 +48,11 @@ import {
 } from "@executor-js/ui/dashboard/app-overview";
 import { appManagement } from "../../contracts/app-management.ts";
 import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
-import { accountSelectionIssues, type AppView } from "@executor-js/ui/contracts/dashboard";
+import {
+  accountSelectionIssues,
+  unfilledAccountSlots,
+  type AppView,
+} from "@executor-js/ui/contracts/dashboard";
 class PreviewKey extends Data.Class<{
   readonly app: AppId;
   readonly deployment: App["activeDeployment"];
@@ -312,6 +316,7 @@ export function AppDetailPage({
                       key={context.key}
                       app={context.app}
                       profile={context.profile}
+                      label={context.label}
                       accounts={overview.accounts}
                       selected={tool}
                     />
@@ -371,6 +376,10 @@ export function AppDetailPage({
                           app={current.app}
                           Failure={Failure}
                           empty={previewEmpty}
+                          accountsNeeded={previewContexts.every(
+                            (context) =>
+                              unfilledAccountSlots(context.app, context.accounts).length > 0,
+                          )}
                           sources={previewContexts.map((context) => ({
                             key: context.key,
                             query: overviewToolsAtom(
@@ -401,7 +410,9 @@ export function AppDetailPage({
                 ) : (
                   <div className="max-w-3xl space-y-4 p-5 max-[740px]:p-4">
                     <AppAccounts
-                      key={context?.key ?? "default"}
+                      // Siblings below key on the same profile; a shared key would leave the
+                      // previous profile's accounts mounted after switching.
+                      key={`accounts:${context?.key ?? "default"}`}
                       app={current.app}
                       profile={context?.profile}
                       data={overview}

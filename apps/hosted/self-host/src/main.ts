@@ -17,7 +17,7 @@ import {
   Path,
   Schema,
 } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { HttpRouter, HttpServer } from "effect/http";
 import { dataDirectory } from "./contracts/config.ts";
 import { selfHostConfiguration } from "./implementation/bootstrap.ts";
 import { dashboardFiles } from "./implementation/web.ts";
@@ -44,15 +44,12 @@ export const selfHostRoutes = Effect.gen(function* () {
   const skills = yield* readExecutorSkills;
   const policy = yield* urlPolicyConfig;
   const egress: HostEgress = { policy, client: yield* safeHttpClient(policy) };
-  const executorServices = Layer.succeedContext(
-    yield* Layer.build(selfHostExecutor(skills, egress)),
-  );
+  const executorServices = Layer.succeedContext(yield* Layer.build(selfHostExecutor(egress)));
   const path = yield* Path.Path;
-  const configured = yield* Config.String("DASHBOARD_DIR").pipe(Config.option);
-  const directory = Option.isSome(configured)
-    ? path.resolve(configured.value)
-    : yield* path.fromFileUrl(new URL("../web/dist/", import.meta.url));
-  const dashboard = yield* dashboardFiles(directory);
+  // The renderer is imported from the same package build; see `dashboardFiles`.
+  const dashboard = yield* dashboardFiles(
+    yield* path.fromFileUrl(new URL("../web/dist/", import.meta.url)),
+  );
   return yield* selfHostRouteMap({ skills, egress, executorServices, dashboard });
 });
 
@@ -82,7 +79,11 @@ if (import.meta.main)
     Effect.scoped(
       Effect.gen(function* () {
         const { host, port } = yield* settings;
-        const listener = yield* Layer.build(BunHttpServer.layer({ hostname: host, port }));
+        const listener = yield* Layer.build(
+          // Bun closes a request after 10 seconds without a response by default; account checks
+          // and server-rendered documents can wait longer.
+          BunHttpServer.layer({ hostname: host, port, idleTimeout: 30 }),
+        );
         const bound = yield* HttpServer.HttpServer.pipe(Effect.provideContext(listener));
         const address = bound.address;
         if (!("port" in address)) return yield* Effect.die("Self-host requires a TCP listener");

@@ -2,12 +2,6 @@
 import { Schema } from "effect";
 import { TestStageSlug } from "../infrastructure/stage.ts";
 
-/**
- * Hyperdrive's minimum pool size, isolated to each preview's database branch. A preview branch
- * allows 22 non-superuser connections, and Hyperdrive's limit is soft: after a redeploy with a
- * limit of 12, the branch refused new logins. Keep previews at the minimum.
- */
-export const testStageConnectionLimit = 5;
 /** Disposable CI environments have a fixed deadline, including failed deployment attempts. */
 export const testStageLifetimeMilliseconds = 3 * 60 * 60 * 1000;
 /** Start cleanup early enough to leave time for scheduled-run delays and retries. */
@@ -51,6 +45,15 @@ export const isTestStageDue = (lease: TestStageLease, now: number) => {
 export const canDeployTestStage = (lease: TestStageLease, now: number) => {
   const deadline = testStageCleanupAt(lease);
   return deadline === null || now + testStageDeployMilliseconds <= deadline;
+};
+/** All test stages share account quotas, so their number is fixed. */
+export const testStageLimit = 80;
+/** The oldest stages to remove so a new one stays within the limit. */
+export const stagesToEvict = (leases: readonly TestStageLease[], slug: string) => {
+  const others = leases
+    .filter((lease) => lease.slug !== slug)
+    .toSorted((a, b) => a.createdAt - b.createdAt);
+  return others.slice(0, Math.max(0, others.length - testStageLimit + 1));
 };
 /** Administration failures expose a safe explanation, never credentials. */
 export class TestStageFailed extends Schema.TaggedError<TestStageFailed>()("TestStageFailed", {

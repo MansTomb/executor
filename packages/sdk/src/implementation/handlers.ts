@@ -1,6 +1,6 @@
 /** HTTP adapters call the same native operations as the in-process SDK. */
 import { Layer } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
+import { HttpApiBuilder } from "effect/http-api";
 import { ExecutorApi } from "../contracts/http.ts";
 import type { Executor } from "../contracts/executor.ts";
 
@@ -68,7 +68,14 @@ export const executorHandlers = (executor: Executor) =>
           executor.accounts.replaceCredentials({ ...params, ...query, ...payload }),
         )
         .handle("remove", ({ params, query }) => executor.accounts.remove({ ...params, ...query }))
+        .handle("signIn", ({ params, query }) => executor.accounts.signIn({ ...params, ...query }))
+        .handle("providers", ({ query }) => executor.accounts.providers(query))
         .handle("get", ({ params, query }) => executor.accounts.get({ ...params, ...query }))
+        .handle("health", ({ params, query }) => executor.accounts.health({ ...params, ...query }))
+        .handle("listHealth", ({ query }) => executor.accounts.listHealth(query))
+        .handle("check", ({ params, query, payload }) =>
+          executor.accounts.check({ ...params, ...query, ...payload }),
+        )
         .handle("list", ({ query }) => executor.accounts.list(query)),
     ),
     HttpApiBuilder.group(ExecutorApi, "accountConnections", (handlers) =>
@@ -83,6 +90,7 @@ export const executorHandlers = (executor: Executor) =>
         .handle("submit", ({ payload }) => executor.accountConnections.submit(payload))
         .handle("oauthSetup", ({ payload }) => executor.accountConnections.oauthSetup(payload))
         .handle("startOAuth", ({ payload }) => executor.accountConnections.startOAuth(payload))
+        .handle("findOAuth", ({ payload }) => executor.accountConnections.findOAuth(payload))
         .handle("completeOAuth", ({ payload }) =>
           executor.accountConnections.completeOAuth(payload),
         ),
@@ -98,6 +106,9 @@ export const executorHandlers = (executor: Executor) =>
         .handle("deploy", ({ payload }) => executor.apps.deploy(payload))
         .handle("get", ({ params, query }) => executor.apps.get({ ...params, ...query }))
         .handle("list", ({ query }) => executor.apps.list(query))
+        .handle("checkCredentials", ({ params, query, payload }) =>
+          executor.apps.checkCredentials({ ...params, ...query, ...payload }),
+        )
         .handle("remove", ({ params, query }) => executor.apps.remove({ ...params, ...query }))
         .handle("rename", ({ params, query, payload }) =>
           executor.apps.rename({ ...params, ...query, ...payload }),
@@ -111,7 +122,26 @@ export const executorHandlers = (executor: Executor) =>
         .handle("deployment", ({ params, query }) =>
           executor.apps.deployment({ ...params, ...query }),
         )
-        .handle("source", ({ params, query }) => executor.apps.source({ ...params, ...query })),
+        .handle("source", ({ params, query }) => executor.apps.source({ ...params, ...query }))
+        .handle("history", ({ params, query }) => executor.apps.history({ ...params, ...query }))
+        .handle("revision", ({ params, query }) => executor.apps.revision({ ...params, ...query })),
+    ),
+    HttpApiBuilder.group(ExecutorApi, "publications", (handlers) =>
+      handlers
+        .handle("status", () => executor.publications.status())
+        .handle("preview", ({ params, payload }) =>
+          executor.publications.preview({ ...params, ...payload }),
+        )
+        .handle("publish", ({ params, payload }) =>
+          executor.publications.publish({ ...params, ...payload }),
+        )
+        .handle("owned", ({ query }) => executor.publications.owned(query))
+        .handle("unpublish", ({ payload }) => executor.publications.unpublish(payload)),
+    ),
+    HttpApiBuilder.group(ExecutorApi, "registry", (handlers) =>
+      handlers
+        .handle("list", ({ query }) => executor.registry.list(query))
+        .handle("snapshot", ({ query }) => executor.registry.snapshot(query)),
     ),
     HttpApiBuilder.group(ExecutorApi, "owners", (handlers) =>
       handlers
@@ -129,6 +159,9 @@ export const executorHandlers = (executor: Executor) =>
           executor.apps.workflowRuns.start({ ...params, ...payload }),
         )
         .handle("get", ({ params }) => executor.apps.workflowRuns.get(params))
+        .handle("pinned", ({ params, query }) =>
+          executor.apps.workflowRuns.pinned({ ...params, ...query }),
+        )
         .handle("list", ({ params, query }) =>
           executor.apps.workflowRuns.list({ ...params, ...query }),
         )

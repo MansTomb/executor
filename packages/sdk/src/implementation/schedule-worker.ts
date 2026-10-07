@@ -26,16 +26,26 @@ export const startScheduleWorker = (
         execute: (operation) => pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),
       })
       .pipe(
+        // Each pass is one trace, as a Cloud coordinator's dispatch is.
+        Effect.withSpan("schedule.dispatch"),
         Effect.catch(() => Effect.logError("Scheduled dispatch failed")),
         Effect.forkIn(scope),
         Effect.asVoid,
       );
     yield* Effect.gen(function* () {
       yield* Effect.flatten(ScheduleHostReady);
-      yield* Effect.forever(
+      return yield* Effect.forever(
         executor[ProfileHost].tick(config.concurrency).pipe(
-          Effect.catch(() => Effect.logError("Profile setup dispatch failed")),
-          Effect.andThen(Queue.take(profilesChanged).pipe(Effect.timeoutOption("5 seconds"))),
+          Effect.withSpan("schedule.dispatch"),
+          Effect.catch(() =>
+            Effect.logError("Profile setup dispatch failed").pipe(Effect.as(false)),
+          ),
+          // A full batch of saved intent runs again at once; otherwise wait for a change.
+          Effect.flatMap((more) =>
+            more
+              ? Effect.void
+              : Queue.take(profilesChanged).pipe(Effect.timeoutOption("5 seconds")),
+          ),
         ),
       );
     }).pipe(Effect.forkIn(scope));

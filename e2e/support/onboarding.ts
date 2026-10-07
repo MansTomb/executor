@@ -10,7 +10,7 @@ const Organizations = Schema.Array(
   Schema.Struct({ id: Schema.String, name: Schema.String, slug: Schema.String }),
 );
 const AuthFailure = Schema.Struct({
-  code: Schema.String.check(Schema.isPattern(/^[A-Z][A-Z_]{0,79}$/)),
+  code: Schema.String.check(Schema.isPattern(/^[A-Z][A-Z_]{0,79}$/u)),
 });
 class OnboardingFailed extends Schema.TaggedError<OnboardingFailed>()("OnboardingFailed", {
   operation: Schema.String,
@@ -141,19 +141,20 @@ const make = Effect.gen(function* () {
           `Choose the identity on the ${provider} emulator`,
           (page) =>
             Promise.all([
+              // The Worker resolves sign-in and opens team setup directly, rendered on the server.
               page.waitForResponse((response) => {
                 const url = new URL(response.url());
                 return (
                   response.request().isNavigationRequest() &&
                   url.origin === target.metadata.origin &&
-                  url.pathname === "/login"
+                  url.pathname === "/create"
                 );
               }),
               page.getByRole("button").filter({ hasText: identity.email }).click(),
             ]).then(([response]) =>
               response.text().then((html) => ({
                 status: response.status(),
-                prepared: html.includes('id="executor-entry"') && html.includes('"path":"/create"'),
+                prepared: html.includes("Create your team") && html.includes("cloud:entry-team:"),
                 private: response.headers()["cache-control"]?.includes("no-store") === true,
               })),
             ),
@@ -183,6 +184,23 @@ const make = Effect.gen(function* () {
         });
         return identity;
       }),
+    /** Sign in with Google as an address that already has an Executor account. */
+    googleSignInAs: (user: {
+      readonly email: string;
+      readonly name: string;
+      readonly picture: string;
+    }) =>
+      Effect.gen(function* () {
+        yield* evidence.step(
+          "Seed a Google profile for the existing email through emulators.dev",
+          emulators.googleUser(user),
+        );
+        yield* openLogin;
+        yield* chooseSocial("google");
+        yield* browser.use("Choose the identity on the google emulator", (page) =>
+          page.getByRole("button").filter({ hasText: user.email }).click(),
+        );
+      }),
     delayPreparation: Effect.gen(function* () {
       const arrived = yield* Deferred.make<void>(),
         release = yield* Deferred.make<void>(),
@@ -199,6 +217,7 @@ const make = Effect.gen(function* () {
         page.route(
           "**/api/onboarding/prepare",
           (route) =>
+            // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- Playwright route handlers must return a Promise
             Effect.runPromise(
               Effect.gen(function* () {
                 started = true;
@@ -363,8 +382,11 @@ const make = Effect.gen(function* () {
         return teams[0];
       }),
     signOut: Effect.gen(function* () {
+      yield* browser.use("Open the account menu", (page) =>
+        page.getByRole("button", { name: /^Account: / }).click(),
+      );
       yield* browser.use("Sign out of Cloud", (page) =>
-        page.getByRole("button", { name: "Sign out", exact: true }).click(),
+        page.getByRole("menuitem", { name: "Sign out", exact: true }).click(),
       );
       yield* browser.use("Return to the public entry", (page) =>
         page.waitForURL((url) => url.origin === target.metadata.origin && url.pathname === "/"),

@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeStream from "@effect/platform-node/NodeStream";
 import { localTelemetry } from "@executor-js/telemetry/local";
 import { Deferred, Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServer } from "effect/unstable/http";
+import { HttpRouter, HttpServer } from "effect/http";
 import { DesktopBootstrap } from "./contracts/auth.ts";
 import type { LocalServerOptions } from "./contracts/server.ts";
 export type {
@@ -61,7 +61,11 @@ export const startLocalServer = (
           if (server.address._tag !== "InetAddressV4")
             return yield* new StartupFailed({ stage: "listen" });
           port = server.address.port;
-          return localApi({ ...settings, port }, globalThis.crypto, auth, options);
+          return localApi({ ...settings, port }, globalThis.crypto, auth, {
+            ...options,
+            product: options.product ?? (bootstrap === undefined ? "local" : "desktop"),
+            platform: { os: process.platform, arch: process.arch },
+          });
         }),
       );
       // Close active connections before the adapter's final shutdown. Requests receive

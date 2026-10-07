@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect } from "@effect/vitest";
 import { Config, Effect, Fiber, Schema, Schedule } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { driver } from "./platform.ts";
 
 export const dockerShutdown = Effect.scoped(

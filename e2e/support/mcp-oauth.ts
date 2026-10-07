@@ -2,8 +2,9 @@
 import { createServer } from "node:http";
 import type { Page } from "playwright";
 import { createHash, randomBytes } from "node:crypto";
+import { expect } from "@effect/vitest";
 import { Context, Deferred, Effect, Layer, Redacted, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { Api, body } from "./api.ts";
 import { Actors } from "./actors.ts";
 import { Browser } from "./browser.ts";
@@ -70,6 +71,7 @@ export const oauthCallback = (state: string) =>
               ? "<h1>Connected to Executor</h1><p>You can return to your MCP client.</p>"
               : "<h1>Authorization was not completed</h1>",
           );
+          // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- node:http request handlers are plain callbacks
           if (valid) Effect.runSync(Deferred.succeed(received, Redacted.make(code)));
         }),
       ),
@@ -218,14 +220,25 @@ const make = Effect.gen(function* () {
       refresh_token: Redacted.value(grant.tokens).refresh_token,
       resource: grant.resource,
     });
-  const authorize = (kind: "mcp" | "api") =>
+  /**
+   * `omitted` sends no RFC 8707 `resource` to the authorization or token endpoint, as some
+   * MCP clients do; the grant must still bind to the discovered resource.
+   */
+  const authorize = (
+    kind: "mcp" | "api",
+    connection?: string,
+    resourceParameter: "sent" | "omitted" = "sent",
+  ) =>
     Effect.gen(function* () {
+      // A scoped connection has its own MCP URL, OAuth resource and discovery document.
+      const query = connection === undefined ? "" : `?connection=${encodeURIComponent(connection)}`;
+      const resourceUrl = `${origin}/${kind}${query}`;
       // Playwright network traces contain cookies and authorization codes. Keep the video only.
       yield* browser.omitNetworkTrace;
       const resource = yield* api.request(
         actors.owner,
         "GET",
-        `/.well-known/oauth-protected-resource/${kind}`,
+        `/.well-known/oauth-protected-resource/${kind}${query}`,
       );
       yield* ok("resource discovery", resource.status);
       const metadata = yield* body(
@@ -236,7 +249,7 @@ const make = Effect.gen(function* () {
         resource,
       );
       if (
-        metadata.resource !== `${origin}/${kind}` ||
+        metadata.resource !== resourceUrl ||
         !metadata.authorization_servers.includes(`${origin}/api/auth`)
       )
         return yield* new OAuthFailed({ operation: "resource metadata", status: resource.status });
@@ -304,6 +317,8 @@ const make = Effect.gen(function* () {
           });
         }).pipe(Effect.orDie),
       );
+      const resourceField: Record<string, string> =
+        resourceParameter === "sent" ? { resource: resourceUrl } : {};
       const authorization = new URL(endpoints.authorization_endpoint);
       authorization.search = new URLSearchParams({
         response_type: "code",
@@ -312,15 +327,20 @@ const make = Effect.gen(function* () {
         code_challenge: createHash("sha256").update(verifier).digest("base64url"),
         code_challenge_method: "S256",
         scope: `${kind === "mcp" ? "mcp" : "executor"} offline_access`,
-        resource: `${origin}/${kind}`,
+        ...resourceField,
         state,
       }).toString();
       yield* browser.use("Open the client's OAuth authorization request", (page) =>
         page.goto(authorization.href),
       );
-      yield* browser.use("The consent page names the requesting client", (page) =>
-        page.getByText("Executor E2E client", { exact: true }).waitFor({ state: "visible" }),
-      );
+      // The page settles on either the consent or its load failure; only the consent passes.
+      const shown = yield* browser.use("The consent page names the requesting client", (page) => {
+        const outcome = page
+          .getByText("Executor E2E client", { exact: true })
+          .or(page.getByText("This connection request could not be loaded.", { exact: true }));
+        return outcome.waitFor({ state: "visible" }).then(() => outcome.innerText());
+      });
+      expect(shown).toBe("Executor E2E client");
       const organizations = yield* api.request(actors.owner, "GET", "/api/auth/organization/list");
       yield* ok("read organizations", organizations.status);
       const visible = yield* body(
@@ -333,12 +353,27 @@ const make = Effect.gen(function* () {
           operation: "find intended organization",
           status: organizations.status,
         });
-      yield* browser.use("Select the intended organization", (page) =>
-        page.getByRole("combobox").click(),
-      );
-      yield* browser.use("Confirm the organization selection", (page) =>
-        page.getByRole("option", { name: organization.name, exact: true }).click(),
-      );
+      if (connection === undefined) {
+        yield* browser.use("Select the intended organization", (page) =>
+          page.getByRole("combobox").click(),
+        );
+        yield* browser.use("Confirm the organization selection", (page) =>
+          page.getByRole("option", { name: organization.name, exact: true }).click(),
+        );
+      } else {
+        // The connection fixes its organization; consent names the scoped access instead.
+        yield* browser.use("Consent describes the scoped connection", (page) =>
+          page
+            .getByRole("heading", { name: "Access to one of your connections", exact: true })
+            .waitFor({ state: "visible" }),
+        );
+        if (
+          (yield* browser.use("No organization choice", (page) =>
+            page.getByRole("combobox").count(),
+          )) !== 0
+        )
+          return yield* new OAuthFailed({ operation: "connection organization choice", status: 0 });
+      }
       yield* browser.checkpoint("OAuth consent before approval");
       yield* browser.use("Approve the client connection", (page) =>
         page.getByRole("button", { name: "Connect", exact: true }).click(),
@@ -360,7 +395,7 @@ const make = Effect.gen(function* () {
         code: Redacted.value(code),
         code_verifier: verifier,
         redirect_uri: receiver.url,
-        resource: `${origin}/${kind}`,
+        ...resourceField,
       });
       yield* ok("code exchange", exchanged.status);
       const tokens = yield* body(Tokens, exchanged).pipe(
@@ -396,7 +431,7 @@ const make = Effect.gen(function* () {
       return {
         clientId,
         grantId: grant.grant.id,
-        resource: `${origin}/${kind}`,
+        resource: resourceUrl,
         consentId: consent.id,
         tokens,
       } satisfies Grant;
@@ -404,6 +439,10 @@ const make = Effect.gen(function* () {
   return {
     authorize: authorize("mcp"),
     authorizeApi: authorize("api"),
+    /** Authorize the plain MCP URL for a client that sends no `resource` parameter. */
+    authorizeWithoutResource: authorize("mcp", undefined, "omitted"),
+    /** Authorize a scoped connection's own MCP URL through the same browser consent. */
+    authorizeConnection: (connection: string) => authorize("mcp", connection),
     refresh: (grant: Grant) =>
       Effect.gen(function* () {
         const response = yield* refreshResponse(grant);

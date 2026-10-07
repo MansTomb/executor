@@ -1,6 +1,7 @@
 import type { McpCallGuard } from "./mcp-client.ts";
 import { measureAnalytics } from "@executor-js/telemetry";
 import type { ProviderError } from "../contracts/provider-error.ts";
+import type { NetworkRefused } from "../contracts/network.ts";
 /** One upstream call, with form requests forwarded to the invocation's existing elicitation capability. */
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
@@ -69,7 +70,7 @@ export const mcpCall = (
   input: JsonObject,
   context: McpToolContext,
   timeoutMs: number,
-  failure: (phase: McpError["phase"], error: unknown) => McpError | ProviderError,
+  failure: (phase: McpError["phase"], error: unknown) => McpError | ProviderError | NetworkRefused,
   guard: McpCallGuard,
 ) =>
   Effect.scoped(

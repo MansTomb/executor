@@ -1,12 +1,8 @@
+import { withApps } from "../support/apps-release.ts";
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -130,18 +126,17 @@ const fixture = () =>
 const source = (origin: string) => [
   {
     path: "package.json",
-    content: JSON.stringify({ dependencies: { "@modelcontextprotocol/sdk": "1.30.0" } }),
+    content: JSON.stringify({ dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }) }),
   },
   {
     path: "index.ts",
     content: `
-import { defineApp, defineProvider, accountOperations, secrets, object, string } from "apps";
-import { mcpOperations, McpError } from "apps/mcp";
+import { defineApp, defineProvider, accountRouter, secrets, object, string } from "apps";
+import { mcpRouter, McpError } from "apps/mcp";
 const provider = defineProvider({ name: "Interceptor account", auth: { key: secrets({ label: "Account", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service: provider.many() } }, async ctx =>
-  accountOperations(ctx.accounts.service, account => mcpOperations({
-    url: ${JSON.stringify(`${origin}/mcp`)}, headers: { "X-Account": account.fields.token }, accountId: account.id,
-    signal: ctx.signal, cache: ctx.cache.forAccount(account),
+export default defineApp({ accounts: { service: provider.many() } }, async ctx => ({ tools: await accountRouter(ctx.accounts.service, account => mcpRouter({
+    url: ${JSON.stringify(`${origin}/mcp`)}, headers: { "X-Account": account.fields.token }, account,
+    signal: ctx.signal, cache: ctx.cache,
     intercept: async ({ tool, context, input, next }) => {
       await context.analytics.emit({ event: "webhook_received", purpose: "slack" });
       if (tool.name !== "read" || input.message === "next" || input.message === "upstream-failure" || String(input.message).startsWith("native-")) return next();
@@ -159,7 +154,7 @@ export default defineApp({ accounts: { service: provider.many() } }, async ctx =
       await context.analytics.emit(JSON.parse('{"event":"invalid","contents":"must be rejected"}'));
       return { content: [{ type: "text", text: JSON.stringify(value) }], structuredContent: value, _meta: { intercepted: true } };
     },
-  }), { signal: ctx.signal }));`,
+  }), { signal: ctx.signal }) }));`,
   },
 ];
 
@@ -219,7 +214,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
         const call = (
           accountId: string,
           message: Schema.Json,
-          tool = "queries.read",
+          tool = "read",
           profileId = profile.id,
         ) =>
           api.request(actors.owner, "POST", `${path}/tools/call`, {
@@ -243,26 +238,23 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
         const described = yield* api.request(
           actors.owner,
           "GET",
-          `${path}/tools/queries.read?profile=${profile.id}`,
+          `${path}/tools/read?profile=${profile.id}`,
         );
         expect(described.status).toBe(200);
         expect(described.body).toMatchObject({
-          name: "queries.read",
+          name: "read",
           title: "Fixture read",
           description: "Authenticated read",
           annotations: { readOnlyHint: true },
           _meta: { fixture: "native" },
         });
         expect(
-          (yield* api.request(
-            actors.owner,
-            "GET",
-            `${path}/tools/mutations.write?profile=${profile.id}`,
-          )).body,
-        ).toMatchObject({ name: "mutations.write", annotations: { readOnlyHint: false } });
+          (yield* api.request(actors.owner, "GET", `${path}/tools/write?profile=${profile.id}`))
+            .body,
+        ).toMatchObject({ name: "write", annotations: { readOnlyHint: false } });
         assertValue(yield* call(alpha, "fresh"), "alpha", "fresh", "rest");
         assertValue(yield* call(bravo, "next"), "bravo", "next", "mcp");
-        assertValue(yield* call(alpha, "write", "mutations.write"), "alpha", "write", "mcp");
+        assertValue(yield* call(alpha, "write", "write"), "alpha", "write", "mcp");
         const concurrent = yield* Effect.all(
           [call(alpha, "parallel-alpha"), call(bravo, "parallel-bravo")],
           { concurrency: 2 },
@@ -277,25 +269,25 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
         assertValue(nativeConcurrent[1], "bravo", "native-bravo", "mcp");
         const before = upstream.calls.length;
         expect((yield* call(alpha, 42)).status).toBe(422);
-        for (const { message, reason } of [
+        for (const { message, mcp } of [
           {
             message: "throw",
-            reason: "The connected service request timed out; the action's outcome is unknown",
+            mcp: { phase: "call", reason: "timeout" },
           },
           {
             message: "badoutput",
-            reason: "The connected service request failed: invalid response",
+            mcp: { phase: "call", reason: "invalid_response" },
           },
           {
             message: "bad-envelope",
-            reason: "The connected service request failed: invalid response",
+            mcp: { phase: "call", reason: "invalid_response" },
           },
         ]) {
           const response = yield* call(alpha, message);
           expect(response.status, JSON.stringify(response.body)).toBe(502);
-          expect(response.body).toMatchObject({
+          expect(response.body, JSON.stringify(response.body)).toMatchObject({
             _tag: "ToolCallFailed",
-            reason,
+            mcp,
           });
         }
         expect(upstream.calls.length).toBe(before);

@@ -4,6 +4,7 @@ import { Effect, Schema } from "effect";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { freeSeat } from "../support/seats.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Invitation = Schema.Struct({ id: Schema.String, email: Schema.String, role: Schema.String });
@@ -46,6 +47,12 @@ layer(HostedLive, { excludeTestServices: true })("Invitation roles", (it) => {
             expect((yield* invite(actor, role, "invalid@example.test")).status).toBe(400);
           }
         }
+        for (const role of ["admin", "member"])
+          expect((yield* invite(actors.member, role, `denied-${role}@example.test`)).status).toBe(
+            403,
+          );
+        // Valid invitations need a free seat on Cloud's Free plan; the member's checks are done.
+        yield* freeSeat;
         for (const role of ["admin", "member"]) {
           const email = `invited-${role}@example.test`;
           const created = yield* invite(actors.admin, role, email);
@@ -56,7 +63,6 @@ layer(HostedLive, { excludeTestServices: true })("Invitation roles", (it) => {
           const resent = yield* invite(actors.admin, role, email, true);
           expect(resent.status).toBe(200);
           expect(yield* body(Invitation, resent)).toEqual(invitation);
-          expect((yield* invite(actors.member, role, `denied-${email}`)).status).toBe(403);
         }
         const listed = yield* api.request(
           actors.owner,

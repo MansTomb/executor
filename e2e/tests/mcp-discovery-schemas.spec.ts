@@ -1,12 +1,8 @@
+import { appsManifest } from "../support/apps-release.ts";
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -38,13 +34,15 @@ const catalogFixture = Effect.gen(function* () {
   let revision = 1;
   let rejectLists = false;
   let extraTools = 0;
+  let extraName = "extra";
   const requests: string[] = [];
   const names = () => [
     "queries.alpha",
     "queries.beta",
     revision === 1 ? "queries.gamma" : "queries.delta",
-    ...Array.from({ length: extraTools }, (_, index) => `queries.extra${index}`),
+    ...Array.from({ length: extraTools }, (_, index) => `queries.${extraName}${index}`),
   ];
+  const messageType = () => (revision === 1 ? "string" : revision === 2 ? "number" : "boolean");
   const summary = (name: string) => ({
     name,
     description: `Selected ${name} revision ${revision}`,
@@ -54,14 +52,14 @@ const catalogFixture = Effect.gen(function* () {
     ...summary(name),
     inputSchema: {
       type: "object",
-      properties: { message: { type: revision === 1 ? "string" : "number" } },
+      properties: { message: { type: messageType() } },
       required: ["message"],
       additionalProperties: false,
     },
     outputSchema: {
       type: "object",
       properties: {
-        message: { type: revision === 1 ? "string" : "number" },
+        message: { type: messageType() },
         revision: { type: "number" },
       },
       required: ["message", "revision"],
@@ -157,15 +155,25 @@ const catalogFixture = Effect.gen(function* () {
       extraTools = 67;
       requests.length = 0;
     },
+    acceptLists: () => {
+      rejectLists = false;
+      requests.length = 0;
+    },
+    rename: () => {
+      revision = 3;
+      extraName = "renamed";
+      requests.length = 0;
+    },
   };
 });
 
 const source = (origin: string) => [
+  appsManifest,
   {
     path: "index.ts",
-    content: `import { defineApp, dynamicTools, query, object, string, number } from "apps";
+    content: `import { defineApp, dynamicRouter, query, object, string, number } from "apps";
 export default defineApp({ accounts: {} }, {
-  dynamicTools: dynamicTools({
+  tools: dynamicRouter({
       list: async () => read("list"),
       resolve: async name => {
         const tool = await read("describe/" + encodeURIComponent(name));
@@ -239,7 +247,14 @@ layer(HostedLive, { excludeTestServices: true })("MCP discovery schemas", (it) =
             );
         const search = (options: Schema.Json) =>
           Effect.gen(function* () {
-            const result = yield* execute(`return await tools.search(${JSON.stringify(options)})`);
+            const result = yield* execute(`
+const page = await tools.search(${JSON.stringify(options)});
+const detailed = [];
+for (let offset = 0; offset < page.items.length; offset += 20) {
+  const descriptions = await tools.search.describe({ paths: page.items.slice(offset, offset + 20).map(item => item.path) });
+  detailed.push(...descriptions.items);
+}
+return { ...page, items: page.items.map(item => ({ ...item, signature: detailed.find(description => description.path === item.path)?.signature })) };`);
             expect(result.execution, JSON.stringify(result)).toMatchObject({ ok: true });
             return yield* Schema.decodeUnknownEffect(SearchPage)(result.execution.value);
           });
@@ -258,9 +273,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP discovery schemas", (it) =
           `tools.${selected.slug}.queries.alpha`,
         ]);
         expect(first.remaining).toBe(2);
-        expect(first.next).toEqual({ offset: 1 });
+        expect(first.next).toMatchObject({ offset: 1 });
         expect(first.items[0]?.signature).toBe(
-          `tools.${selected.slug}.queries.alpha(input: {\n  message: string,\n}): Promise<{\n  message: string,\n  revision: number,\n}>`,
+          `(input: {\n  message: string,\n}): Promise<{\n  message: string,\n  revision: number,\n}>`,
         );
         expect(fixture.requests.filter((path) => path.includes("/describe/"))).toEqual([
           "selected/describe/queries.alpha",
@@ -305,11 +320,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP discovery schemas", (it) =
           `tools.${selected.slug}.queries.alpha`,
         ]);
         expect(changed.items[0]?.signature).toBe(
-          `tools.${selected.slug}.queries.alpha(input: {\n  message: number,\n}): Promise<{\n  message: number,\n  revision: number,\n}>`,
+          `(input: {\n  message: number,\n}): Promise<{\n  message: number,\n  revision: number,\n}>`,
         );
-        expect(changed.items[0]?.description).toBe(
-          `${selected.name}: Selected queries.alpha revision 2`,
-        );
+        expect(changed.items[0]?.description).toBe("Selected queries.alpha revision 2");
         const fresh = yield* search({ namespace: selected.slug, limit: 3 });
         expect(fresh.items.map((item) => item.path)).toEqual([
           `tools.${selected.slug}.queries.alpha`,
@@ -347,6 +360,40 @@ layer(HostedLive, { excludeTestServices: true })("MCP discovery schemas", (it) =
           page: expanded,
           requests: fixture.requests,
         });
+        const bulk = (extra: string) =>
+          [
+            "alpha",
+            "beta",
+            "delta",
+            ...Array.from({ length: 67 }, (_, index) => `${extra}${index}`),
+          ]
+            .sort()
+            .map((name) => `tools.${selected.slug}.queries.${name}`);
+        fixture.acceptLists();
+        const listed = yield* search({ namespace: selected.slug, limit: 70 });
+        expect(listed.items.map((item) => item.path)).toEqual(bulk("extra"));
+        expect(listed.items[0]?.signature).toBe(
+          `(input: {\n  message: number,\n}): Promise<{\n  message: number,\n  revision: number,\n}>`,
+        );
+        expect(fixture.requests.filter((path) => path.endsWith("/list"))).toEqual([
+          "selected/list",
+        ]);
+        expect(fixture.requests.filter((path) => path.includes("/describe/"))).toEqual([]);
+        fixture.rename();
+        const relisted = yield* search({ namespace: selected.slug, limit: 70 });
+        yield* evidence.json("bulk-schema-after-change.json", {
+          page: relisted,
+          requests: fixture.requests,
+        });
+        expect(relisted.items.map((item) => item.path)).toEqual(bulk("renamed"));
+        expect(relisted.items[0]?.description).toBe("Selected queries.alpha revision 3");
+        expect(relisted.items[0]?.signature).toBe(
+          `(input: {\n  message: boolean,\n}): Promise<{\n  message: boolean,\n  revision: number,\n}>`,
+        );
+        expect(fixture.requests.filter((path) => path.endsWith("/list"))).toEqual([
+          "selected/list",
+        ]);
+        expect(fixture.requests.filter((path) => path.includes("/describe/"))).toEqual([]);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

@@ -1,8 +1,8 @@
 import { registryErrorMessage } from "@executor-js/ui/contracts/registry-error";
 import type { HostedApi } from "@executor-js/hosted-server/contracts";
 import { Cause, Match, Option, type Schema } from "effect";
-import type { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
-import type { HttpClientError } from "effect/unstable/http";
+import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import type { HttpClientError } from "effect/http";
 
 type Groups = (typeof HostedApi.groups)[keyof typeof HostedApi.groups];
 /** The hosted API owns its error algebra, including membership and authentication failures. */
@@ -34,6 +34,15 @@ const errorMessage = Match.type<HostedError>().pipe(
           "Personal accounts stay private. Connect a shared account to give your team access.",
       })[reason],
     ScheduleNotFound: () => "This schedule or run is no longer available.",
+    ConnectionNotFound: () => "This connection was revoked or no longer exists.",
+    ConnectionIdTaken: () => "This connection could not be created. Close the form and try again.",
+    ConnectionAccessInvalid: ({ reason }) =>
+      ({
+        app: "An included app is no longer available to you. Remove it and try again.",
+        profile: "A selected profile is no longer available. Choose how the app runs again.",
+        account: "A selected account is no longer available for this app. Choose another one.",
+        target: "Choose how each included app runs.",
+      })[reason],
     ScheduleConflict: () =>
       "The schedule is busy or changed. Check its current status and try again.",
     ScheduleInvalid: () => "Update the interval or calendar timing in the app source.",
@@ -92,8 +101,13 @@ const errorMessage = Match.type<HostedError>().pipe(
     InputInvalid: () => "The input does not match this tool’s schema.",
     AppProviderFailed: (error) => `${error.description} ${error.recovery.action}`,
     AppEvaluationFailed: (error) => `${error.description} ${error.recovery.action}`,
+    ToolListingTimedOut: (error) => `${error.description} ${error.recovery.action}`,
     ToolNotFound: () => "This tool is no longer available. Reload the app’s tools and try again.",
-    ToolBlocked: () => "The tool's approval policy blocked this tool call. The tool did not run.",
+    FrameworkVersionMismatch: () =>
+      "This server documents a different framework version. Search again without a version.",
+    ToolKindMismatch: () =>
+      "This tool changed between a query and a mutation. Reload the app’s tools and try again.",
+    ToolBlocked: (error) => `${error.description} ${error.recovery.action}`,
     ToolApprovalRequired: () =>
       "The tool requires approval. The tool did not run. Approval handling is not available yet.",
     ToolPolicyFailed: () =>
@@ -154,6 +168,8 @@ const errorMessage = Match.type<HostedError>().pipe(
     StorageError: () => "Your data could not load. Try again.",
     AccountNotFound: () => "This account is no longer available in this organization.",
     CatalogUnavailable: () => "integrations.sh could not be reached. Try again.",
+    FeedbackUnavailable: () => "Feedback could not be sent. Try again.",
+    FeedbackDisabled: ({ message }) => message,
     HttpClientError: () => "Could not reach the server. Check your connection and try again.",
     SchemaError: () => "The server returned an unexpected response. Reload and try again.",
   }),

@@ -1,8 +1,8 @@
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { GroupDatabase } from "./contracts/groups.ts";
 import { CurrentUserId } from "./contracts/auth.ts";
 import { OrganizationId } from "./contracts/organization.ts";
-import { resourceAuthority, applicationAccess } from "./implementation/resource-policy.ts";
+import { resourceAuthorityForApp } from "./implementation/resource-policy.ts";
 import { StorageError, type App } from "@executor-js/sdk/core";
 import type { AppCapabilities } from "@executor-js/app-management/contracts";
 import { Context } from "effect";
@@ -14,7 +14,8 @@ import { HostedAppAccess } from "./contracts/app-management.ts";
 import { withOrganizationRequest } from "./implementation/organization.ts";
 /** Hosted app source uses current organization membership and existing API OAuth grants. */
 import { AppIdentity, AppGitAccess, AppAccessDenied } from "@executor-js/app-management";
-import { Effect, Encoding, Layer, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
+import { Base64 } from "effect/encoding";
 import { ApiAuthentication, Authentication } from "./contracts/auth.ts";
 import { OrganizationReference, CurrentOrganization } from "./contracts/organization.ts";
 
@@ -28,8 +29,7 @@ export const hostedAppCapabilities = Effect.gen(function* () {
       );
       if (app.owner !== `organization:${organization}`)
         return yield* new AppAccessDenied({ reason: "forbidden" });
-      const actor = yield* resourceAuthority(organization, identity.actor);
-      const access = yield* applicationAccess(app.id, actor);
+      const { access } = yield* resourceAuthorityForApp(organization, identity.actor, app.id);
       return {
         visible: access.canUse,
         manage: access.canManage,
@@ -108,9 +108,7 @@ export const hostedAppGitAccess = Layer.effect(
             return yield* new AppAccessDenied({ reason: "authentication" });
           let token: string;
           if (authorization.startsWith("Basic ")) {
-            const decoded = yield* Effect.fromResult(
-              Encoding.decodeBase64String(authorization.slice(6)),
-            );
+            const decoded = yield* Effect.fromResult(Base64.decodeString(authorization.slice(6)));
             const colon = decoded.indexOf(":");
             if (colon < 0) return yield* new AppAccessDenied({ reason: "authentication" });
             token = decoded.slice(colon + 1);

@@ -22,13 +22,14 @@ import {
   Effect,
   FileSystem,
   Layer,
+  Option,
   Path,
   Queue,
   Schema,
   Stream,
   type Scope,
 } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { WorkflowFailure, WorkflowRunId } from "apps/contracts";
 import { WorkflowBackendState, type WorkflowRuntime } from "../contracts/workflow-runtime.ts";
@@ -41,6 +42,7 @@ import { runtimeAdapter } from "./runtime.ts";
 
 import { connectedWorkerdApps, workerdHostHandler } from "./workerd-client.ts";
 import { workerdHostModules } from "./workerd-bundle.ts";
+import { appWorkerLimit } from "./app-worker-residency.ts";
 
 /** Existing stores need an explicit migration; opening a new empty store would hide retained app data. */
 export class WorkerdMigrationRequired extends Schema.TaggedError<WorkerdMigrationRequired>()(
@@ -124,6 +126,8 @@ export const workerdApps = (options: {
    * resolves to a private address and private app fetch is off.
    */
   readonly selfOrigin?: { readonly origin: string; readonly address: string };
+  /** The npm registry app builds resolve packages from. Defaults to the public registry. */
+  readonly npmRegistry?: string;
 }): Effect.Effect<
   { readonly runtime: ReturnType<typeof runtimeAdapter>; readonly workflows: WorkflowRuntime },
   RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
@@ -160,15 +164,6 @@ export const workerdApps = (options: {
     const engine = yield* LocalRuntime.pipe(Effect.provideContext(runtimeContext));
     const secret = crypto.randomUUID();
     const privateAppFetch = options.allowPrivateAppFetch === true;
-    const durableObjectNamespaces = [
-      { className: "AppDataSupervisor", sql: true, uniqueKey: "executor-app-data" },
-      {
-        className: "AppWorkerPool",
-        sql: true,
-        uniqueKey: "executor-app-workers",
-        preventEviction: true,
-      },
-    ];
     const origin = yield* engine
       .start({
         name: "executor-apps",
@@ -176,18 +171,13 @@ export const workerdApps = (options: {
         // The trusted host worker keeps the default network. Only app isolates are restricted.
         compatibilityFlags: ["nodejs_compat"],
         modules: yield* workerdHostModules,
-        durableObjectNamespaces,
-        unsafe: {
-          durableObjectNamespaces: durableObjectNamespaces.map(({ sql, ...namespace }) => ({
-            ...namespace,
-            enableSql: sql,
-          })),
-        },
+        durableObjectNamespaces: [
+          { className: "AppDataSupervisor", sql: true, uniqueKey: "executor-app-data" },
+        ],
         workflows: [{ workflowName: "executor-app-workflows", className: "AppWorkflows" }],
         bindings: [
           WorkerLoader.local("LOADER"),
           DurableObjectNamespace.local({ binding: "DATA", className: "AppDataSupervisor" }),
-          DurableObjectNamespace.local({ binding: "POOL", className: "AppWorkerPool" }),
           Workflows.local({
             binding: "RUNS",
             workflowName: "executor-app-workflows",
@@ -195,8 +185,10 @@ export const workerdApps = (options: {
           }),
           JsonBinding.local("AUTH", secret),
           JsonBinding.local("APPS_PRIVATE_FETCH", privateAppFetch),
+          JsonBinding.local("APP_WORKERS", Option.getOrNull(yield* appWorkerLimit)),
           publicEgressBinding,
           JsonBinding.local("SELF_ORIGIN", options.selfOrigin?.origin ?? ""),
+          JsonBinding.local("NPM_REGISTRY", options.npmRegistry ?? ""),
           ...(options.selfOrigin === undefined ? [] : [selfOriginBinding]),
           Loopback.local({ binding: "HOST", name: "executor-workflow-host", handler }),
         ],

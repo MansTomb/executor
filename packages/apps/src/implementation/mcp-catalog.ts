@@ -1,25 +1,31 @@
 /** Revisioned MCP metadata is persistent; selected executables remain invocation-owned. */
 import { cacheKey } from "@executor-js/app-cache";
 import { Effect, Schema } from "effect";
-import type { DynamicTools } from "../contracts/dynamic-tools.ts";
-import {
-  McpError,
-  McpToolMetadata,
-  McpToolsOptions,
-  type McpOperationInterceptor,
-} from "../contracts/mcp.ts";
+import type { DynamicRouter, RouterMeta } from "../contracts/router.ts";
+import { McpError, McpServerHeader, McpToolMetadata, McpToolsOptions } from "../contracts/mcp.ts";
 import { type JsonValue } from "../contracts/schema.ts";
-import { catalogCache, type CatalogCacheOptions } from "./catalog-cache.ts";
+import {
+  catalogCache,
+  catalogScope,
+  type CatalogAccount,
+  type CatalogCacheOptions,
+} from "./catalog-cache.ts";
 import { mcpClientEffect } from "./mcp.ts";
 import { adaptMcpOperation } from "./mcp-tools.ts";
-import { mcpResultSchema } from "./mcp-result-schema.ts";
 import { protocolOperations, type OperationKinds } from "./protocol-operations.ts";
 import { nativeOperation } from "./operations.ts";
+import { operationDescription } from "./router-catalog.ts";
+import { routerDeclaration } from "./router.ts";
 
-/** Metadata policy for HTTP/SSE sources. A missing cache keeps discovery invocation-local. */
-export interface McpCatalogOptions extends McpToolsOptions, CatalogCacheOptions {
-  readonly intercept?: McpOperationInterceptor;
-}
+/**
+ * A server, the account whose catalog it is, and the metadata policy for HTTP/SSE sources. A
+ * missing cache keeps discovery invocation-local.
+ */
+export type McpCatalogOptions = {
+  readonly intercept?: import("../contracts/mcp.ts").McpOperationInterceptor;
+} & Omit<McpToolsOptions, "accountId" | "headers"> &
+  CatalogCacheOptions &
+  CatalogAccount;
 
 /** Browsing metadata; schemas are read per tool. */
 const McpToolSummary = McpToolMetadata.mapFields(
@@ -30,38 +36,57 @@ type McpToolSummary = typeof McpToolSummary.Type;
 const invoke = <A>(work: () => Promise<A>) =>
   Effect.tryPromise({ try: work, catch: (error) => error });
 
+/** Router metadata from a server's self-description. Author metadata on the router wins. */
+const serverMeta = (server: McpServerHeader): RouterMeta => {
+  const title = server.title ?? server.name;
+  return {
+    ...(title === undefined ? {} : { title }),
+    ...(server.description === undefined ? {} : { description: server.description }),
+    ...(server.instructions === undefined ? {} : { instructions: server.instructions }),
+    ...(server.icons === undefined ? {} : { icons: server.icons }),
+  };
+};
+
 /** Construction opens no transport unless explicit revalidation is requested. */
 export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
   Effect.gen(function* () {
-    // Header names are case-insensitive. Hash all request identity, including credentials,
-    // before persistence; custom callers cannot accidentally share two authentication scopes.
-    const parsed = yield* Schema.decodeUnknownEffect(McpToolsOptions)(options).pipe(
-      Effect.mapError(() => new McpError({ phase: "connect", reason: "invalid_input" })),
-    );
-    const headers: Record<string, string> = {};
-    new Headers(parsed.headers).forEach((value, name) => {
-      headers[name] = value;
-    });
-    const id = yield* cacheKey({ url: parsed.url, headers, accountId: parsed.accountId ?? null });
-    const key: JsonValue = ["mcp-catalog-v2", id, "current"];
-    const cache = options.cache;
+    const invalid = () => new McpError({ phase: "connect", reason: "invalid_input" });
+    const parsed = yield* Schema.decodeUnknownEffect(McpToolsOptions)({
+      url: options.url,
+      accountId: options.account?.id,
+      headers: options.headers,
+      signal: options.signal,
+      timeoutMs: options.timeoutMs,
+    }).pipe(Effect.mapError(invalid));
+    // The account's scope separates credentials, so the server alone identifies its catalog.
+    const cache = yield* catalogScope(options, options.headers, invalid);
+    const id = yield* cacheKey({ url: parsed.url });
+    const key: JsonValue = ["mcp-catalog-v3", id, "current"];
     const changed = cache === undefined ? undefined : invoke(() => cache.invalidate(key));
-    const client = yield* mcpClientEffect(options, changed);
+    const client = yield* mcpClientEffect(parsed, changed);
     const catalog = yield* catalogCache({
       ...options,
-      prefix: ["mcp-catalog-v2", id],
+      cache,
+      prefix: ["mcp-catalog-v3", id],
       schema: McpToolMetadata,
       summary: {
         schema: McpToolSummary,
         of: ({ inputSchema: _input, outputSchema: _output, _meta, ...summary }) => summary,
       },
       load: (context) =>
-        context === undefined
+        (context === undefined
           ? client.list
           : mcpClientEffect(
               { ...parsed, signal: context.signal },
               invoke(() => context.cache.invalidate(key)),
-            ).pipe(Effect.flatMap((source) => source.list)),
+            ).pipe(Effect.flatMap((source) => source.list))
+        ).pipe(
+          Effect.flatMap(({ tools, server }) =>
+            Schema.encodeEffect(McpServerHeader)(server).pipe(
+              Effect.map((header) => ({ tools, header })),
+            ),
+          ),
+        ),
     });
     const kindOf = (tool: McpToolSummary) =>
       Object.hasOwn(kinds, tool.name)
@@ -69,42 +94,63 @@ export const mcpCatalog = (options: McpCatalogOptions, kinds: OperationKinds) =>
         : tool.annotations?.readOnlyHint === true
           ? "query"
           : "mutation";
-    const qualified = (tool: McpToolSummary) =>
-      `${kindOf(tool) === "query" ? "queries" : "mutations"}.${tool.name}`;
     const summarize = (tool: McpToolSummary) => ({
-      name: qualified(tool),
+      name: tool.name,
       description: tool.description ?? tool.title ?? tool.name,
       readOnly: kindOf(tool) === "query",
       ...(tool.title === undefined ? {} : { title: tool.title }),
       annotations: { ...tool.annotations, readOnlyHint: kindOf(tool) === "query" },
     });
-    const describe = (tool: McpToolMetadata) => ({
-      ...summarize(tool),
-      inputSchema: tool.inputSchema,
-      outputSchema: mcpResultSchema(tool.outputSchema),
-      ...(tool._meta === undefined ? {} : { _meta: tool._meta }),
-    });
-    const selected = (name: string) =>
-      Effect.gen(function* () {
-        if (!name.startsWith("queries.") && !name.startsWith("mutations.")) return undefined;
-        const tool = yield* catalog.resolve(name.slice(name.indexOf(".") + 1));
-        return tool === undefined || qualified(tool) !== name ? undefined : tool;
-      });
-    const dynamicTools: DynamicTools = {
-      list: () => catalog.list().pipe(Effect.map((tools) => tools.map(describe))),
+    /** The operation a call runs; descriptions are rendered from it, so they cannot differ. */
+    const operation = (tool: McpToolMetadata) =>
+      adaptMcpOperation(client, tool, options.intercept).pipe(
+        Effect.map((adapted) =>
+          nativeOperation(
+            protocolOperations({ selected: adapted }, { selected: kindOf(tool) }).selected,
+          ),
+        ),
+      );
+    const describe = (tool: McpToolMetadata) =>
+      operation(tool).pipe(
+        Effect.flatMap((selected) =>
+          selected === undefined
+            ? Effect.succeed(undefined)
+            : operationDescription(tool.name, "", selected),
+        ),
+      );
+    const router: DynamicRouter = {
+      kind: "dynamic",
+      meta: () =>
+        catalog.header().pipe(
+          Effect.flatMap((header) =>
+            header === undefined
+              ? Effect.succeed({})
+              : Schema.decodeUnknownEffect(McpServerHeader)(header),
+          ),
+          Effect.map(serverMeta),
+        ),
+      list: () =>
+        catalog.list().pipe(
+          Effect.flatMap((tools) => Effect.forEach(tools, describe)),
+          Effect.map((tools) => tools.filter((tool) => tool !== undefined)),
+        ),
       summaries: () => catalog.summaries().pipe(Effect.map((tools) => tools.map(summarize))),
       describe: (name) =>
-        selected(name).pipe(
-          Effect.map((tool) => (tool === undefined ? undefined : describe(tool))),
-        ),
+        catalog
+          .resolve(name)
+          .pipe(
+            Effect.flatMap((tool) =>
+              tool === undefined ? Effect.succeed(undefined) : describe(tool),
+            ),
+          ),
       resolve: (name) =>
-        Effect.gen(function* () {
-          const tool = yield* selected(name);
-          if (tool === undefined) return undefined;
-          const adapted = yield* adaptMcpOperation(client, tool, options.intercept);
-          const operations = protocolOperations({ selected: adapted }, { selected: kindOf(tool) });
-          return nativeOperation(operations.queries.selected ?? operations.mutations.selected);
-        }),
+        catalog
+          .resolve(name)
+          .pipe(
+            Effect.flatMap((tool) =>
+              tool === undefined ? Effect.succeed(undefined) : operation(tool),
+            ),
+          ),
     };
-    return { dynamicTools };
+    return routerDeclaration(router);
   });

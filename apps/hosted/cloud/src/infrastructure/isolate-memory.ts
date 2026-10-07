@@ -5,5 +5,4 @@
  */
 import { makeDeclarationCache } from "@executor-js/sdk/core";
 
-/** Evaluated declarations can carry credential-derived text; they never leave this isolate. */
 export const isolateDeclarations = makeDeclarationCache();

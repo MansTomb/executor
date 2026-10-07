@@ -1,18 +1,11 @@
 import { ApiKeyId } from "../contracts/api-keys.ts";
-import { grantAuthorization } from "@executor-js/mcp-auth";
-import {
-  browserPersonalTokenAccess,
-  apiKeyAccess,
-  isApiKey,
-  requirePinnedOrganization,
-} from "./api-keys.ts";
-import { resolveOrganizationReference } from "./organization-reference.ts";
+import { browserPersonalTokenAccess, apiKeyAccess, requirePinnedOrganization } from "./api-keys.ts";
 import { ApprovalMode, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
 
 /** Hosted membership composes with the shared OAuth grant lifecycle. */
 import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
 import { APIError, createAuthEndpoint, isAPIError } from "better-auth/api";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import {
   grantOAuthPlugins,
   authCall,
@@ -20,25 +13,20 @@ import {
   type GrantAccess,
   type OAuthResourceSeedContext,
 } from "@executor-js/mcp-auth/oauth";
-import { AuthenticationUnavailable, Unauthorized } from "../contracts/auth.ts";
-import { McpAccess, McpForbidden, McpUnauthorized } from "../contracts/mcp.ts";
+import { AuthenticationUnavailable } from "../contracts/auth.ts";
 import {
-  OrganizationForbidden,
-  OrganizationId,
-  OrganizationRole,
-  OrganizationReference,
-  organizationOwner,
-} from "../contracts/organization.ts";
-const resolveReference = (
-  context: GenericEndpointContext["context"],
-  reference: typeof OrganizationReference.Type,
-) =>
-  resolveOrganizationReference(context.adapter, reference).pipe(
-    Effect.catchTags({
-      OrganizationForbidden: () => Effect.fail(new APIError("FORBIDDEN")),
-      AuthenticationUnavailable: () => Effect.fail(new APIError("SERVICE_UNAVAILABLE")),
-    }),
-  );
+  McpAccess,
+  McpApprovalForbidden,
+  McpUnauthorized,
+  type McpConnectionStore,
+} from "../contracts/mcp.ts";
+import {
+  Connection,
+  ConnectionIdTaken,
+  ConnectionNotFound,
+  type ConnectionPolicy,
+} from "@executor-js/mcp-auth/connections";
+import { OrganizationId, OrganizationRole, organizationOwner } from "../contracts/organization.ts";
 const Member = Schema.Struct({ role: OrganizationRole });
 const membership = (
   context: GenericEndpointContext["context"],
@@ -74,11 +62,20 @@ const hostedGrantOAuth = (origin: string) =>
       ...mcpOAuthResources(origin),
       { identifier: `${origin}/api`, allowedScopes: ["executor", "offline_access"] },
     ],
-    selectResource: (ctx, userId) =>
+    selectResource: (ctx, userId, required) =>
       Effect.gen(function* () {
+        const header = ctx.headers?.get("x-executor-organization") ?? undefined;
+        // A connection belongs to one organization. The consent page may omit the choice,
+        // but it cannot name a different organization.
         const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(
-          ctx.headers?.get("x-executor-organization"),
+          required ?? header,
         ).pipe(Effect.mapError(() => new APIError("BAD_REQUEST")));
+        if (required !== undefined && header !== undefined && header !== required)
+          return yield* Effect.fail(
+            new APIError("FORBIDDEN", {
+              message: "This connection belongs to a different organization.",
+            }),
+          );
         yield* membership(ctx.context, userId, organization);
         return organization;
       }),
@@ -96,7 +93,7 @@ const PatGrant = Schema.Struct({
   mode: ApprovalMode,
 });
 const patGrantPrefix = "pat:";
-const patGrantId = (value: typeof PatGrant.Type) =>
+export const patGrantId = (value: typeof PatGrant.Type) =>
   GrantId.make(patGrantPrefix + encodeURIComponent(JSON.stringify(value)));
 const parsePatGrant = (id: GrantId) =>
   Effect.try({
@@ -106,63 +103,6 @@ const parsePatGrant = (id: GrantId) =>
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(PatGrant))),
     Effect.mapError(() => new APIError("UNAUTHORIZED")),
   );
-/** The organization a request names: the URL or query first, then the header. Both must agree. */
-const requestedOrganization = (
-  ctx: GenericEndpointContext & {
-    readonly query?: { readonly organization?: OrganizationReference | undefined } | undefined;
-  },
-) =>
-  Effect.gen(function* () {
-    const header = ctx.headers?.get("x-executor-organization") ?? undefined;
-    const headerReference =
-      header === undefined
-        ? undefined
-        : yield* Schema.decodeUnknownEffect(OrganizationReference)(header).pipe(
-            Effect.mapError(() => new APIError("FORBIDDEN")),
-          );
-    const url = ctx.query?.organization;
-    const fromUrl = url === undefined ? undefined : yield* resolveReference(ctx.context, url);
-    const fromHeader =
-      headerReference === undefined
-        ? undefined
-        : yield* resolveReference(ctx.context, headerReference);
-    if (fromUrl !== undefined && fromHeader !== undefined && fromUrl !== fromHeader)
-      return yield* Effect.fail(
-        new APIError("FORBIDDEN", {
-          message: "The URL and X-Executor-Organization name different organizations.",
-        }),
-      );
-    return fromUrl ?? fromHeader;
-  });
-
-/** An OAuth grant is bound to one organization; a request may only name that one. */
-const requireRequestedOrganization = (
-  ctx: Parameters<typeof requestedOrganization>[0],
-  organization: OrganizationId,
-) =>
-  requestedOrganization(ctx).pipe(
-    Effect.flatMap((requested) =>
-      requested === undefined || requested === organization
-        ? Effect.void
-        : Effect.fail(new APIError("FORBIDDEN")),
-    ),
-  );
-
-/** A PAT targets the named organization, else the organization it is pinned to. */
-const selectPatOrganization = (
-  ctx: Parameters<typeof requestedOrganization>[0],
-  identity: { readonly organization: OrganizationId | undefined },
-  missing: { readonly message: string },
-) =>
-  requestedOrganization(ctx).pipe(
-    Effect.flatMap((requested) => {
-      const organization = requested ?? identity.organization;
-      return organization === undefined
-        ? Effect.fail(new APIError("FORBIDDEN", missing))
-        : Effect.succeed(organization);
-    }),
-  );
-
 /** Stable metadata identifies the PAT/organization/mode partition; it is never a credential. */
 const projectPatAccess = (
   ctx: GenericEndpointContext,
@@ -205,8 +145,6 @@ export const mcpOAuthPlugins = (origin: string) => {
         access: { organization, owner: organizationOwner(organization), role: member.role },
       });
     });
-  const access = (ctx: GenericEndpointContext, kind: "mcp" | "api") =>
-    oauth.authenticate(ctx, kind).pipe(Effect.flatMap((grant) => projectAccess(ctx, grant)));
   const hosted = {
     id: "executor-hosted-grants",
     endpoints: {
@@ -231,116 +169,91 @@ export const mcpOAuthPlugins = (origin: string) => {
             }),
           ),
       ),
-      getMcpAccess: createAuthEndpoint(
-        "/mcp/access",
-        {
-          method: "GET",
-          requireHeaders: true,
-          metadata: { SERVER_ONLY: true },
-          query: Schema.toStandardSchemaV1(
-            Schema.optional(
-              Schema.Struct({
-                mode: Schema.optional(ApprovalMode),
-                organization: Schema.optional(OrganizationReference),
-              }),
-            ),
-          ),
-        },
-        (ctx) =>
-          runAuth(
-            Effect.gen(function* () {
-              const token = ctx.headers.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
-              if (token === undefined || !isApiKey(token)) {
-                const grant = yield* access(ctx, "mcp");
-                yield* requireRequestedOrganization(ctx, grant.access.organization);
-                return grant;
-              }
-              const identity = yield* apiKeyAccess(ctx, Redacted.make(token));
-              const organization = yield* selectPatOrganization(ctx, identity, {
-                message:
-                  "Use /org/<organization>/mcp, or set X-Executor-Organization, when using a full-account token with MCP.",
-              });
-              return yield* projectPatAccess(
-                ctx,
-                identity,
-                organization,
-                ctx.query?.mode ?? "model",
-              );
-            }),
-          ),
-      ),
-      getApiAccess: createAuthEndpoint(
-        "/executor-api/access",
-        {
-          method: "GET",
-          requireHeaders: true,
-          metadata: { SERVER_ONLY: true },
-          query: Schema.toStandardSchemaV1(
-            Schema.Struct({ organization: Schema.optional(OrganizationReference) }),
-          ),
-        },
-        (ctx) =>
-          runAuth(
-            Effect.gen(function* () {
-              const token = ctx.headers.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
-              const identity = yield* Effect.gen(function* () {
-                if (token !== undefined && isApiKey(token)) {
-                  const identity = yield* apiKeyAccess(ctx, Redacted.make(token));
-                  const organization = yield* selectPatOrganization(ctx, identity, {
-                    message:
-                      "Set the organization query parameter, or X-Executor-Organization, when using a full-account token.",
-                  });
-                  yield* requirePinnedOrganization(identity, organization);
-                  const member = yield* membership(ctx.context, identity.userId, organization);
-                  return {
-                    userId: identity.userId,
-                    key: identity.key,
-                    policy: identity.policy,
-                    access: {
-                      organization,
-                      owner: organizationOwner(organization),
-                      role: member.role,
-                    },
-                  };
-                }
-                const grant = yield* access(ctx, "api");
-                yield* requireRequestedOrganization(ctx, grant.access.organization);
-                return {
-                  userId: grant.userId,
-                  access: grant.access,
-                  policy: grantAuthorization(grant.grant.policy),
-                };
-              });
-              const value = yield* authCall(() =>
-                ctx.context.adapter.findOne({
-                  model: "organization",
-                  where: [{ field: "id", value: identity.access.organization }],
-                }),
-              );
-              const organization = yield* Schema.decodeUnknownEffect(
-                Schema.Struct({ slug: Schema.NonEmptyString }),
-              )(value).pipe(Effect.mapError(() => new APIError("FORBIDDEN")));
-              return { ...identity, organizationSlug: organization.slug };
-            }),
-          ),
-      ),
     },
   } satisfies BetterAuthPlugin;
   return [...oauth.plugins, hosted] as const;
 };
 
-/** Preserve invalid grants, denied membership, and storage outages as different outcomes. */
-export const mcpAuthenticationError = (cause: unknown) =>
+/** Browser approval pages state no cause, so every refusal there is one outcome. */
+export const mcpBrowserGrantError = (cause: unknown) =>
   isAPIError(cause) && cause.statusCode === 403
-    ? new McpForbidden()
+    ? new McpApprovalForbidden()
     : isAPIError(cause) && (cause.statusCode === 400 || cause.statusCode === 401)
       ? new McpUnauthorized()
       : new AuthenticationUnavailable();
 
-/** Translate native API grant failures into the existing HTTP permission contracts. */
-export const apiAuthenticationError = (cause: unknown) =>
-  isAPIError(cause) && cause.statusCode === 403
-    ? new OrganizationForbidden()
-    : isAPIError(cause) && (cause.statusCode === 400 || cause.statusCode === 401)
-      ? new Unauthorized()
-      : new AuthenticationUnavailable();
+type ConnectionBody = {
+  userId: string;
+  resource: string;
+  id: string;
+  name: string;
+  policy: typeof ConnectionPolicy.Encoded;
+};
+/** The server-only Better Auth endpoints that store connections. */
+export interface McpConnectionApi {
+  readonly listMcpConnections: (input: {
+    body: { userId: string; resource: string };
+  }) => Promise<unknown>;
+  readonly createMcpConnection: (input: { body: ConnectionBody }) => Promise<unknown>;
+  readonly updateMcpConnection: (input: { body: ConnectionBody }) => Promise<unknown>;
+  readonly revokeMcpConnection: (input: {
+    body: { userId: string; resource: string; id: string };
+  }) => Promise<unknown>;
+}
+const storeFailure = (cause: unknown) =>
+  isAPIError(cause) ? cause.statusCode : ("unavailable" as const);
+/**
+ * Adapt a host's native auth instance to the connection store. Results cross the Better Auth
+ * boundary and are parsed again; missing records and storage outages stay distinct.
+ */
+export const mcpConnectionStore = (
+  call: <A>(run: (api: McpConnectionApi) => Promise<A>) => Effect.Effect<A, unknown>,
+): McpConnectionStore => {
+  const request = <A>(
+    run: (api: McpConnectionApi) => Promise<unknown>,
+    schema: Schema.Decoder<A>,
+  ) =>
+    call(run).pipe(
+      Effect.mapError(storeFailure),
+      Effect.flatMap((value) =>
+        Schema.decodeUnknownEffect(schema)(value).pipe(
+          Effect.mapError(() => "unavailable" as const),
+        ),
+      ),
+    );
+  const unavailable = () => new AuthenticationUnavailable();
+  return {
+    list: (owner) =>
+      request((api) => api.listMcpConnections({ body: owner }), Schema.Array(Connection)).pipe(
+        Effect.mapError(unavailable),
+      ),
+    create: (owner, input) =>
+      request((api) => api.createMcpConnection({ body: { ...owner, ...input } }), Connection).pipe(
+        Effect.mapError((status) =>
+          status === 409
+            ? new ConnectionIdTaken({ connection: input.id })
+            : new AuthenticationUnavailable(),
+        ),
+      ),
+    update: (owner, input) =>
+      request((api) => api.updateMcpConnection({ body: { ...owner, ...input } }), Connection).pipe(
+        Effect.mapError((status) =>
+          status === 404
+            ? new ConnectionNotFound({ connection: input.id })
+            : new AuthenticationUnavailable(),
+        ),
+      ),
+    revoke: (owner, id) =>
+      request(
+        (api) => api.revokeMcpConnection({ body: { ...owner, id } }),
+        Schema.Struct({ revoked: Schema.Literal(true) }),
+      ).pipe(
+        Effect.asVoid,
+        Effect.mapError((status) =>
+          status === 404
+            ? new ConnectionNotFound({ connection: id })
+            : new AuthenticationUnavailable(),
+        ),
+      ),
+  };
+};

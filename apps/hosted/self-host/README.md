@@ -40,8 +40,11 @@ cd executor-v2
 For a local installation:
 
 ```sh
-docker compose -f apps/hosted/self-host/compose.yaml up --build --detach
+EXECUTOR_BUILD_VERSION="$(git rev-parse HEAD)" docker compose -f apps/hosted/self-host/compose.yaml up --build --detach
 ```
+
+The build requires `EXECUTOR_BUILD_VERSION`, which names the build in telemetry.
+The command above sets it to the checked-out commit.
 
 Optional overrides are `BETTER_AUTH_URL` (exact public origin),
 `BETTER_AUTH_SECRET` (at least 32 characters), and `EXECUTOR_ENCRYPTION_KEY`
@@ -119,7 +122,7 @@ key instead of generating a replacement. To build and start an updated version:
 
 ```sh
 git pull --ff-only
-docker compose -f apps/hosted/self-host/compose.yaml up --build --detach
+EXECUTOR_BUILD_VERSION="$(git rev-parse HEAD)" docker compose -f apps/hosted/self-host/compose.yaml up --build --detach
 ```
 
 To stop the server while retaining its data:
@@ -145,6 +148,10 @@ App code can reach only public addresses. Requests to the dashboard origin go
 straight to the server, so the built-in Executor app works when that origin
 resolves to a private address. Set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true` to
 let app code reach other private network addresses.
+
+Upgrades apply pending data steps at startup, before serving, and log a summary
+line starting `Data step pass finished`. Set `EXECUTOR_DATA_STEPS=report` to hold
+them: each start then logs what they would change and writes nothing.
 
 Optional OIDC SSO and observability settings are listed in [compose.yaml](compose.yaml).
 

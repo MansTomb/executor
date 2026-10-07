@@ -6,7 +6,7 @@ import {
   RequestInvalid,
   StorageError,
 } from "@executor-js/sdk/core";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { OrganizationReference, RequireOrganization } from "./organization.ts";
 import { RequiredAction } from "./authorization.ts";
 

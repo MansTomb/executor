@@ -1,5 +1,5 @@
-import { accountOperations, defineApp } from "apps";
-import { mcpOperations } from "apps/mcp";
+import { accountRouter, defineApp } from "apps";
+import { mcpRouter } from "apps/mcp";
 
 import { verifyIdentity } from "./identity.ts";
 import { provider, restProvider } from "./provider.ts";
@@ -7,14 +7,14 @@ import { readTask, supportsTask } from "./task.ts";
 
 export default defineApp(
   { accounts: { service: provider.many(), rest: restProvider.many() } },
-  async ({ accounts, signal }) =>
-    accountOperations(
+  async ({ accounts, signal }) => ({ tools: await accountRouter(
       accounts.service,
       async (account) =>
-        mcpOperations({
+        mcpRouter({
           url: "https://mcp.clickup.com/mcp",
           headers: { Authorization: `Bearer ${account.fields.access_token}` },
           signal,
+          account,
           intercept: async ({ tool, context, input, next }) => {
             if (tool.name !== "clickup_get_task" || !supportsTask(input)) return next();
             const candidates = accounts.rest.filter((rest) => rest.fields.mcpAccountId === account.id);
@@ -31,5 +31,5 @@ export default defineApp(
           },
         }),
       { signal },
-    ),
+    ) }),
 );

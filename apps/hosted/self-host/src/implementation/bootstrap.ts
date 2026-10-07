@@ -1,14 +1,6 @@
-import {
-  Config,
-  ConfigProvider,
-  Effect,
-  Encoding,
-  FileSystem,
-  Option,
-  Path,
-  Redacted,
-  Schema,
-} from "effect";
+import { Config, ConfigProvider, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
+import { Hex } from "effect/encoding";
+import { InstallId } from "@executor-js/telemetry/product-analytics";
 import { lock } from "proper-lockfile";
 import { dataDirectory } from "../contracts/config.ts";
 
@@ -18,7 +10,7 @@ class BootstrapError extends Schema.TaggedError<BootstrapError>()("SelfHostBoots
 }) {}
 
 const sessionSecret = Schema.String.check(Schema.isMinLength(32));
-const encryptionKey = Schema.String.check(Schema.isPattern(/^[0-9a-fA-F]{64}$/));
+const encryptionKey = Schema.String.check(Schema.isPattern(/^[0-9a-fA-F]{64}$/u));
 
 /** Resolve self-host defaults before opening the database or starting diagnostics. */
 export const selfHostConfiguration = Effect.scoped(
@@ -96,7 +88,7 @@ export const selfHostConfiguration = Effect.scoped(
           return yield* new BootstrapError({
             message: `${variable} is missing for an existing database. Restore its original file from a backup or set the original value in the environment.`,
           });
-        const generated = Encoding.encodeHex(crypto.getRandomValues(new Uint8Array(32)));
+        const generated = Hex.encode(crypto.getRandomValues(new Uint8Array(32)));
         const temporary = yield* fs.makeTempDirectoryScoped({ directory, prefix: ".bootstrap-" });
         const staged = path.join(temporary, filename);
         const file = yield* fs.open(staged, { flag: "wx", mode: 0o600 });
@@ -107,12 +99,51 @@ export const selfHostConfiguration = Effect.scoped(
         yield* parent.sync;
         return Redacted.make(generated);
       });
+    // Analytics identity is not needed to read existing data, so a missing or invalid file is
+    // replaced instead of refusing to start.
+    const resolveIdentity = (
+      variable: string,
+      filename: string,
+      schema: typeof InstallId,
+      generate: () => string,
+    ) =>
+      Effect.gen(function* () {
+        const explicit = yield* Config.String(variable).pipe(Config.option);
+        if (Option.isSome(explicit) && Schema.is(schema)(explicit.value)) return explicit.value;
+        const destination = path.join(directory, filename);
+        if (yield* fs.exists(destination)) {
+          const saved = (yield* fs.readFileString(destination)).trim();
+          if (Schema.is(schema)(saved)) return saved;
+        }
+        const generated = generate();
+        const temporary = yield* fs.makeTempDirectoryScoped({ directory, prefix: ".bootstrap-" });
+        const staged = path.join(temporary, filename);
+        const file = yield* fs.open(staged, { flag: "wx", mode: 0o600 });
+        yield* file.writeAll(new TextEncoder().encode(generated));
+        yield* file.sync;
+        yield* fs.rename(staged, destination);
+        return generated;
+      });
     const secret = yield* resolveSecret("BETTER_AUTH_SECRET", "auth-secret.key", sessionSecret);
     const key = yield* resolveSecret("EXECUTOR_ENCRYPTION_KEY", "encryption.key", encryptionKey);
+    const install = yield* resolveIdentity("EXECUTOR_INSTALL_ID", "install-id", InstallId, () =>
+      crypto.randomUUID(),
+    );
+    const analyticsSecret = yield* resolveIdentity(
+      "EXECUTOR_ANALYTICS_SECRET",
+      "analytics-secret.key",
+      encryptionKey,
+      () => Hex.encode(crypto.getRandomValues(new Uint8Array(32))),
+    );
     return ConfigProvider.fromUnknown({
       BETTER_AUTH_URL: origin,
       BETTER_AUTH_SECRET: Redacted.value(secret),
       EXECUTOR_ENCRYPTION_KEY: Redacted.value(key),
+      EXECUTOR_INSTALL_ID: install,
+      EXECUTOR_ANALYTICS_SECRET: analyticsSecret,
+      // The packaged image's native host supplies these for the workerd product.
+      EXECUTOR_HOST_OS: process.platform,
+      EXECUTOR_HOST_ARCH: process.arch,
     }).pipe(ConfigProvider.orElse(base));
   }),
 ).pipe(

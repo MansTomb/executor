@@ -7,6 +7,8 @@ import { Target } from "../support/platform.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Evidence } from "../support/evidence.ts";
+import { appsManifest } from "../support/apps-release.ts";
+import { wholeStringInputPattern } from "../support/mcp-input-patterns.ts";
 
 const App = Schema.Struct({
   id: Schema.String,
@@ -19,6 +21,8 @@ const Index = Schema.Struct({
     Schema.Struct({
       name: Schema.String,
       app: Schema.Struct({ id: Schema.String, slug: Schema.String }),
+      deployment: Schema.String,
+      profile: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -38,6 +42,7 @@ const files = (version: string) => [
     content: `---\nname: app-authoring\ndescription: App-specific instructions.\n---\nVersion ${version}.\n`,
   },
   { path: "skills/app-authoring/references/example.md", content: `Example ${version}.` },
+  appsManifest,
 ];
 
 layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
@@ -74,18 +79,71 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
           session.send("DELETE", `/v1/apps/${copy.id}`, undefined, headers).pipe(Effect.orDie),
         );
         const client = yield* mcp.connect(target.apiKey, "local-skills");
+        const instructions = yield* client.use("Read the server's MCP instructions", (client) =>
+          Promise.resolve(client.getInstructions()),
+        );
         const index = yield* client.use("Discover local app skills", (client, signal) =>
           client.callTool({ name: "skills", arguments: {} }, undefined, { signal }),
         );
         const entries = (yield* Schema.decodeUnknownEffect(Index)(index.structuredContent)).skills;
         const guide = entries.find(
-          (skill) => skill.name === "app-authoring" && skill.app.slug === "executor",
+          (skill) => skill.name === "executor" && skill.app.slug === "executor",
         );
         if (guide === undefined)
-          return yield* Effect.die("The Executor app must publish its authoring skill");
-        expect(entries.map((skill) => skill.app.id).sort()).toEqual(
-          [app.id, copy.id, guide.app.id].sort(),
+          return yield* Effect.die("The Executor app must publish its entry skill");
+        expect(entries.map((skill) => `${skill.app.id}/${skill.name}`).sort()).toEqual(
+          [
+            `${app.id}/app-authoring`,
+            `${copy.id}/app-authoring`,
+            `${guide.app.id}/app-authoring`,
+            `${guide.app.id}/code-mode`,
+            `${guide.app.id}/executor`,
+          ].sort(),
         );
+        const entry = yield* client.use("Read the Executor app's entry skill", (client, signal) =>
+          client.callTool(
+            { name: "skills", arguments: { app: guide.app.slug, name: guide.name } },
+            undefined,
+            { signal },
+          ),
+        );
+        const entryDocument = yield* Schema.decodeUnknownEffect(Document)(entry.structuredContent);
+        expect(entryDocument.files).toContain("feedback.md");
+        // Local sends the same entry skill as its MCP instructions, without the frontmatter.
+        expect(instructions).toBe(
+          entryDocument.content.replace(/^---\n[\s\S]*?\n---\n/, "").trim(),
+        );
+        if (guide.profile === undefined)
+          return yield* Effect.die("The Executor app's skill summary must name its profile");
+        const listed = yield* client.use("Discover the skills input schema", (client) =>
+          client.listTools(),
+        );
+        expect(guide.deployment).toMatch(
+          yield* wholeStringInputPattern(listed.tools, "skills", "deployment"),
+        );
+        expect(guide.profile).toMatch(
+          yield* wholeStringInputPattern(listed.tools, "skills", "profile"),
+        );
+        const selected = yield* client.use(
+          "Read the guide with its returned deployment and profile",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "skills",
+                arguments: {
+                  app: guide.app.slug,
+                  name: guide.name,
+                  deployment: guide.deployment,
+                  profile: guide.profile,
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(Document)(selected.structuredContent)).deployment,
+        ).toBe(guide.deployment);
         const read = yield* client.use(
           "Read the app-owned app-authoring document",
           (client, signal) =>
@@ -101,7 +159,7 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
           "Read the Executor app's deployed authoring guide",
           (client, signal) =>
             client.callTool(
-              { name: "skills", arguments: { app: guide.app.slug, name: guide.name } },
+              { name: "skills", arguments: { app: guide.app.slug, name: "app-authoring" } },
               undefined,
               { signal },
             ),
@@ -117,7 +175,7 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
               name: "skills",
               arguments: {
                 app: guide.app.slug,
-                name: guide.name,
+                name: "app-authoring",
                 deployment: guideDocument.deployment,
                 file: "ui.md",
               },
@@ -144,7 +202,7 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
             client.callTool(
               {
                 name: "execute",
-                arguments: { code: 'return await tools.search({ query: "appProfiles_create" });' },
+                arguments: { code: 'return await tools.search({ query: "appProfiles.create" });' },
               },
               undefined,
               { signal },
@@ -158,8 +216,8 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
             value: {
               items: expect.arrayContaining([
                 expect.objectContaining({
-                  path: expect.stringContaining("appProfiles_create"),
-                  signature: expect.stringContaining("idempotencyKey"),
+                  path: expect.stringContaining("appProfiles.create"),
+                  input: expect.stringContaining("idempotencyKey"),
                 }),
               ]),
             },
@@ -174,11 +232,11 @@ layer(TestLive, { excludeTestServices: true })("Local skills", (it) => {
                 arguments: {
                   code: `const executor = ${referenceTools};
 const path = { app: ${JSON.stringify(app.id)} };
-const created = await executor.mutations.appProfiles_create({ path, body: { owner: "local", subject: "local", accounts: {}, idempotencyKey: "management-docs-profile" } });
+const created = await executor.appProfiles.create({ path, body: { owner: "local", subject: "local", accounts: {}, idempotencyKey: "management-docs-profile" } });
 const target = { ...path, profile: created.id };
-const read = await executor.queries.appProfiles_get({ path: target });
-const updated = await executor.mutations.appProfiles_update({ path: target, body: { expectedRevision: read.revision, accounts: {} } });
-const listed = await executor.queries.appProfiles_list({ path });
+const read = await executor.appProfiles.get({ path: target });
+const updated = await executor.appProfiles.update({ path: target, body: { expectedRevision: read.revision, accounts: {} } });
+const listed = await executor.appProfiles.list({ path });
 return { sameProfile: created.id === read.id && read.id === updated.id, listed: listed.some((profile) => profile.id === created.id), revision: updated.revision, previousRevision: read.revision };`,
                 },
               },
@@ -213,7 +271,7 @@ return { sameProfile: created.id === read.id && read.id === updated.id, listed: 
               {
                 name: "execute",
                 arguments: {
-                  code: `const found = await ${referenceTools}.queries.framework_search({query: "withOptimisticUpdate"}); return await ${referenceTools}.queries.framework_describe({symbol: "AppMutation.withOptimisticUpdate", ...found.reference});`,
+                  code: `const found = await ${referenceTools}.framework.search({query: {text: "withOptimisticUpdate"}}); return await ${referenceTools}.framework.describe({query: {symbol: "AppMutation.withOptimisticUpdate", ...found.reference}});`,
                 },
               },
               undefined,

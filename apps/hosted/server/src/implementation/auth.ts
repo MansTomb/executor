@@ -1,14 +1,18 @@
 import { apiKeys, apiKeyManagement } from "./api-keys.ts";
-import { CurrentUsage, observeProductOperation } from "../contracts/product-analytics.ts";
+import {
+  CurrentUsage,
+  isReadMethod,
+  observeProductOperation,
+  traceProductRead,
+} from "../contracts/product-analytics.ts";
 import { RequireOrganization } from "../contracts/organization.ts";
 import { explicitOrganizationAuth } from "./organization-auth.ts";
 import { mcpOAuthPlugins } from "./mcp-oauth.ts";
 import type { BetterAuthOptions } from "better-auth";
-import { organization } from "better-auth/plugins/organization";
 import { admin } from "better-auth/plugins/admin";
 import { Config, ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpUrl } from "@executor-js/sdk/core";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   Authentication,
   AuthenticationUnavailable,
@@ -20,10 +24,17 @@ import {
   Unauthorized,
 } from "../contracts/auth.ts";
 
-/** Connected-account OAuth uses the configured relay URL, or this host's callback. */
+/**
+ * Connected-account OAuth uses the configured relay URL, or this host's callback. It is returned
+ * serialized, the form the SDK parses it to and sends as `redirect_uri`, so setup screens and the
+ * client metadata document list that exact string, whatever form the operator configured.
+ */
 export const accountOAuthRedirectUri = (
   auth: Pick<typeof Authentication.Service, "origin" | "oauthRedirectUri">,
-) => HttpUrl.make(auth.oauthRedirectUri ?? new URL("/api/oauth/callback", auth.origin).href);
+) =>
+  HttpUrl.make(
+    new URL(auth.oauthRedirectUri ?? new URL("/api/oauth/callback", auth.origin).href).href,
+  );
 
 /** Explicit host configuration. Missing or weak signing secrets fail startup/deploy. */
 export const authSettings = Config.all({
@@ -56,7 +67,10 @@ export const authSettings = Config.all({
   ),
 );
 
-/** Shared session and protocol defaults; each host supplies its sign-in policy. */
+/**
+ * Shared session and protocol defaults; each host supplies its sign-in policy and its
+ * organization plugin, so no host builds an organization plugin it then discards.
+ */
 export const authOptions = (
   settings: Pick<Effect.Success<typeof authSettings>, "url" | "oauthRedirectUri">,
   ipAddressHeaders: string[],
@@ -69,16 +83,20 @@ export const authOptions = (
     emailAndPassword: { enabled: false },
     account: { encryptOAuthTokens: true },
     onAPIError: { errorURL: `${settings.url}/login` },
-    plugins: [
-      admin(),
-      explicitOrganizationAuth,
-      apiKeys,
-      organization({ disableOrganizationDeletion: true }),
-      ...mcpOAuthPlugins(settings.url),
-    ],
+    plugins: [admin(), explicitOrganizationAuth, apiKeys, ...mcpOAuthPlugins(settings.url)],
     hooks: { before: apiKeyManagement },
-    session: { cookieCache: { enabled: false } },
-    rateLimit: { enabled: true, storage: "database" },
+    // Session age gates nothing: the account Security page lists sessions however long ago this
+    // browser signed in. Account deletion is disabled; enabling it needs its own confirmation.
+    session: { cookieCache: { enabled: false }, freshAge: 0 },
+    rateLimit: {
+      enabled: true,
+      storage: "database",
+      // Every dashboard page reads the session, and organization pages the membership list, on
+      // the server with the visitor's address. These reads require a valid session cookie and
+      // change nothing; a per-address limit on them would make whole pages unavailable to people
+      // sharing an address. Sign-in, sign-up and other credential routes keep their limits.
+      customRules: { "/get-session": false, "/organization/list": false },
+    },
     advanced: {
       cookiePrefix: "executor-hosted",
       ipAddress: { ipAddressHeaders },
@@ -121,17 +139,20 @@ export const requireUserLive = Layer.effect(
         }
         const principal = yield* auth.current(new Headers(request.headers));
         if (principal === null) return yield* Effect.fail(new Unauthorized());
+        const operation = {
+          area: group.identifier,
+          operation: endpoint.identifier,
+          method: endpoint.method,
+        };
         const tracked = endpoint.middlewares.has(RequireOrganization)
           ? response
-          : observeProductOperation(
-              { area: group.identifier, operation: endpoint.identifier, method: endpoint.method },
-              response,
-              (result) => ({
+          : isReadMethod(endpoint.method)
+            ? traceProductRead(operation, response)
+            : observeProductOperation(operation, response, (result) => ({
                 status_code: result.status,
                 ok: result.status < 400,
                 outcome: result.status < 400 ? "success" : "failure",
-              }),
-            );
+              }));
         return (yield* tracked.pipe(
           Effect.tapCause(ErrorReporter.report),
           Effect.provideService(CurrentPrincipal, principal),

@@ -9,9 +9,9 @@ import {
   type BrowserApprovals,
 } from "@executor-js/mcp/browser";
 import { Effect, Schema } from "effect";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { McpAuthentication } from "../contracts/mcp.ts";
-import { restrictMcpBackend, permitsDelivery } from "@executor-js/mcp-auth";
+import { restrictMcpBackend, permitsBrowserApproval } from "@executor-js/mcp-auth";
 import { CurrentOrganization } from "../contracts/organization.ts";
 import type { McpAccess } from "../contracts/mcp.ts";
 import { mcpSessionKey } from "./mcp-http.ts";
@@ -48,7 +48,7 @@ const browserAccess = Effect.gen(function* () {
   Effect.catchTags({
     AuthenticationUnavailable: () => Effect.succeed(HttpServerResponse.empty({ status: 503 })),
     McpUnauthorized: () => Effect.succeed(HttpServerResponse.empty({ status: 401 })),
-    McpForbidden: () => Effect.succeed(HttpServerResponse.empty({ status: 403 })),
+    McpApprovalForbidden: () => Effect.succeed(HttpServerResponse.empty({ status: 403 })),
     SchemaError: () => Effect.succeed(HttpServerResponse.empty({ status: 400 })),
   }),
 );
@@ -82,7 +82,7 @@ export const hostedMcpApproval = (
 ) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    if (!permitsDelivery(access.grant, "browser")) return HttpServerResponse.empty({ status: 403 });
+    if (!permitsBrowserApproval(access.grant)) return HttpServerResponse.empty({ status: 403 });
     const caller = mcpSessionKey(access);
     const view = yield* approvals.get(caller, address);
     if (view.status === "pending") {

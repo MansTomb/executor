@@ -1,12 +1,8 @@
+import { withApps } from "../support/apps-release.ts";
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Effect, Layer, Schema } from "effect";
-import {
-  HttpRouter,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/unstable/http";
+import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -179,26 +175,24 @@ layer(HostedLive, { excludeTestServices: true })("MCP result contracts", (it) =>
             {
               path: "package.json",
               content: JSON.stringify({
-                dependencies: {
-                  "@modelcontextprotocol/sdk": "1.30.0",
-                },
+                dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }),
               }),
             },
             {
               path: "index.ts",
-              content: `import { defineApp, query, object, json, jsonSchema } from "apps";
-import { mcpOperations } from "apps/mcp";
+              content: `import { defineApp, query, object, json, jsonSchema, router } from "apps";
+import { mcpRouter } from "apps/mcp";
 export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({
-  ...await mcpOperations({ url: ${JSON.stringify(url)}, signal, cache }),
-  queries: {
+  tools: router({ upstream: await mcpRouter({ url: ${JSON.stringify(url)}, signal, cache }),
+  queries: router({
     validate_schema: query({ input: object({ schema: json(), values: json() }) }, async (_, { schema, values }) => {
       const decoder = jsonSchema(schema);
       return values.map(value => {
         try { decoder.parse(value); return true; } catch { return false; }
       });
     }),
-  },
-}));`,
+  }),
+}) }));`,
             },
           ],
         });
@@ -221,7 +215,7 @@ export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({
         yield* evidence.json("discovered-schemas.json", descriptions);
         const schemas = new Map(descriptions.items.map((tool) => [tool.name, tool.outputSchema]));
         const schemaFor = (name: string) => {
-          const schema = schemas.get(`queries.${name}`);
+          const schema = schemas.get(`upstream.${name}`);
           if (schema === undefined) throw new Error(`Missing output schema for ${name}`);
           return schema;
         };
@@ -275,7 +269,7 @@ export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({
 
         const call = (name: string) =>
           api.request(actors.owner, "POST", `${path}/tools/call`, {
-            tool: `queries.${name}`,
+            tool: `upstream.${name}`,
             input: {},
           });
         expect((yield* call("machines")).body).toEqual(structured);
@@ -299,16 +293,17 @@ export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({
           files: [
             {
               path: "package.json",
-              content: JSON.stringify({ dependencies: { "@modelcontextprotocol/sdk": "1.30.0" } }),
+              content: JSON.stringify({
+                dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }),
+              }),
             },
             {
               path: "index.ts",
-              content: `import { defineApp, accountOperations } from "apps";
-import { mcpOperations } from "apps/mcp";
-export default defineApp({ accounts: {} }, async ({ signal, cache }) =>
-  accountOperations([{ id: "first" }, { id: "second" }], account => mcpOperations({
-    url: ${JSON.stringify(url)}, headers: { "X-Fixture-Variant": account.id }, signal, cache,
-  }), { signal }),
+              content: `import { defineApp, accountRouter } from "apps";
+import { mcpRouter } from "apps/mcp";
+export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({ tools: await accountRouter([{ id: "acc_00000000-0000-4000-8000-000000000001", variant: "first" }, { id: "acc_00000000-0000-4000-8000-000000000002", variant: "second" }], account => mcpRouter({
+    url: ${JSON.stringify(url)}, account, headers: { "X-Fixture-Variant": account.variant }, signal,
+  }), { signal }) }),
 );`,
             },
           ],
@@ -326,9 +321,7 @@ export default defineApp({ accounts: {} }, async ({ signal, cache }) =>
           yield* api.request(actors.owner, "GET", `${groupedPath}/tools`),
         );
         for (const name of ["tree", "static_tree"]) {
-          const schema = grouped.items.find(
-            (tool) => tool.name === `queries.${name}`,
-          )?.outputSchema;
+          const schema = grouped.items.find((tool) => tool.name === name)?.outputSchema;
           if (schema === undefined) return yield* Effect.die(`Missing grouped ${name} schema`);
           expect(
             yield* validate(schema, [
@@ -341,7 +334,7 @@ export default defineApp({ accounts: {} }, async ({ signal, cache }) =>
           ).toEqual(name === "tree" ? [true, true, false] : [true, false]);
         }
         const groupedMachines = grouped.items.find(
-          (tool) => tool.name === "queries.machines",
+          (tool) => tool.name === "machines",
         )?.outputSchema;
         if (groupedMachines === undefined)
           return yield* Effect.die("Missing grouped machines schema");
@@ -379,7 +372,7 @@ export default defineApp({ accounts: {} }, async ({ signal, cache }) =>
               ),
             );
         const found = yield* execute(
-          `return await tools.search({ namespace: ${JSON.stringify(app.slug)}, query: "machines", limit: 1 });`,
+          `const matches = await tools.search({ namespace: ${JSON.stringify(app.slug)}, query: "machines", limit: 1 }); return await tools.search.describe({ paths: matches.items.map(item => item.path) });`,
         );
         expect(found.execution.ok).toBe(true);
         const search = yield* Schema.decodeUnknownEffect(

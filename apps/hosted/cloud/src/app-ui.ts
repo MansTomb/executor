@@ -2,29 +2,24 @@ import { requestServices } from "@executor-js/hosted-server";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
-import { AppSignInApi, appSignInPage, appSignInScript, appPrivateHeaders } from "apps/ui/auth";
+import { appPrivateHeaders, appSignInCallbackPath } from "apps/ui/auth";
 import { AppUiApi } from "apps/ui/contracts";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Config, Effect, Layer, Option } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpRouter, HttpServer, HttpServerError, HttpServerResponse } from "effect/http";
 import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
 import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
 import { cloudSentry } from "./implementation/error-reporting.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
 import { postHogBindings } from "./infrastructure/posthog.ts";
-import { cloudAuth } from "./infrastructure/auth.ts";
+import { cloudAppSessions } from "./infrastructure/app-sessions.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
-import { cloudEmail } from "./infrastructure/email.ts";
-import { cloudExecutor } from "./infrastructure/executor.ts";
-import {
-  cloudArtifactsTokens,
-  ArtifactsTokenCoordinator,
-} from "./infrastructure/artifacts-tokens.ts";
+import { cloudAppPagesProduct } from "./infrastructure/app-pages-product.ts";
 import { sentryBindings } from "./infrastructure/sentry.ts";
-import { billingBindings } from "./infrastructure/billing.ts";
-import { AppDataSupervisor } from "./infrastructure/app-data.ts";
+import { cloudOrigin } from "./infrastructure/stage.ts";
+import { appDataSupervisors } from "./infrastructure/app-data.ts";
 import { Api } from "./infrastructure/api-worker.ts";
 import {
   cloudObservability,
@@ -32,7 +27,7 @@ import {
   telemetryBindings,
 } from "./infrastructure/telemetry.ts";
 
-import { sentryWorkerBuild } from "./infrastructure/sentry-build.ts";
+import { workerBuild } from "./infrastructure/worker-build.ts";
 
 /** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
 export default class AppPages extends Cloudflare.Worker<AppPages>()(
@@ -48,7 +43,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
       return yield* Effect.die(new Error("App UI requires EXECUTOR_APP_UI_BASE_URL"));
     return {
       main: import.meta.url,
-      build: sentryWorkerBuild("app-pages"),
+      build: workerBuild("app-pages"),
       ...(yield* cloudObservability),
       env: {
         ...(yield* postHogBindings).env,
@@ -57,7 +52,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
           scriptName: (yield* Api).workerName,
         }),
         ...(yield* telemetryBindings),
-        ...(yield* billingBindings),
         ...(yield* sentryBindings).env,
       },
       compatibility: {
@@ -77,18 +71,14 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
   Effect.gen(function* () {
     const reportErrors = yield* cloudSentry;
     const analytics = yield* cloudAnalytics;
-    const email = yield* cloudEmail.pipe(Effect.orDie);
-    const auth = yield* cloudAuth(email.send);
-    const executor = yield* cloudExecutor(
-      yield* AppDataSupervisor.from(Api),
-      yield* cloudArtifactsTokens(yield* ArtifactsTokenCoordinator.from(Api)).pipe(Effect.orDie),
-    );
+    const appSessions = yield* cloudAppSessions;
+    const executor = yield* cloudAppPagesProduct(yield* appDataSupervisors);
     const base = yield* cloudAppUiBase.pipe(Effect.orDie);
-    const appUi = hostedAppUi(appAddresses(auth.origin, base));
-    const services = requestServices(Layer.mergeAll(auth.appSessions, executor));
+    const appUi = hostedAppUi(appAddresses(yield* cloudOrigin.pipe(Effect.orDie), base));
+    const services = requestServices(Layer.mergeAll(appSessions, executor));
     const notFound = HttpServerResponse.empty({ status: 404 });
     const protectedRoutes = Layer.mergeAll(
-      HttpApiBuilder.layer(AppSignInApi).pipe(Layer.provide(appUi.appAuth)),
+      HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
       HttpRouter.add("GET", "/_executor/assets/:deployment/*", appUi.asset),
       HttpRouter.add("GET", "/_executor/watch.js", appUi.watch),
       HttpRouter.add("GET", "/_executor/version", appUi.versions),
@@ -102,8 +92,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         Layer.provide(appUi.calls),
         Layer.provide(appUi.sessionAccess.combine(services).layer),
       ),
-      HttpRouter.add("GET", "/_executor/auth/callback", appSignInPage()),
-      HttpRouter.add("GET", "/_executor/auth/browser.js", appSignInScript()),
       HttpRouter.add("GET", "/_executor/*", notFound),
       HttpRouter.add("GET", "/api/*", notFound),
       HttpRouter.add("GET", "/mcp/*", notFound),
@@ -117,16 +105,23 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const lifetime = yield* previewLifetime;
     return {
       fetch: handle.pipe(
+        // Every GET reaches the page route, so an unmatched route is another method. Not found,
+        // as on self-host.
+        Effect.catchIf(
+          (error): error is HttpServerError.HttpServerError =>
+            HttpServerError.isHttpServerError(error) && error.reason._tag === "RouteNotFound",
+          () =>
+            Effect.succeed(HttpServerResponse.empty({ status: 404, headers: appPrivateHeaders })),
+        ),
         analytics.wrap,
         recordRequestRejections,
         reportErrors,
-        Effect.catch(() =>
-          Effect.succeed(
-            HttpServerResponse.text("App unavailable.", {
-              status: 503,
-              headers: appPrivateHeaders,
-            }),
-          ),
+        // Request errors keep their status at the Worker's boundary. Anything else was reported
+        // above and is Executor's fault; the response does not reveal it.
+        Effect.catch((error) =>
+          HttpServerError.isHttpServerError(error)
+            ? Effect.fail(error)
+            : Effect.succeed(HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders })),
         ),
         requestTiming,
         lifetime.http,

@@ -1,15 +1,22 @@
+import { usePreload } from "@executor-js/ui/dashboard/context";
+import { useGuardedPreload } from "@executor-js/dashboard-start/registry";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
-import { OrganizationSlug, OrganizationReference } from "@executor-js/hosted-server/organization";
+import {
+  OrganizationSlug,
+  OrganizationReference,
+  organizationHandle,
+  organizationSlugMaxLength,
+} from "@executor-js/hosted-server/organization";
 import { organizationTargetAtom } from "../../contracts/organization-reference.ts";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { type Atom, AsyncResult } from "effect/reactivity";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { OrganizationId, OrganizationAccess } from "@executor-js/hosted-server/organization";
-import { Link, Navigate, useLocation, useNavigate } from "@tanstack/react-router";
+import { Link, Navigate, useLocation, useMatches, useNavigate } from "@tanstack/react-router";
 import { Cause, Exit, Match, Option, Schema } from "effect";
-import { sessionAtom } from "../../contracts/auth.ts";
+import { lastOrganizationAtom, sessionAtom } from "../../contracts/auth.ts";
 import { OrganizationResume } from "../../contracts/navigation.ts";
-import { readLastOrganization, rememberOrganization, forgetOrganization } from "../session-hint.ts";
+import { rememberOrganization, forgetOrganization } from "../last-organization.ts";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Add01Icon, ArrowUp01Icon } from "@hugeicons/core-free-icons";
 import { Dialog, DialogContent, DialogTitle } from "@executor-js/ui/components/dialog";
@@ -23,15 +30,7 @@ import {
   DropdownMenuTrigger,
 } from "@executor-js/ui/components/dropdown-menu";
 import { Avatar, AvatarFallback, AvatarImage } from "@executor-js/ui/components/avatar";
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   accessAtom,
   organizationPresentation,
@@ -41,10 +40,16 @@ import {
   type OrganizationSummary,
 } from "../../contracts/organization.ts";
 import { Button } from "@executor-js/ui/components/button";
-import { Input } from "@executor-js/ui/components/input";
 import { Spinner } from "@executor-js/ui/components/spinner";
 
 import { HostedDashboard } from "./dashboard-bindings.tsx";
+import {
+  OrganizationForm,
+  OrganizationFormError,
+  OrganizationFormField,
+  OrganizationFormHeader,
+  OrganizationFormSubmit,
+} from "./organization-form.tsx";
 import { OrganizationSwitcherSkeleton } from "./dashboard-frame.tsx";
 import { HostedEntry, DashboardEntryPending, OrganizationLookupError } from "./entry.tsx";
 
@@ -64,6 +69,8 @@ const OrganizationRouteContext = createContext<{
   readonly id: OrganizationId | undefined;
   readonly name: string | undefined;
   readonly unavailable: boolean;
+  /** Whether the page may render; see `useGuardedPreload`. */
+  readonly released: boolean;
   readonly metadataFailed: boolean;
   readonly retry: () => void;
 } | null>(null);
@@ -73,8 +80,17 @@ export function useOrganizationRoute() {
   if (value === null) throw new Error("Organization route context is missing");
   return value;
 }
-/** Show only content errors; keep the dashboard and navigation mounted. */
-export function OrganizationContent({ children }: { readonly children: ReactNode }) {
+/**
+ * Show only content errors; keep the dashboard and navigation mounted. A refusal shows itself;
+ * until access succeeds, a server render shows `pending` instead of the page.
+ */
+export function OrganizationContent({
+  children,
+  pending,
+}: {
+  readonly children: ReactNode;
+  readonly pending: ReactNode;
+}) {
   const route = useOrganizationRoute();
   return route.unavailable ? (
     <section className="p-6">
@@ -92,8 +108,10 @@ export function OrganizationContent({ children }: { readonly children: ReactNode
         This organization does not exist or you do not have access.
       </EmptyState>
     </section>
-  ) : (
+  ) : route.released ? (
     children
+  ) : (
+    pending
   );
 }
 /** Native organization settings need verified metadata, but their wait stays inside the page. */
@@ -143,20 +161,22 @@ export function organizationError(cause: Cause.Cause<OrganizationFailed | Schema
   });
 }
 
-/** Explicit creation, never an implicitly provisioned global organization. */
+/** Explicit creation, never an implicitly provisioned global organization. Children head the form. */
 export function CreateOrganization({
   onCreated,
-  heading = <h2>Create an organization</h2>,
+  children,
 }: {
   readonly onCreated?: (organization: OrganizationSummary) => void | Promise<void>;
-  readonly heading?: ReactNode;
+  readonly children: ReactNode;
 }) {
   const create = useAtomSet(createOrganizationAtom, { mode: "promiseExit" });
   const state = useAtomValue(createOrganizationAtom);
   const [error, setError] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  // The handle follows the name until someone edits it.
+  const [handle, setHandle] = useState<string | null>(null);
   return (
-    <form
-      className="settings-form [&_h2]:text-[15px] [&_h2]:font-medium flex flex-col gap-4 w-full max-w-100 mt-7 [&_label]:flex [&_label]:flex-col [&_label]:gap-1.5 [&_label]:text-[13px] [&_>_button]:self-start"
+    <OrganizationForm
       onSubmit={async (event) => {
         event.preventDefault();
         setError(null);
@@ -169,66 +189,34 @@ export function CreateOrganization({
         else await onCreated?.(result.value);
       }}
     >
-      {heading}
-      <label>
-        Name
-        <Input name="name" placeholder="Acme" required maxLength={100} disabled={state.waiting} />
-      </label>
-      <label>
-        Handle
-        <Input
-          name="slug"
-          placeholder="acme"
-          required
-          pattern="[a-z0-9]+(-[a-z0-9]+)*"
-          title="Lowercase letters, numbers, and hyphens"
-          maxLength={80}
-          disabled={state.waiting}
-        />
-      </label>
-      {error && (
-        <p className="auth-error text-destructive text-[13px]" role="alert">
-          {error}
-        </p>
-      )}
-      <Button loading={state.waiting}>Create organization</Button>
-    </form>
-  );
-}
-
-/** Shared creation modal. Return keyboard focus to the button that opened it. */
-export function CreateOrganizationDialog({
-  open,
-  onOpenChange,
-  triggerRef,
-}: {
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
-  readonly triggerRef: RefObject<HTMLButtonElement | null>;
-}) {
-  const navigate = useNavigate();
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        className="organization-dialog max-h-[calc(100dvh-32px)] w-[420px] overflow-y-auto rounded-[10px] sm:max-w-[420px] [&_.settings-form]:m-0 [&_.settings-form]:max-w-none [&_.settings-form_h2]:pr-7 [&_.settings-form_h2]:mb-1"
-        aria-describedby={undefined}
-        onCloseAutoFocus={(event) => {
-          event.preventDefault();
-          triggerRef.current?.focus();
-        }}
-      >
-        <CreateOrganization
-          heading={<DialogTitle>Create organization</DialogTitle>}
-          onCreated={async ({ slug }) => {
-            onOpenChange(false);
-            await navigate({
-              to: "/org/$organizationSlug/apps",
-              params: { organizationSlug: slug },
-            });
-          }}
-        />
-      </DialogContent>
-    </Dialog>
+      <OrganizationFormHeader>{children}</OrganizationFormHeader>
+      <OrganizationFormField
+        label="Name"
+        name="name"
+        placeholder="Acme"
+        value={name}
+        onChange={(event) => setName(event.target.value)}
+        required
+        maxLength={100}
+        autoComplete="organization"
+        autoFocus
+        disabled={state.waiting}
+      />
+      <OrganizationFormField
+        label="Handle"
+        name="slug"
+        placeholder="acme"
+        value={handle ?? organizationHandle(name)}
+        onChange={(event) => setHandle(event.target.value)}
+        required
+        pattern="[a-z0-9]+(-[a-z0-9]+)*"
+        title="Lowercase letters, numbers, and hyphens"
+        maxLength={organizationSlugMaxLength}
+        disabled={state.waiting}
+      />
+      <OrganizationFormError>{error}</OrganizationFormError>
+      <OrganizationFormSubmit loading={state.waiting}>Create organization</OrganizationFormSubmit>
+    </OrganizationForm>
   );
 }
 
@@ -252,7 +240,8 @@ function ResumeOrganization({
   readonly userId: string;
   readonly children: ReactNode;
 }) {
-  const [organization] = useState(() => readLastOrganization(userId));
+  const saved = useAtomValue(lastOrganizationAtom);
+  const [organization] = useState(() => (saved?.user === userId ? saved.organization : undefined));
   return organization === undefined ? (
     children
   ) : (
@@ -279,6 +268,37 @@ function useOrganizationQueryReference(routeReference: OrganizationReference) {
   return reference;
 }
 
+/**
+ * The reads an organization page starts with, from its URL alone. A server render waits for the
+ * access check before it renders the page, so without these the page's reads would start only
+ * after access settles. The boundary starts them with the check, and a document whose access
+ * does not succeed carries none of their values. The browser renders the page while access loads
+ * and needs no list.
+ */
+export type OrganizationPageReads = (
+  organization: OrganizationReference,
+  params: Readonly<Record<string, unknown>>,
+) => ReadonlyArray<Atom.Atom<unknown>>;
+
+declare module "@tanstack/react-router" {
+  interface StaticDataRouteOption {
+    /** Started by the organization boundary together with its access check. */
+    readonly organizationReads?: OrganizationPageReads;
+  }
+}
+
+/** The API refused this user the organization, as opposed to failing to answer. */
+const refused = (access: Atom.Type<ReturnType<typeof accessAtom>>) =>
+  AsyncResult.isFailure(access) &&
+  Option.match(Cause.findErrorOption(access.cause), {
+    onNone: () => false,
+    onSome: (error) =>
+      Match.value(error).pipe(
+        Match.tag("OrganizationForbidden", "Unauthorized", () => true),
+        Match.orElse(() => false),
+      ),
+  });
+
 /** Start page reads from the URL immediately. Access and organization controls resolve alongside them. */
 export function OrganizationBoundary({
   slug,
@@ -289,6 +309,12 @@ export function OrganizationBoundary({
 }) {
   const reference = useOrganizationQueryReference(
     Schema.decodeUnknownSync(OrganizationReference)(slug),
+  );
+  const matches = useMatches();
+  usePreload(accessAtom(reference), organizationsAtom);
+  const released = useGuardedPreload(
+    accessAtom(reference),
+    matches.flatMap((match) => match.staticData.organizationReads?.(reference, match.params) ?? []),
   );
   const access = useAtomValue(accessAtom(reference));
   const session = useAtomValue(sessionAtom);
@@ -304,16 +330,7 @@ export function OrganizationBoundary({
     Schema.decodeUnknownOption(OrganizationResume)(location.state.organizationResume),
   );
   const userId = Option.getOrUndefined(AsyncResult.value(session))?.user.id;
-  const unavailable =
-    AsyncResult.isFailure(access) &&
-    Option.match(Cause.findErrorOption(access.cause), {
-      onNone: () => false,
-      onSome: (error) =>
-        Match.value(error).pipe(
-          Match.tag("OrganizationForbidden", "Unauthorized", () => true),
-          Match.orElse(() => false),
-        ),
-    });
+  const unavailable = refused(access);
   const rejectedResume =
     unavailable &&
     resume !== undefined &&
@@ -322,8 +339,13 @@ export function OrganizationBoundary({
   useEffect(() => {
     if (!rejectedResume || resume === undefined) return;
     forgetOrganization(resume.userId, resume.organization);
+    // `/` resumes from the memory the document was served with. Forget that copy too, or `/`
+    // would reopen the rejected organization and never reach the chooser.
+    const saved = registry.get(lastOrganizationAtom);
+    if (saved?.user === resume.userId && saved.organization === resume.organization)
+      registry.set(lastOrganizationAtom, null);
     void navigate({ to: "/", replace: true });
-  }, [rejectedResume, resume, navigate]);
+  }, [rejectedResume, resume, navigate, registry]);
   useEffect(() => {
     if (
       !AsyncResult.isSuccess(access) ||
@@ -410,6 +432,7 @@ export function OrganizationBoundary({
         id: target,
         name: organization?.name,
         unavailable,
+        released,
         metadataFailed: AsyncResult.isFailure(access) || AsyncResult.isFailure(organizations),
         retry: () => {
           refreshAccess();
@@ -445,7 +468,7 @@ export function OrganizationEntry({ allowCreate = true }: { readonly allowCreate
     <HostedEntry
       title={organizations.value.length > 0 ? "Choose an organization" : "Your organizations"}
     >
-      <div className="organization-entry flex flex-col gap-6 [&_.settings-form]:mt-0 [&_.settings-form_>_button]:self-stretch">
+      <div className="organization-entry flex flex-col gap-6">
         {organizations.value.length > 0 && (
           <div className="flex flex-col gap-2">
             {organizations.value.map((organization) => (
@@ -466,7 +489,9 @@ export function OrganizationEntry({ allowCreate = true }: { readonly allowCreate
               onCreated={({ slug }) =>
                 navigate({ to: "/org/$organizationSlug/apps", params: { organizationSlug: slug } })
               }
-            />
+            >
+              <h2>Create an organization</h2>
+            </CreateOrganization>
           ) : (
             <EmptyState size="compact" title="No organization access">
               Your account has no access to this instance. Contact an administrator.
@@ -624,11 +649,28 @@ export function OrganizationSwitcher({ allowCreate = true }: { readonly allowCre
           )}
         </DropdownMenuContent>
       </DropdownMenu>
-      <CreateOrganizationDialog
-        open={creating}
-        onOpenChange={setCreating}
-        triggerRef={triggerRef}
-      />
+      <Dialog open={creating} onOpenChange={setCreating}>
+        <DialogContent
+          className="max-h-[calc(100dvh-32px)] overflow-y-auto sm:max-w-[480px]"
+          aria-describedby={undefined}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            triggerRef.current?.focus();
+          }}
+        >
+          <CreateOrganization
+            onCreated={async ({ slug }) => {
+              setCreating(false);
+              await navigate({
+                to: "/org/$organizationSlug/apps",
+                params: { organizationSlug: slug },
+              });
+            }}
+          >
+            <DialogTitle className="pr-7">Create organization</DialogTitle>
+          </CreateOrganization>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

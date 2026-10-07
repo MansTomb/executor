@@ -3,7 +3,7 @@ import { ProfileId } from "./shared.ts";
 import { ProfileErrors } from "./profiles.ts";
 /** Pending account setup shared by browser forms, OAuth, and other SDK consumers. */
 import { Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { Account, AccountNotFound, AccountFieldsInput, AccountFieldsInvalid } from "./account.ts";
 import { AppNotFound, AccountSelectionInvalid } from "./apps.ts";
 import { AuthMethodName, AuthMethodInvalid, Provider, ProviderNotFound } from "./provider.ts";
@@ -27,11 +27,27 @@ import {
   OAuthSetupFailed,
 } from "./oauth.ts";
 
+/**
+ * Why the connection's latest sign-in ended without an account: the same typed error its starter
+ * or callback page received, with the stage, HTTP status and the service's own error it recorded.
+ * Starting a new sign-in clears it. Connections store it in this error vocabulary; a stored failure
+ * a later release can no longer read is left out rather than failing the connection.
+ */
+export const AccountConnectionFailure = Schema.Struct({
+  at: Schema.Date,
+  error: Schema.Union([OAuthSetupFailed, OAuthCompletionFailed]),
+});
+export type AccountConnectionFailure = typeof AccountConnectionFailure.Type;
 /** Public progress never contains submitted fields, grants, or OAuth protocol state. */
 export const AccountConnectionState = Schema.Union([
-  Schema.Struct({ status: Schema.Literals(["pending", "cancelled", "expired"]) }),
+  Schema.Struct({
+    status: Schema.Literals(["pending", "expired"]),
+    failure: Schema.optional(AccountConnectionFailure),
+  }),
+  Schema.Struct({ status: Schema.Literal("cancelled") }),
   Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
 ]);
+export type AccountConnectionState = typeof AccountConnectionState.Type;
 /** An app profile requirement to fill when account setup finishes. */
 export const AccountConnectionTarget = Schema.Struct({
   app: AppId,
@@ -75,24 +91,35 @@ export const GetAccountConnection = Schema.Struct({
   connection: AccountConnectionId,
   owner: Schema.optional(OwnerId),
 });
-/** Save one set of fields. Successful retries return the same account. */
+/** Save one set of fields. Successful retries return the same account. Without a label, the account is named when created. */
 export const SubmitAccountConnection = Schema.Struct({
   ...GetAccountConnection.fields,
   method: AuthMethodName,
-  label: Schema.NonEmptyString,
+  label: Schema.optional(Schema.NonEmptyString),
   fields: AccountFieldsInput,
 });
-/** OAuth setup is bound to the connection's owner and provider. */
+/**
+ * OAuth setup is bound to the connection's owner and provider. Without a label, the account is
+ * named when it is created, after sign-in, so it can be renamed once its identity is known.
+ */
 export const StartConnectionOAuth = Schema.Struct({
   ...GetAccountConnection.fields,
   method: AuthMethodName,
-  label: Schema.NonEmptyString,
+  label: Schema.optional(Schema.NonEmptyString),
   redirectUri: Schema.optional(HttpUrl),
   client: Schema.optional(OAuthClientInput),
 });
 /** Both request identity and OAuth state must match before exchanging a code. */
 export const CompleteConnectionOAuth = Schema.Struct({
   ...GetAccountConnection.fields,
+  callbackUrl: Schema.RedactedFromValue(HttpUrl),
+});
+/**
+ * The callback's state identifies the pending sign-in, so a return that lost its browser context
+ * can still find its connection. The host must authorize the returned owner and connection.
+ */
+export const FindConnectionOAuth = Schema.Struct({
+  owner: Schema.optional(OwnerId),
   callbackUrl: Schema.RedactedFromValue(HttpUrl),
 });
 /** Unknown IDs and mismatched owners have the same result. */
@@ -183,10 +210,10 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       params: { connection: AccountConnectionId },
       query: { owner: Schema.optional(OwnerId) },
       success: AccountConnection,
-      error: errors,
+      error: [...errors, AccountConnectionTargetChanged],
     }).annotate(
       OpenApi.Description,
-      "Check a connection request: pending, completed with account metadata, cancelled or expired. Credentials are never returned. Do not busy-poll; check after the user finishes. Completed targeted requests have already selected the account for the named profile. Provider-only requests save standalone accounts.",
+      "Check a connection request: pending, completed with account metadata, cancelled or expired. A pending or expired request whose latest OAuth sign-in failed has state.failure: the error the user saw, with its reason, cause (stage and HTTP status) and serviceError (the service's own error and description, or the bounded text of another error body). A rate_limited failure has retryAfter when the service said when to try again. Credentials are never returned. Do not busy-poll; check after the user finishes. Completed targeted requests have already selected the account for the named profile. Provider-only requests save standalone accounts. A pending targeted request whose app no longer requires its provider fails with AccountConnectionTargetChanged; request a new connection.",
     ),
   )
   .add(
@@ -237,6 +264,16 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
         OAuthSetupFailed,
       ],
     }),
+  )
+  .add(
+    HttpApiEndpoint.post("findOAuth", "/v1/account-connections/oauth/find", {
+      payload: FindConnectionOAuth,
+      success: AccountConnection,
+      error: [...errors, AccountConnectionTargetChanged, CredentialsError, OAuthCompletionFailed],
+    }).annotate(
+      OpenApi.Description,
+      "Find the connection whose pending OAuth sign-in issued the callback's state, for example when the provider's link opened in another browser tab. Hosts must authorize the returned owner and connection before completing it.",
+    ),
   )
   .add(
     HttpApiEndpoint.post("completeOAuth", "/v1/account-connections/oauth/complete", {

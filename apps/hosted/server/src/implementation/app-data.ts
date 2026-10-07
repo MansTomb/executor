@@ -3,8 +3,8 @@ import { permitsAction, permitsApp } from "@executor-js/authorization";
 /** Product-owned authorization around the same SDK data operations used by local. */
 import { type AppDataInput } from "@executor-js/sdk/core";
 import { Effect, Stream } from "effect";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import { HttpServerRequest } from "effect/unstable/http";
+import { HttpApiBuilder } from "effect/http-api";
+import { HttpServerRequest } from "effect/http";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import {
@@ -81,7 +81,14 @@ export const hostedAppDataHandlers = HttpApiBuilder.group(HostedApi, "appData", 
           const authorized = access.pipe(Effect.provideContext(context));
           const source = yield* executor.appData.subscribe({ app: params.app, ...payload });
           return Stream.merge(
-            source.pipe(Stream.mapEffect((snapshot) => authorized.pipe(Effect.as(snapshot)))),
+            // The first result belongs to this request, which was just authorized.
+            source.pipe(
+              Stream.mapEffect((snapshot) =>
+                snapshot.revision === 0
+                  ? Effect.succeed(snapshot)
+                  : authorized.pipe(Effect.as(snapshot)),
+              ),
+            ),
             Stream.tick("5 seconds").pipe(
               Stream.mapEffect(() => authorized),
               Stream.drain,

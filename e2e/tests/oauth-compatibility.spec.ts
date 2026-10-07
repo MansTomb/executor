@@ -1,7 +1,7 @@
 /** Exercise the real registration, encrypted attempt, callback and account-save boundaries. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -17,6 +17,11 @@ const SetupFailure = Schema.Struct({
   _tag: Schema.Literal("OAuthSetupFailed"),
   reason: Schema.String,
   callbackUrl: Schema.optional(Schema.String),
+  message: Schema.String,
+  recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
+  serviceError: Schema.optional(
+    Schema.Struct({ error: Schema.String, description: Schema.optional(Schema.String) }),
+  ),
 });
 
 layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => {
@@ -33,6 +38,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
           registrationStatus: 201,
           registrationError: "invalid_client_metadata",
           omitSecretExpiry: false,
+          issuePublicClients: false,
           malformedRegistration: false,
           scopes: ["read"],
           includeIdToken: false,
@@ -44,8 +50,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
         const cases: ReadonlyArray<{
           readonly name: string;
           readonly registrationStatus: 200 | 201 | 400 | 401;
-          readonly registrationError: "invalid_client_metadata" | "invalid_redirect_uri";
+          readonly registrationError:
+            | "invalid_client_metadata"
+            | "invalid_redirect_uri"
+            | "invalid_request";
           readonly omitSecretExpiry: boolean;
+          readonly issuePublicClients: boolean;
           readonly malformedRegistration: boolean;
           readonly scopes: readonly string[];
           readonly includeIdToken: boolean;
@@ -64,6 +74,8 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             registrationStatus: 200,
             omitSecretExpiry: true,
           },
+          // Vercel answers a client_secret_basic registration with a public client.
+          { ...valid, name: "Public client issued", issuePublicClients: true },
           { ...valid, name: "ES256 OIDC", scopes: ["openid", "read"], includeIdToken: true },
           // Executor does not use the ID token, so a service may omit it after `openid`.
           { ...valid, name: "OpenID without ID token", scopes: ["openid", "read"] },
@@ -94,7 +106,15 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
             ...valid,
             name: "Rejected registration",
             registrationStatus: 400,
+            registrationError: "invalid_request",
             setupFailure: "registration_rejected",
+          },
+          // Most often a callback URL outside the service's allowed redirect URIs.
+          {
+            ...valid,
+            name: "Refused client metadata",
+            registrationStatus: 400,
+            setupFailure: "client_metadata_rejected",
           },
           {
             ...valid,
@@ -150,7 +170,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth compatibility", (it) => 
               failure.callbackUrl === undefined ? undefined : new URL(failure.callbackUrl).pathname,
               scenario.name,
             ).toBe("/api/oauth/callback");
-            expect(JSON.stringify(started.body)).not.toContain("PRIVATE_PROVIDER_ERROR");
+            // A refusal's own words reach only `serviceError`, never the curated explanation.
+            expect(failure.serviceError?.description, scenario.name).toBe(
+              scenario.registrationStatus === 200 ? undefined : "PRIVATE_PROVIDER_ERROR",
+            );
+            expect(JSON.stringify([failure.message, failure.recovery])).not.toContain(
+              "PRIVATE_PROVIDER_ERROR",
+            );
             expect(JSON.stringify(started.body)).not.toContain("PRIVATE_QUERY");
             continue;
           }

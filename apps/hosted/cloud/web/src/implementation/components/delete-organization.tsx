@@ -1,7 +1,7 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 /** The last card on cloud organization settings: irreversible, owner-only removal. */
 import { Exit, Option } from "effect";
-import { AsyncResult } from "effect/unstable/reactivity";
+import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@executor-js/ui/components/button";
@@ -25,7 +25,7 @@ import { useOrganization } from "@executor-js/hosted-web/organization";
 import type { OrganizationId } from "@executor-js/hosted-server/organization";
 import { organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
 import { sessionAtom } from "@executor-js/hosted-web/contracts/auth";
-import { forgetOrganization } from "@executor-js/hosted-web/session-hint";
+import { forgetOrganization } from "@executor-js/hosted-web/last-organization";
 import {
   deleteOrganizationAtom,
   organizationRemovalError,

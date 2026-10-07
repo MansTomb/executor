@@ -1,6 +1,6 @@
 import { apiKey, defaultKeyHasher } from "@better-auth/api-key";
 import { generateRandomString } from "better-auth/crypto";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { StorageError } from "@executor-js/sdk/core";
 import type { GenericEndpointContext } from "@better-auth/core";
 import { fullAuthority } from "@executor-js/authorization";
@@ -105,7 +105,11 @@ export const requirePinnedOrganization = (
         }),
       );
 
-/** Verify expiry, revocation and usage through Better Auth before applying product authorization. */
+/**
+ * Verify expiry, revocation and usage through Better Auth before applying product authorization.
+ * `valid: false` means Better Auth refused the key. A storage failure rejects instead (see the
+ * pinned api-key patch), and `authCall` reports it as SERVICE_UNAVAILABLE, never as a bad key.
+ */
 export const apiKeyAccess = (ctx: GenericEndpointContext, token: Redacted.Redacted<string>) =>
   Effect.gen(function* () {
     const result = yield* authCall(() =>

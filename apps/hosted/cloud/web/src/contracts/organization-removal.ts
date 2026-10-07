@@ -1,10 +1,12 @@
+import { hydrated } from "@executor-js/ui/contracts/http";
+import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
 /** Removal is a cloud capability; self-host keeps its single instance organization. */
 import { acknowledge } from "@executor-js/ui/contracts/mutations";
 import { Cause, Effect, Match, Option, type Schema } from "effect";
-import { Atom } from "effect/unstable/reactivity";
-import type { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
-import type { HttpClientError } from "effect/unstable/http";
+import { Atom } from "effect/reactivity";
+import type { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
+import type { HttpClientError } from "effect/http";
 import type { OrganizationId } from "@executor-js/hosted-server/organization";
 import { ExecutorCloudApi } from "../../../src/contracts/api.ts";
 import { CloudClient } from "./billing.ts";
@@ -38,8 +40,8 @@ export const organizationRemovalError = (cause: Cause.Cause<OrganizationRemovalE
 
 /** Removal counts include private resources that the normal inventory must omit. */
 export const organizationRemovalPreviewAtom = Atom.family((organization: OrganizationId) =>
-  CloudClient.query("organizationRemoval", "preview", { params: { organization } }).pipe(
-    Atom.refreshOnWindowFocus,
+  CloudClient.query("organizationRemoval", "preview", hydrated({ params: { organization } })).pipe(
+    revalidated,
   ),
 );
 

@@ -1,4 +1,9 @@
-import { LocalAppAccess, LocalAppManagementApi } from "../contracts/app-management.ts";
+import { localSourceFormatter } from "@executor-js/app-management/source-format";
+import {
+  LocalAppAccess,
+  LocalAppManagementApi,
+  LocalFrameworkApi,
+} from "../contracts/app-management.ts";
 import { DashboardAccess } from "../contracts/dashboard.ts";
 import { dashboardAccess } from "./dashboard.ts";
 /** Local authoring shares pairing, persistent app IDs, and the ordinary Git source store. */
@@ -8,19 +13,14 @@ import {
   AppAccessDenied,
   AppManagementHost,
   appManagementRoutes,
+  frameworkDocumentation,
+  frameworkRoutes,
   gitRoutes,
 } from "@executor-js/app-management";
-import {
-  OwnerId,
-  type AppId,
-  type AppSourceStorage,
-  type BlobStorage,
-  type Executor,
-} from "@executor-js/sdk/core";
-import type { RepositoryBackend } from "@executor-js/app-source/contracts";
-import type { Registry } from "@executor-js/app-registry";
-import { HttpRouter, HttpServerRequest } from "effect/unstable/http";
-import { Effect, Encoding, Layer, Redacted } from "effect";
+import { OwnerId, type AppId, type Executor } from "@executor-js/sdk/core";
+import { HttpRouter, HttpServerRequest } from "effect/http";
+import { Effect, Layer, Redacted } from "effect";
+import { Base64 } from "effect/encoding";
 import { localRequest, type LocalAuth } from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 
@@ -29,13 +29,9 @@ export const localAppManagement = (
   config: ServerConfig,
   auth: LocalAuth,
   managedApp: AppId,
-  resources: {
-    readonly executor: Executor;
-    readonly sources: AppSourceStorage;
-    readonly repositories: RepositoryBackend;
-    readonly registry: Registry;
-    readonly blobs: BlobStorage;
-  },
+  resources: { readonly executor: Executor },
+  /** Packaged authoring assets; they include this build's framework reference. */
+  assets: readonly { readonly path: string; readonly content: string }[],
 ) =>
   Effect.gen(function* () {
     const access = Layer.effect(
@@ -72,9 +68,7 @@ export const localAppManagement = (
             if (authorization !== `Bearer ${Redacted.value(config.apiKey)}`) {
               if (!authorization?.startsWith("Basic "))
                 return yield* new AppAccessDenied({ reason: "authentication" });
-              const decoded = yield* Effect.fromResult(
-                Encoding.decodeBase64String(authorization.slice(6)),
-              );
+              const decoded = yield* Effect.fromResult(Base64.decodeString(authorization.slice(6)));
               const colon = decoded.indexOf(":");
               if (colon < 0 || decoded.slice(colon + 1) !== Redacted.value(config.apiKey))
                 return yield* new AppAccessDenied({ reason: "authentication" });
@@ -90,11 +84,16 @@ export const localAppManagement = (
           }).pipe(Effect.mapError(() => new AppAccessDenied({ reason: "forbidden" }))),
       }),
     );
-    return Layer.mergeAll(appManagementRoutes(LocalAppManagementApi), gitRoutes).pipe(
-      Layer.provide(access),
-      HttpRouter.provideRequest(gitAccess),
-      HttpRouter.provideRequest(
-        Layer.succeed(AppManagementHost, Effect.succeed({ ...resources, publisher: undefined })),
+    return Layer.mergeAll(
+      appManagementRoutes(LocalAppManagementApi),
+      frameworkRoutes(LocalFrameworkApi).pipe(
+        Layer.provide(frameworkDocumentation(Effect.succeed(assets))),
       ),
+      gitRoutes,
+    ).pipe(
+      Layer.provide(access),
+      HttpRouter.provideRequest(localSourceFormatter),
+      HttpRouter.provideRequest(gitAccess),
+      HttpRouter.provideRequest(Layer.succeed(AppManagementHost, Effect.succeed(resources))),
     );
   });

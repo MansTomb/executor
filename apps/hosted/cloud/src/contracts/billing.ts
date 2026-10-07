@@ -4,8 +4,9 @@ import {
   OrganizationReference,
   RequireOrganization,
 } from "@executor-js/hosted-server/organization";
+import { ApiError } from "@executor-js/utils/api-error";
 import { Context, Effect, Schema } from "effect";
-import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import { RequireUser } from "@executor-js/hosted-server";
 
 /** The cloud projection of Autumn's catalog. Prices come from the selected provider catalog. */
@@ -27,18 +28,27 @@ export const BillingOverview = Schema.Struct({
   plans: Schema.Array(BillingPlan),
   subscriptions: Schema.Array(Schema.Struct({ planId: Schema.String, status: Schema.String })),
 });
+/**
+ * The member limit invitations are checked against. Null means the plan has no
+ * limit. Accepted members count toward it; pending invitations do not.
+ */
+export const MemberLimit = Schema.Struct({
+  limit: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+});
 /** Autumn could not complete the request. No provider secrets or raw errors are exposed. */
-export class BillingUnavailable extends Schema.TaggedError<BillingUnavailable>()(
-  "BillingUnavailable",
-  {},
-  { httpApiStatus: 503 },
-) {}
+export const BillingUnavailable = ApiError.define({
+  tag: "BillingUnavailable",
+  status: 503,
+  message: "Executor could not reach its billing service. Try again.",
+});
+export type BillingUnavailable = typeof BillingUnavailable.Type;
 /** The requested plan is not in the available catalog. */
-export class BillingPlanUnavailable extends Schema.TaggedError<BillingPlanUnavailable>()(
-  "BillingPlanUnavailable",
-  {},
-  { httpApiStatus: 400 },
-) {}
+export const BillingPlanUnavailable = ApiError.define({
+  tag: "BillingPlanUnavailable",
+  status: 400,
+  message: "The requested plan is not available.",
+});
+export type BillingPlanUnavailable = typeof BillingPlanUnavailable.Type;
 /** Cloud-only billing operations, with the authorized organization as customer identity. */
 export class Billing extends Context.Service<
   Billing,
@@ -80,6 +90,13 @@ export const billingGroup = HttpApiGroup.make("billing")
     HttpApiEndpoint.get("overview", "/api/organizations/:organization/billing", {
       params: { organization: OrganizationReference },
       success: BillingOverview,
+      error: [BillingUnavailable, OrganizationForbidden],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.get("memberLimit", "/api/organizations/:organization/billing/member-limit", {
+      params: { organization: OrganizationReference },
+      success: MemberLimit,
       error: [BillingUnavailable, OrganizationForbidden],
     }),
   )

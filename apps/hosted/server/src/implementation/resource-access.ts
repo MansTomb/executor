@@ -1,18 +1,12 @@
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
-import { getAccount } from "./accounts.ts";
+import { AccountGrants } from "./proofs/account-access.ts";
 /** Sharing writes are atomic; metadata visibility and credential use remain separate. */
 import { Effect } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { teamAppPending } from "./provisioning.ts";
-import { HttpApiBuilder } from "effect/unstable/httpapi";
-import {
-  StorageError,
-  type AppId,
-  type AccountId,
-  type Provider,
-  type ProviderId,
-} from "@executor-js/sdk/core";
+import { HttpApiBuilder } from "effect/http-api";
+import { StorageError, type AppId, type Provider, type ProviderId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
@@ -26,8 +20,8 @@ import { requireGroupSharing } from "./group-sharing.ts";
 import {
   policyDatabase,
   currentResourceAuthority,
-  applicationAccess,
-  accountAccess,
+  applicationAccesses,
+  accountAccesses,
   requireAppAccess,
   requireAccountAccess,
 } from "./resource-policy.ts";
@@ -48,60 +42,79 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
     const { owner } = yield* CurrentOrganization;
     const policy = yield* CurrentAuthorization;
     const apps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
-    const appEntries = yield* Effect.forEach(apps, (app) =>
-      applicationAccess(app.id, actor).pipe(
-        Effect.flatMap((access) =>
-          Effect.gen(function* () {
-            if (!(view === "managed" ? access.canManage : access.canUse)) return [];
-            const profiles = access.canUse
-              ? yield* executor.apps.profiles.list({ app: app.id, owner, subject: actor.user })
-              : [];
-            return [{ app, access, profiles }];
-          }),
-        ),
-        Effect.catchTag("OrganizationForbidden", () => Effect.succeed([])),
-      ),
+    const appPolicies = new Map(
+      (yield* applicationAccesses(
+        apps.map((app) => app.id),
+        actor,
+      )).map((access) => [access.app, access]),
     );
+    const listedApps = apps.flatMap((app) => {
+      const access = appPolicies.get(app.id);
+      return access !== undefined && (view === "managed" ? access.canManage : access.canUse)
+        ? [{ app, access }]
+        : [];
+    });
+    const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
+    const profiles = yield* executor.apps.profiles.listMany({
+      apps: usableApps,
+      owner,
+      subject: actor.user,
+    });
+    const appEntries = listedApps.map(({ app, access }) => ({
+      app,
+      access,
+      profiles: access.canUse ? profiles.filter((profile) => profile.app === app.id) : [],
+    }));
     const selected = new Set(
-      appEntries
-        .flat()
-        .flatMap(({ profiles }) =>
-          profiles
-            .map((profile) => profile.accounts)
-            .flatMap((accounts) =>
-              Object.values(accounts).flatMap((value) =>
-                typeof value === "string" ? [value] : value,
-              ),
-            ),
+      profiles.flatMap((profile) =>
+        Object.values(profile.accounts).flatMap((value) =>
+          typeof value === "string" ? [value] : value,
         ),
+      ),
     );
     const accounts = (yield* executor.accounts.list({ owner })).filter(
       (account) => policy.tools.kind === "all" || selected.has(account.id),
     );
     const providers = new Map<ProviderId, Provider>();
+    const listed = new Set(appEntries.map(({ app }) => app.id));
+    const health = new Map(
+      (accounts.length === 0 ? [] : yield* executor.accounts.listHealth({ owner })).map((entry) => [
+        entry.account,
+        { ...entry, apps: entry.apps.filter((check) => listed.has(check.app)) },
+      ]),
+    );
+    const accountPolicies = new Map(
+      (yield* accountAccesses(
+        accounts.map((account) => account.id),
+        actor,
+      )).map((access) => [access.account, access]),
+    );
     const accountEntries = yield* Effect.forEach(accounts, (account) =>
-      accountAccess(account.id, actor).pipe(
-        Effect.flatMap((access) =>
-          Effect.gen(function* () {
-            if (!(view === "managed" ? access.canManage : access.canUse)) return [];
-            let provider = providers.get(account.provider);
-            if (provider === undefined) {
-              provider = yield* executor.accounts.provider({ owner, account: account.id });
-              providers.set(account.provider, provider);
-            }
-            return [{ account, access, provider }];
-          }),
-        ),
-        Effect.catchTag("OrganizationForbidden", () => Effect.succeed([])),
-      ),
+      Effect.gen(function* () {
+        const access = accountPolicies.get(account.id);
+        if (access === undefined || !(view === "managed" ? access.canManage : access.canUse))
+          return [];
+        let provider = providers.get(account.provider);
+        if (provider === undefined) {
+          provider = yield* executor.accounts.provider({ owner, account: account.id });
+          providers.set(account.provider, provider);
+        }
+        const checks = health.get(account.id);
+        return [
+          checks === undefined
+            ? { account, access, provider }
+            : { account, access, provider, health: checks },
+        ];
+      }),
     );
     const pendingApp =
       policy.tools.kind === "all" && (view === "available" || actor.role !== "member")
-        ? yield* teamAppPending(actor.organization).pipe(
-            Effect.provideService(SqlClient.SqlClient, yield* policyDatabase),
-          )
+        ? yield* teamAppPending(
+            actor.organization,
+            (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
+          ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
         : false;
-    return { apps: appEntries.flat(), accounts: accountEntries.flat(), pendingApp };
+    return { apps: appEntries, accounts: accountEntries.flat(), pendingApp };
   });
 /** The compare-and-swap revision protects settings and all group grants as one update. */
 export const shareApp = (
@@ -133,14 +146,16 @@ export const shareApp = (
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
-/** Personal account ownership cannot be changed by editing shared-account grants. */
+/**
+ * Personal account ownership cannot be changed by editing shared-account grants. The share grant
+ * checks management up front; it is checked again under the transaction's lock.
+ */
 export const shareAccount = (
-  account: AccountId,
   audience: typeof SharedAudience.Type,
   revision: typeof AccessRevision.Type,
 ) =>
   Effect.gen(function* () {
-    yield* getAccount((yield* CurrentOrganization).owner, account);
+    const { account } = yield* AccountGrants.share;
     const sql = yield* policyDatabase;
     yield* sql.withTransaction(
       Effect.gen(function* () {
@@ -176,14 +191,7 @@ export const hostedResourceAccessHandlers = HttpApiBuilder.group(
         .handle("shareApp", ({ params, payload }) =>
           shareApp(params.app, payload.audience, payload.revision),
         )
-        .handle("account", ({ params }) =>
-          Effect.gen(function* () {
-            yield* getAccount((yield* CurrentOrganization).owner, params.account);
-            return yield* requireAccountAccess(params.account, "read");
-          }),
-        )
-        .handle("shareAccount", ({ params, payload }) =>
-          shareAccount(params.account, payload.audience, payload.revision),
-        );
+        .handle("account", () => Effect.map(AccountGrants.inspect, (grant) => grant.access))
+        .handle("shareAccount", ({ payload }) => shareAccount(payload.audience, payload.revision));
     }),
 );

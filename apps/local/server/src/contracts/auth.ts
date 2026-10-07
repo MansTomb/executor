@@ -1,12 +1,13 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { ApiError } from "@executor-js/utils/api-error";
 /** Local browser pairing and the private desktop bootstrap protocol. */
 import { Schema, type Effect } from "effect";
 import { AppId } from "@executor-js/sdk";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 /** Ephemeral proof of local possession, redacted immediately at ingress. */
 export const BootstrapToken = Schema.RedactedFromValue(
-  Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
 );
 /** An exchange requires a valid, unused bootstrap credential. */
 export class PairingRejected extends Schema.TaggedError<PairingRejected>()(
@@ -33,11 +34,12 @@ export const AuthForbidden = UserFacingError.define({
 /** Parsed AuthForbidden failure. */
 export type AuthForbidden = typeof AuthForbidden.Type;
 /** Programmatic pairing requires the local API key. Browser pairing uses a verified session. */
-export class PairingUnauthorized extends Schema.TaggedError<PairingUnauthorized>()(
-  "PairingUnauthorized",
-  {},
-  { httpApiStatus: 401 },
-) {}
+export const PairingUnauthorized = ApiError.define({
+  tag: "PairingUnauthorized",
+  status: 401,
+  message: "This request needs the local server's API key or a paired browser session.",
+});
+export type PairingUnauthorized = typeof PairingUnauthorized.Type;
 /** Session persistence failed; never treat an unavailable store as a signed-out browser. */
 export const AuthStorageError = UserFacingError.define({
   tag: "AuthStorageError",
@@ -55,7 +57,7 @@ export const AuthStorageError = UserFacingError.define({
 /** Parsed AuthStorageError failure. */
 export type AuthStorageError = typeof AuthStorageError.Type;
 /** SHA-256 digest of an opaque browser credential, never the credential itself. */
-export const SessionHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)).pipe(
+export const SessionHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)).pipe(
   Schema.brand("SessionHash"),
 );
 export type SessionHash = typeof SessionHash.Type;
@@ -96,6 +98,37 @@ export const DesktopBootstrap = Schema.Struct({
 export type DesktopBootstrap = typeof DesktopBootstrap.Type;
 /** Parent/CLI ready notification contains no credential. */
 export const ServerReady = Schema.Struct({ version: Schema.Literal(1), url: Schema.String });
+
+/** OS credential-store service. Each installation's entry uses its installation ID as the account. */
+export const LocalCredentialService = "com.usefulsoftware.executor.v2";
+/**
+ * A data directory's `installation.json`. It pairs the directory with its OS credential entry,
+ * or with `keys.json` when its state is `file`.
+ */
+export const LocalInstallation = Schema.Struct({
+  version: Schema.Literal(1),
+  id: Schema.String.check(Schema.isUUID()),
+  // Binaries released before "file" reject that record as invalid instead of misreading it.
+  state: Schema.Literals(["pending", "ready", "external", "file"]),
+});
+/**
+ * Why local key setup refused to start. `credential-unavailable` means the directory needs the OS
+ * store and there is none. `credential-denied` means it exists but refused access, was cancelled
+ * or is locked; the next start prompts again. `misconfigured` means the environment's key settings
+ * (`EXECUTOR_KEY_STORAGE`, supplied keys) cannot apply to this directory and must be changed. In
+ * these the data may be intact, so a desktop parent must not offer to reset it. `credential-missing`
+ * and `invalid` mean the saved keys or record are gone or damaged.
+ */
+export const LocalConfigurationReason = Schema.Literals([
+  "credential-unavailable",
+  "credential-denied",
+  "credential-missing",
+  "invalid",
+  "misconfigured",
+  "locked",
+  "io",
+]);
+export type LocalConfigurationReason = typeof LocalConfigurationReason.Type;
 
 /** Shared contracts used by the local browser, CLI, and future desktop parent. */
 export const LocalAuthApi = HttpApi.make("local-auth").add(

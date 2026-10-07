@@ -19,6 +19,7 @@ import {
   openapiDeniedMessage,
   openapiOAuthMessage,
 } from "../support/openapi-error-upstream.ts";
+import { appsManifest } from "../support/apps-release.ts";
 
 const Recovery = Schema.Struct({ action: Schema.String, instructions: Schema.String });
 const Failure = Schema.Struct({
@@ -120,7 +121,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  code: `return await tools[${JSON.stringify(app.slug)}].queries.fail({query:{mode:${JSON.stringify(mode)}}});`,
+                  code: `return await tools[${JSON.stringify(app.slug)}].failures.fail({query:{mode:${JSON.stringify(mode)}}});`,
                 },
               },
               undefined,
@@ -224,7 +225,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  code: `return await tools[${JSON.stringify(app.slug)}].queries.fail({query:{mode:{hidden:${JSON.stringify(openapiSecretMarker)}}}});`,
+                  code: `return await tools[${JSON.stringify(app.slug)}].failures.fail({query:{mode:{hidden:${JSON.stringify(openapiSecretMarker)}}}});`,
                 },
               },
               undefined,
@@ -236,10 +237,60 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           invalidInput.structuredContent,
         )).execution.error;
         expect(inputError.message).toBe(
-          `${app.slug}.queries.fail: InputInvalid (HTTP 422): Input failed validation: input.query.mode: Expected string Recovery: Fix the listed input fields and call the tool again.`,
+          "InputInvalid (HTTP 422): Input failed validation: input.query.mode: Expected string Recovery: Change the input to the shape each problem expects, then call the tool again.",
         );
         expect(inputError.response).toMatchObject({ code: "InputInvalid", status: 422 });
         expect(JSON.stringify(invalidInput)).not.toContain(openapiSecretMarker);
+        // A request body that fits none of its media types names each alternative, the key that
+        // selects one, and what the closest alternative needs, without the declared media types.
+        const invalidBody = yield* client.use(
+          "Call the OpenAPI tool with a request body for no media type",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "execute",
+                arguments: {
+                  code: `return await tools[${JSON.stringify(app.slug)}].wire.postWire(${JSON.stringify(
+                    { path: { id: { role: "admin" } }, body: { ids: openapiSecretMarker } },
+                  )});`,
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        yield* evidence.json("mcp-request-body-invalid.json", invalidBody);
+        const bodyError = (yield* Schema.decodeUnknownEffect(Failure)(
+          invalidBody.structuredContent,
+        )).execution.error;
+        expect(bodyError.message).toBe(
+          "InputInvalid (HTTP 422): Input failed validation: input: Expected object {path, cookie?, body, contentType?} or object {path, cookie?, body, contentType}, told apart by contentType. Closest is alternative 1, whose problems follow; input.body.ids: Expected array Recovery: Change the input to the shape each problem expects, then call the tool again.",
+        );
+        expect(JSON.stringify(invalidBody)).not.toContain(openapiSecretMarker);
+        expect(bodyError.message).not.toContain("application/");
+        // The discriminator's mapping picks the closest alternative, even though every alternative
+        // declares the discriminator as a plain string. Mapped values are not listed.
+        const invalidPet = yield* client.use(
+          "Call the OpenAPI tool with a discriminated body missing a field",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "execute",
+                arguments: {
+                  code: `return await tools[${JSON.stringify(app.slug)}].pets.adopt({body: {petType: "dog"}});`,
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        yield* evidence.json("mcp-discriminated-body-invalid.json", invalidPet);
+        const petError = (yield* Schema.decodeUnknownEffect(Failure)(invalidPet.structuredContent))
+          .execution.error;
+        expect(petError.message).toBe(
+          "InputInvalid (HTTP 422): Input failed validation: input.body: Expected object {petType, meow, ...} or object {petType, bark, ...}, told apart by petType. Closest is alternative 2, whose problems follow; input.body.bark: Missing key. Expected boolean Recovery: Change the input to the shape each problem expects, then call the tool again.",
+        );
+        expect(petError.message.toLowerCase()).not.toContain("dog");
         // The interpreter only exposes Error.message inside catch; its JSON envelope retains the same fields.
         const caught = yield* client.use(
           "Catch the declared API error in agent code",
@@ -248,7 +299,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
               {
                 name: "execute",
                 arguments: {
-                  code: `try { await tools[${JSON.stringify(app.slug)}].queries.fail({query:{mode:"known"}}); } catch(error) { return JSON.parse(error.message); }`,
+                  code: `try { await tools[${JSON.stringify(app.slug)}].failures.fail({query:{mode:"known"}}); } catch(error) { return JSON.parse(error.message); }`,
                 },
               },
               undefined,
@@ -294,7 +345,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
                 {
                   name: "execute",
                   arguments: {
-                    code: `return await tools[${JSON.stringify(app.slug)}].mutations.wire(${JSON.stringify(input)});`,
+                    code: `return await tools[${JSON.stringify(app.slug)}].wire.postWire(${JSON.stringify(input)});`,
                   },
                 },
                 undefined,
@@ -338,13 +389,6 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           "forbidden",
           "limited",
         ]) {
-          const statuses: Record<string, number> = {
-            unsupported: 418,
-            "unsupported-response": 421,
-            "ref-sibling": 425,
-            constrained: 424,
-            "wrong-status": 409,
-          };
           const result = yield* invoke(mode);
           const failure = (yield* Schema.decodeUnknownEffect(Failure)(result.structuredContent))
             .execution.error;
@@ -380,7 +424,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
               actors.owner,
               "POST",
               `${prefix}/${app.id}/tools/call`,
-              { tool: "queries.fail", input: { query: { mode } } },
+              { tool: "failures.fail", kind: "query", input: { query: { mode } } },
             );
             expect(httpResult.body).toMatchObject({
               _tag: "AppProviderFailed",
@@ -393,12 +437,39 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
                     : "rejected",
             });
           } else {
+            // Undeclared failures name the failed operation and response without its body.
             expect(failure.response).toMatchObject({ code: "ToolCallFailed", status: 502 });
-            expect(failure.message).toBe(
-              `${app.slug}.queries.fail: ToolCallFailed (HTTP 502): The connected service request failed: request (HTTP ${statuses[mode] ?? 422}) Recovery: Check whether the tool already made changes before retrying.`,
+            expect(failure.message).toMatch(
+              /^ToolCallFailed \(HTTP 502\): The app's API call failed: GET \/failure responded with HTTP \d+ \((application\/json|text\/html)(, \d+ bytes)?\), which matches no error with a message in the API's OpenAPI document\./,
+            );
+            expect(failure.message).toContain(
+              "Recovery: Check the API's response and the app's OpenAPI document, then retry.",
             );
           }
         }
+        // An undeclared 404 names the method and templated path, never the parameter values or body.
+        const missing = yield* client.use(
+          "Call an operation the API does not serve",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "execute",
+                arguments: {
+                  code: `return await tools[${JSON.stringify(app.slug)}].items.getItem({path:{item:${JSON.stringify(openapiSecretMarker)}}});`,
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        yield* evidence.json("openapi-undeclared-404.json", missing);
+        expect(
+          (yield* Schema.decodeUnknownEffect(Failure)(missing.structuredContent)).execution.error
+            .message,
+        ).toBe(
+          `ToolCallFailed (HTTP 502): The app's API call failed: GET /items/{item} responded with HTTP 404 (text/plain, ${openapiSecretMarker.length} bytes), which matches no error with a message in the API's OpenAPI document. Recovery: Check the API's response and the app's OpenAPI document, then retry.`,
+        );
+        expect(JSON.stringify(missing)).not.toContain(openapiSecretMarker);
         const broken = yield* body(
           App,
           yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
@@ -408,9 +479,10 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
                 path: "index.ts",
                 content: `import { defineApp } from "apps";
 export default defineApp({ accounts: {} }, async () => {
-  throw new Error(${JSON.stringify(openapiSecretMarker)});
+  throw new Error("Synthetic factory failure");
 });`,
               },
+              appsManifest,
             ],
           }),
         );
@@ -445,12 +517,14 @@ export default defineApp({ accounts: {} }, async () => {
             }),
           ),
         )(evaluation?.reason);
+        // The factory's own error explains why the tools could not load.
         expect(detail).toMatchObject({
           code: "AppEvaluationFailed",
           status: 502,
-          message: "Executor could not load this app’s tool definitions.",
+          message:
+            "Executor could not load this app’s tool definitions. The app threw Error: Synthetic factory failure",
           recovery: {
-            instructions: expect.stringContaining("Do not assume an account needs reconnecting"),
+            action: "Try again. If this continues, investigate this error and fix its cause.",
           },
         });
         expect(JSON.stringify(discovered)).not.toContain(openapiSecretMarker);

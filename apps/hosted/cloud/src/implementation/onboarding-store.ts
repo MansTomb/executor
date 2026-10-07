@@ -1,5 +1,5 @@
 import { Clock, Effect, Schema } from "effect";
-import { SqlClient } from "effect/unstable/sql";
+import { SqlClient } from "effect/sql";
 import { fumadb } from "fumadb-effect";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { sqlAdapter } from "fumadb-effect/sql";

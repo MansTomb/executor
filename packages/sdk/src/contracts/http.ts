@@ -1,6 +1,6 @@
 import { AnalyticsGroup } from "./analytics.ts";
 /** The single HTTP contract, composed from each area and projected into Executor. */
-import { HttpApi } from "effect/unstable/httpapi";
+import { HttpApi } from "effect/http-api";
 import { AccountConnectionsGroup } from "./account-connection.ts";
 import { AppProfilesGroup } from "./profiles.ts";
 import { AccountsGroup } from "./account.ts";
@@ -12,6 +12,7 @@ import { AppWorkflowsGroup, AppWorkflowRunsGroup } from "./workflows.ts";
 import { SchedulesGroup } from "./schedules.ts";
 import { ToolsGroup } from "./tools.ts";
 import { AppSkillsGroup } from "./skills.ts";
+import { PublicationsGroup, RegistryGroup } from "./publications.ts";
 
 /** The one contract artifact; everything else projects from it. */
 export const ExecutorApi = HttpApi.make("executor")
@@ -27,6 +28,8 @@ export const ExecutorApi = HttpApi.make("executor")
   .add(WebhooksGroup)
   .add(OwnersGroup)
   .add(AppWorkflowsGroup)
-  .add(AppWorkflowRunsGroup);
+  .add(AppWorkflowRunsGroup)
+  .add(PublicationsGroup)
+  .add(RegistryGroup);
 
 export type ExecutorApi = typeof ExecutorApi;

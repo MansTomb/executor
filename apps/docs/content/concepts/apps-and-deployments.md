@@ -25,7 +25,7 @@ record does not connect their updates. Changing or deleting the original does
 not change the copy.
 
 Each app has a slug. That slug is the namespace an agent uses:
-`tools.<app-slug>.queries.<name>`.
+`tools.<app-slug>.<name>`.
 
 ## Deployment
 
@@ -57,7 +57,7 @@ Republishing or unpublishing the original does not update or revoke your copy.
 - **From the catalog.** Add an MCP server that needs no sign-in or supports OAuth.
   For any other service, copy the setup prompt and your agent writes the app.
 - **From a URL.** Add an MCP server by URL, with the same check.
-- **From source.** Write TypeScript and deploy it. See [Author an app](/build/author-an-app).
+- **From source.** Write TypeScript and deploy it. See [Author an app](/author-an-app).
 
 After deploying or changing account selections, discover tools again in a new
 `execute` call.

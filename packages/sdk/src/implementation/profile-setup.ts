@@ -13,6 +13,8 @@ import { query, transaction, type Query } from "./database.ts";
 import { lockApp } from "./apps.ts";
 import { storedProfile } from "./profiles.ts";
 import type { makeProfiles } from "./profiles.ts";
+import type { makeSchedules } from "./schedules.ts";
+import type { makeTools } from "./tools.ts";
 
 const canonical = (value: Json): string =>
   Array.isArray(value)
@@ -33,6 +35,10 @@ export const makeProfileSetup = (
     readonly runs: Executor["apps"]["workflowRuns"];
     /** Evaluated now, never reused: reconciliation changes upstream registrations. */
     readonly webhookDefinitions: Executor["webhooks"]["definitions"];
+    /** Stored-state check for a selected account whose sign-in must reconnect. */
+    readonly accountNeedingReconnect: ReturnType<typeof makeTools>["accountNeedingReconnect"];
+    /** Evaluates the active deployment for this profile and removes undeclared schedules. */
+    readonly reconcileSchedules: ReturnType<typeof makeSchedules>["reconcile"];
   },
 ) => {
   const now = Clock.currentTimeMillis;
@@ -209,7 +215,8 @@ export const makeProfileSetup = (
                     failure = "cleanup";
                   }
                 }
-              const declaredSchedules = yield* resources.schedules.definitions(input);
+              // Settings of schedules the active deployment no longer declares are deleted.
+              const declaredSchedules = yield* resources.reconcileSchedules(input);
               for (const schedule of declaredSchedules) {
                 const previous = schedules.find((item) => item.name === schedule.name);
                 yield* resources.schedules.configure({
@@ -221,17 +228,6 @@ export const makeProfileSetup = (
                   approvalMode: previous?.approvalMode ?? "automatic",
                 });
               }
-              for (const schedule of schedules)
-                if (
-                  schedule.enabled &&
-                  !declaredSchedules.some((item) => item.name === schedule.name)
-                )
-                  yield* resources.schedules.configure({
-                    ...input,
-                    name: schedule.name,
-                    actor: current.subject,
-                    enabled: false,
-                  });
             }).pipe(Effect.timeout("90 seconds"), Effect.result);
             if (Result.isFailure(attempt)) {
               status = current.status === "removing" ? "removing" : "failed";
@@ -335,32 +331,77 @@ export const makeProfileSetup = (
     tick: (limit: number) =>
       Effect.gen(function* () {
         const time = new Date(yield* now);
-        const rows = yield* query(() =>
+        // New saved intent must run immediately, ahead of retries: a backlog of failed or
+        // waiting setup never delays a profile someone just changed.
+        const intent = yield* query(() =>
           db.findMany("profiles", {
-            where: (b) =>
-              b.and(
-                b("status", "!=", "removed"),
-                b("status", "!=", "ready"),
-                b("status", "!=", "disabled"),
-                // New saved intent must run immediately. An active worker keeps
-                // its lease; failed unchanged intent keeps its retry delay.
-                b.or(
-                  b("leaseUntil", "<=", time),
-                  b.and(b("status", "=", "pending"), b("lease", "is", null)),
-                ),
-              ),
+            where: (b) => b.and(b("status", "=", "pending"), b("lease", "is", null)),
             orderBy: ["leaseUntil", "asc"],
             limit,
           }),
         );
-        yield* Effect.forEach(
-          rows,
+        // An active worker keeps its lease; failed unchanged intent keeps its retry delay.
+        const retries =
+          intent.length >= limit
+            ? []
+            : yield* query(() =>
+                db.findMany("profiles", {
+                  where: (b) =>
+                    b.and(
+                      b("status", "!=", "removed"),
+                      b("status", "!=", "ready"),
+                      b("status", "!=", "disabled"),
+                      b("leaseUntil", "<=", time),
+                      b.or(b("status", "!=", "pending"), b("lease", "is not", null)),
+                    ),
+                  orderBy: ["leaseUntil", "asc"],
+                  limit: limit - intent.length,
+                }),
+              );
+        // Setup that failed on its accounts cannot succeed while one of them must reconnect or a
+        // required account is unselected: every attempt would evaluate the app, or fail before it,
+        // only to record the same failure. Wait instead, checking stored state once per retry
+        // delay; selecting an account saves new intent, which runs at once. Any other problem is
+        // left to reconciliation, which records it.
+        const ready = yield* Effect.filter(retries, (row) =>
+          row.failure !== "accounts" || row.lease !== null
+            ? Effect.succeed(true)
+            : resources.accountNeedingReconnect({ app: row.app, profile: row.id }).pipe(
+                Effect.map((account) => account !== undefined),
+                Effect.catchIf(Schema.is(AccountRequired), () => Effect.succeed(true)),
+                Effect.catch(() => Effect.succeed(false)),
+                Effect.flatMap((waiting) =>
+                  !waiting
+                    ? Effect.succeed(true)
+                    : query(() =>
+                        db.updateMany("profiles", {
+                          where: (b) =>
+                            b.and(
+                              b("id", "=", row.id),
+                              b("lease", "is", null),
+                              b("leaseUntil", "=", row.leaseUntil),
+                            ),
+                          set: { leaseUntil: new Date(time.getTime() + 30_000) },
+                        }),
+                      ).pipe(Effect.as(false)),
+                ),
+              ),
+        );
+        const reconciled = yield* Effect.forEach(
+          [...intent, ...ready],
           (row) =>
             reconcile({ app: row.app, profile: row.id }, true).pipe(
-              Effect.catch(() => Effect.logError("Profile reconciliation failed")),
+              Effect.as(true),
+              Effect.catch(() =>
+                Effect.logError("Profile reconciliation failed").pipe(Effect.as(false)),
+              ),
             ),
           { concurrency: 4 },
         );
+        // A full batch of saved intent may have left more behind. Continue while it makes
+        // progress; a batch whose intent all failed waits for the host's next wake, so intent
+        // that keeps failing never keeps the host busy.
+        return intent.length >= limit && reconciled.slice(0, intent.length).some(Boolean);
       }),
   };
 };

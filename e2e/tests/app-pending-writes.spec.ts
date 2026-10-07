@@ -10,29 +10,39 @@ import { waitForAppUrl } from "../support/app-pages.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { holdQuery } from "../support/query-transition.ts";
+import { withApps } from "../support/apps-release.ts";
 
 const files = [
   {
     path: "schema.ts",
-    content: `import { object, string } from "apps";
+    content: `import { object, string, router } from "apps";
 export const Todo = object({ id: string(), title: string() });`,
   },
   {
     path: "index.ts",
-    content: `import { array, boolean, defineApp, defineDatabase, mutation, object, query, string, table } from "apps";
+    content: `import { array, boolean, defineApp, mutation, object, query, string, router } from "apps";
 import { Todo } from "./schema.ts";
-const database = defineDatabase({ todos: table({ title: string() }) });
-export const list = query({ input: object({}), output: array(Todo) }, async ({ db }) =>
-  await db.todos.withIndex("by_creation").collect());
-export const add = mutation({ input: object({ title: string() }), output: Todo }, async ({ db }, input) =>
-  await db.todos.insert(input));
-export const remove = mutation({ input: object({ id: string() }), output: boolean() }, async ({ db }, { id }) =>
-  await db.todos.delete(id));
-export default defineApp({ accounts: {}, database }, { queries: { list }, mutations: { add, remove } });`,
+export const list = query({ input: object({}), output: array(Todo) }, async ({ sql }) =>
+  sql.exec("SELECT id, title FROM todos ORDER BY seq").toArray());
+export const add = mutation({ input: object({ title: string() }), output: Todo }, async ({ sql }, input) =>
+  sql.exec("INSERT INTO todos (id, title) VALUES (?, ?) RETURNING id, title", crypto.randomUUID(), input.title).one());
+export const remove = mutation({ input: object({ id: string() }), output: boolean() }, async ({ sql }, { id }) =>
+  sql.exec("DELETE FROM todos WHERE id = ? RETURNING id", id).toArray().length > 0);
+export default defineApp({ accounts: {} }, { tools: router({
+   list,
+   add, remove,
+ }) });`,
+  },
+  {
+    path: "migrations/0001_todos.sql",
+    content:
+      "CREATE TABLE todos (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, title TEXT NOT NULL);\n",
   },
   {
     path: "package.json",
-    content: JSON.stringify({ dependencies: { react: "^19.2.0", "react-dom": "^19.2.0" } }),
+    content: JSON.stringify({
+      dependencies: withApps({ react: "^19.2.0", "react-dom": "^19.2.0" }),
+    }),
   },
   {
     path: "ui/index.html",

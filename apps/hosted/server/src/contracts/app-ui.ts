@@ -1,19 +1,29 @@
 /** Hosted app pages use scoped sessions, independent of dashboard and management API credentials. */
 import { defaultUrlPolicy, parseEndpoint } from "@executor-js/utils/url-policy";
-import { AppId, HttpUrl, type Runtime } from "@executor-js/sdk/core";
+import { ApiError } from "@executor-js/utils/api-error";
+import {
+  AppId,
+  AppNotDeployed,
+  AppNotFound,
+  DeploymentNotFound,
+  HttpUrl,
+  StorageError,
+  type Runtime,
+} from "@executor-js/sdk/core";
 import { AppReturnPath, AppSignInCode, AppSignInId } from "apps/ui/auth/contracts";
 import { UiFailed, UiForbidden, UiUnauthorized } from "apps/ui/contracts";
 import { Context, type Effect, Schema } from "effect";
-import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
-import { Principal, RequireUser } from "./auth.ts";
+import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
+import { Principal } from "./auth.ts";
 import {
+  OrganizationForbidden,
   OrganizationId,
   OrganizationReference,
   OrganizationSlug,
   RequireOrganization,
   type OrganizationAccess,
 } from "./organization.ts";
-export { AppSignInId } from "apps/ui/auth/contracts";
+export { AppSignInFailure, AppSignInId } from "apps/ui/auth/contracts";
 
 /** Immutable ownership plus the exact current browser origin. Slug reuse cannot transfer a session. */
 export const AppUiTarget = Schema.Struct({
@@ -44,14 +54,26 @@ export type AppUiBaseUrl = typeof AppUiBaseUrl.Type;
 /** One DNS label; the app and team are separate labels. */
 export const AppUiHostnameLabel = Schema.String.check(
   Schema.isMaxLength(63),
-  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+  Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/u),
 ).pipe(Schema.brand("AppUiHostnameLabel"));
 /** App and organization names cannot be silently shortened or changed to create a browser origin. */
-export class AppUiAddressInvalid extends Schema.TaggedError<AppUiAddressInvalid>()(
-  "AppUiAddressInvalid",
-  { reason: Schema.Literals(["too_long", "invalid_slug"]) },
-  { httpApiStatus: 422 },
-) {}
+export const AppUiAddressInvalid = ApiError.define({
+  tag: "AppUiAddressInvalid",
+  status: 422,
+  fields: { reason: Schema.Literals(["too_long", "invalid_slug"]) },
+  message: ({ reason }) =>
+    reason === "too_long"
+      ? "The app or organization name makes the app's address longer than a DNS name allows. Shorten one of them."
+      : "The app or organization name cannot form a valid app address. Rename one of them.",
+});
+export type AppUiAddressInvalid = typeof AppUiAddressInvalid.Type;
+/** The app's page address could not be resolved because its build or domain records could not be read. */
+export const AppUiUnavailable = ApiError.define({
+  tag: "AppUiUnavailable",
+  status: 503,
+  message: "Executor could not read the app's page build or domain right now. Try again.",
+});
+export type AppUiUnavailable = typeof AppUiUnavailable.Type;
 /** Domain readiness is separate from app deployment and authorization. A pending domain has no usable link. */
 export const AppUiLocation = Schema.Union([
   Schema.Struct({ status: Schema.Literal("ready"), url: HttpUrl }),
@@ -109,13 +131,16 @@ export class HostedAppSessions extends Context.Service<
       { readonly request: AppSignInId; readonly proof: typeof AppSignInCode.Type },
       UiFailed
     >;
-    readonly authorize: (
+    /** The target of a live attempt, read without consuming it. */
+    readonly pending: (
       request: AppSignInId,
+    ) => Effect.Effect<AppUiTarget, UiUnauthorized | UiFailed>;
+    /** Issue a one-minute code after the caller has checked the principal's access to the target. */
+    readonly grant: (
+      request: AppSignInId,
+      target: AppUiTarget,
       principal: Principal,
-    ) => Effect.Effect<
-      { readonly target: AppUiTarget; readonly code: typeof AppSignInCode.Type },
-      UiUnauthorized | UiForbidden | UiFailed
-    >;
+    ) => Effect.Effect<typeof AppSignInCode.Type, UiFailed>;
     readonly complete: (
       target: AppUiTarget,
       request: AppSignInId,
@@ -143,25 +168,25 @@ export class HostedAppRuntime extends Context.Service<HostedAppRuntime, Pick<Run
 ) {}
 
 /** URL discovery uses organization grants; browser authorization still requires a user session. */
-export const HostedAppUi = HttpApiGroup.make("appUi")
-  .add(
-    HttpApiEndpoint.get("location", "/api/organizations/:organization/apps/:app/ui", {
-      params: { organization: OrganizationReference, app: AppId },
-      success: AppUiLocation,
-      error: [UiForbidden, UiFailed, AppUiAddressInvalid],
-    })
-      .annotate(
-        OpenApi.Description,
-        "Get the canonical private app URL. Returns null when the app has no UI or the host has no app domain. Open the returned URL in a browser to sign in; no separate publish step is needed.",
-      )
-      .middleware(RequireOrganization),
-  )
-  .add(
-    HttpApiEndpoint.post("authorize", "/api/app-ui/authorize", {
-      payload: Schema.Struct({ request: AppSignInId }),
-      success: Schema.Struct({ url: Schema.RedactedFromValue(HttpUrl) }),
-      error: [UiUnauthorized, UiForbidden, UiFailed, AppUiAddressInvalid],
-    }).middleware(RequireUser),
-  );
+export const HostedAppUi = HttpApiGroup.make("appUi").add(
+  HttpApiEndpoint.get("location", "/api/organizations/:organization/apps/:app/ui", {
+    params: { organization: OrganizationReference, app: AppId },
+    success: AppUiLocation,
+    error: [
+      OrganizationForbidden,
+      StorageError,
+      AppNotFound,
+      AppNotDeployed,
+      DeploymentNotFound,
+      AppUiAddressInvalid,
+      AppUiUnavailable,
+    ],
+  })
+    .annotate(
+      OpenApi.Description,
+      "Get the canonical private app URL. Fails with AppNotDeployed until the app's first deployment. Returns null when the deployed app has no UI or the host has no app domain. Open the returned URL in a browser to sign in; no separate publish step is needed.",
+    )
+    .middleware(RequireOrganization),
+);
 /** A browser client can consume the same narrow contract without importing a host's full API. */
 export const HostedAppUiApi = HttpApi.make("executor-hosted").add(HostedAppUi);

@@ -1,3 +1,4 @@
+import { appsManifest } from "../support/apps-release.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -42,16 +43,17 @@ layer(TestLive, { excludeTestServices: true })("Analytics", (it) => {
           owner: "analytics-owner",
           name: `Analytics ${randomUUID().slice(0, 8)}`,
           files: [
+            appsManifest,
             {
               path: "index.ts",
-              content: `import { defineApp, query, object, number } from "apps";
-export default defineApp({ accounts: {} }, { queries: { emit: query({ input: object({}) }, async context => {
+              content: `import { defineApp, query, object, number, router } from "apps";
+export default defineApp({ accounts: {} }, { tools: router({ queries: router({ emit: query({ input: object({}) }, async context => {
   for (let i = 0; i < 250; i++) await context.analytics.emit({ event: "webhook_received", purpose: "slack" });
   return "sent";
 }), groups: query({ input: object({ offset: number() }) }, async (context, input) => {
   for (let i = 0; i < 600; i++) await context.analytics.emit({ event: "group_limit", purpose: "group_" + (input.offset + i) });
   return "sent";
-}) } });`,
+}) }) }) });`,
             },
           ],
         });
@@ -63,7 +65,7 @@ export default defineApp({ accounts: {} }, { queries: { emit: query({ input: obj
         const path = `/v1/apps/${app.id}`;
         yield* Effect.addFinalizer(() => send("DELETE", path).pipe(Effect.orDie));
         yield* serverControl("stop");
-        expect(yield* analyticsDatabase("baseline")).toEqual({ version: "4.0.1", events: 0 });
+        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.6", events: 0 });
         yield* analyticsVolume("backup");
         yield* serverControl("start");
         expect((yield* send("GET", path)).status).toBe(200);
@@ -134,19 +136,14 @@ export default defineApp({ accounts: {} }, { queries: { emit: query({ input: obj
         expect(expired.retainedFrom).toBeGreaterThan(started);
         yield* serverControl("stop");
         const stored = yield* analyticsDatabase("inspect");
-        expect(stored.version).toBe("4.0.2");
+        expect(stored.version).toBe("4.0.6");
         expect(stored.events).toBe(6252);
-        expect(yield* analyticsDatabase("rollback")).toEqual({ version: "4.0.1", events: 6252 });
-        yield* serverControl("start");
-        expect((yield* send("GET", path)).status).toBe(200);
-        yield* serverControl("stop");
-        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.2", events: 6252 });
         yield* analyticsVolume("restore");
-        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.1", events: 0 });
+        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.6", events: 0 });
         yield* serverControl("start");
         expect((yield* send("GET", path)).status).toBe(200);
         yield* serverControl("stop");
-        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.2", events: 0 });
+        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.6", events: 0 });
         yield* serverControl("start");
       }),
     ),

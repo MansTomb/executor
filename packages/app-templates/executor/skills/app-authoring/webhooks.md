@@ -5,9 +5,10 @@ Apps may return a `webhooks` catalog. Define an `account` slot, `config` and
 Keep these callbacks together. The host supplies a stable `subscriptionId`,
 `callbackUrl`, signing `secret`, and the selected source `account`; other saved
 accounts are available in context. Use `WebhookContext<typeof requirements>` for
-external lifecycle handlers. It exposes writable `ctx.db` when the app declares
-a database, and excludes `elicit` in both the type and runtime object. Registration,
-delivery and cleanup each own their storage transaction. Registration and cleanup must
+external lifecycle handlers. It exposes writable `ctx.sql` when the app declares
+`sql`, and excludes `elicit` in both the type and runtime object. No handler runs
+inside a transaction, so `register` can wait on a provider that verifies the
+callback URL by calling `handle` before it answers. Registration and cleanup must
 be idempotent. A callback must verify the provider signature over raw bytes
 before parsing the body or performing side effects.
 
@@ -28,9 +29,9 @@ use `object({})` if only a signing secret is needed. `executor` means the operat
 copies a generated secret into the provider; `provider` means they paste the
 provider's secret into Executor's secure page.
 
-When creation returns `setup-required`, request `webhookLinks_link({ path: { app, subscription } })` (local) or
+When creation returns `setup-required`, request `webhookLinks.link({ path: { app, subscription } })` (local) or
 the hosted `setupLink` operation and show the URL to the user. Do not ask for
 signing secrets in chat or include them in tool arguments. Read status with
-`webhooks_get`. Manual removal returns `disabled`; after removing it
-in the provider, use `webhooks_confirmRemoval`. This confirms the
+`webhooks.get`. Manual removal returns `disabled`; after removing it
+in the provider, use `webhooks.confirmRemoval`. This confirms the
 operator's action; Executor cannot verify external deletion without a provider API.

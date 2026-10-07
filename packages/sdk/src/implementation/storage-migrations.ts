@@ -1,8 +1,15 @@
+import { analyticsTable } from "./analytics-schema.ts";
 /** Current baseline and the additive repair required by existing version 4 databases. */
 import { fumadb } from "fumadb-effect";
-import { column, idColumn, schema, table } from "fumadb-effect/schema";
-import { Effect, Schema } from "effect";
-import { storageSchema } from "./storage-schema.ts";
+import { Effect } from "effect";
+import { schema, type CustomMigrationFn } from "fumadb-effect/schema";
+import {
+  storageSchema,
+  version403Tables,
+  version404Tables,
+  version405Tables,
+  version4Tables,
+} from "./storage-schema.ts";
 
 /** Indexes that are part of the current storage contract, including fresh databases. */
 export const storageIndexes = [
@@ -14,35 +21,36 @@ export const storageIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_scheduled_runs_owner ON executor_scheduled_runs (owner, started_at)",
 ] as const;
 
+/** A shipped version 4 layout, with the same foreign keys as the current schema. */
+const version4 = <Version extends string>(version: Version, up?: CustomMigrationFn) =>
+  schema({
+    version,
+    tables: version4Tables,
+    ...(up === undefined ? {} : { up }),
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+  });
+
 /** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
-const analyticsTable = table("executor_analytics_events", {
-  id: idColumn("id", Schema.String, { type: "varchar(36)" }),
-  app: column("app", Schema.String, { type: "varchar(255)" }),
-  owner: column("owner", Schema.String, { type: "varchar(255)" }),
-  timestamp: column("timestamp", Schema.Number, { type: "bigint" }),
-  event: column("event", Schema.String, { type: "varchar(64)" }),
-  operation: column("operation", Schema.NullOr(Schema.String), { type: "varchar(64)" }),
-  transport: column("transport", Schema.NullOr(Schema.String), { type: "varchar(16)" }),
-  purpose: column("purpose", Schema.NullOr(Schema.String), { type: "varchar(64)" }),
-  phase: column("phase", Schema.NullOr(Schema.String), { type: "varchar(16)" }),
-  outcome: column("outcome", Schema.NullOr(Schema.String), { type: "varchar(16)" }),
-  statusCode: column("status_code", Schema.NullOr(Schema.Int)),
-  durationMs: column("duration_ms", Schema.NullOr(Schema.Number)),
-});
 export const analyticsIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_analytics_scope_time ON executor_analytics_events (app, owner, timestamp)",
   "CREATE INDEX IF NOT EXISTS executor_analytics_time ON executor_analytics_events (timestamp)",
 ] as const;
 export const storageSchemas = [
-  storageSchema,
-  schema({
-    version: "4.0.1",
-    tables: storageSchema.tables,
-    up: () => Effect.succeed(storageIndexes.map((sql) => ({ type: "custom" as const, sql }))),
-  }),
+  version4("4.0.0"),
+  version4("4.0.1", () =>
+    Effect.succeed(storageIndexes.map((sql) => ({ type: "custom" as const, sql }))),
+  ),
+  // Additive: existing accounts start at generation 0 and the running server ignores the column.
   schema({
     version: "4.0.2",
-    tables: { ...storageSchema.tables, analyticsEvents: analyticsTable },
+    tables: { ...version4Tables, analyticsEvents: analyticsTable },
     up: () =>
       Effect.succeed([
         {
@@ -51,7 +59,57 @@ export const storageSchemas = [
         },
         ...analyticsIndexes.map((sql) => ({ type: "custom" as const, sql })),
       ]),
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
   }),
+  // Additive: a new account checks table that the running server never reads.
+  schema({
+    version: "4.0.3",
+    tables: { ...version403Tables, analyticsEvents: analyticsTable },
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+  }),
+  // Additive: a nullable account description; the running server neither reads nor writes it.
+  schema({
+    version: "4.0.4",
+    tables: { ...version404Tables, analyticsEvents: analyticsTable },
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+  }),
+  // Additive: a nullable column the running server never names. Existing accounts read as
+  // connected without hosts, which is how they behave before this version.
+  schema({
+    version: "4.0.5",
+    tables: { ...version405Tables, analyticsEvents: analyticsTable },
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+  }),
+  // Additive: a nullable check message the running server never names. Existing checks have none.
+  storageSchema,
 ] as const;
 
 /** Versioned persistence factory; constructing it does not touch a database. */

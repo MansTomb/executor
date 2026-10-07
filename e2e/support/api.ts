@@ -1,6 +1,6 @@
 /** Effect HTTP adapter with independent cookie jars, bounded requests, and safe evidence. */
 import { Cause, Clock, Context, Effect, Layer, Redacted, Ref, Schema } from "effect";
-import { Cookies, HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { Cookies, HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Evidence } from "./evidence.ts";
 import { Target, type Response } from "./platform.ts";
@@ -38,8 +38,16 @@ export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestF
   }
 }
 /** A server response may be decoded only against its public contract. */
+/** A decode failure names the status and body it rejected, so a wrong-shape error page is visible. */
 export const body = <A>(schema: Schema.ConstraintDecoder<A, never>, response: Response) =>
-  Schema.decodeUnknownEffect(schema)(response.body);
+  Schema.decodeUnknownEffect(schema)(response.body).pipe(
+    Effect.tapError(() =>
+      Effect.logError("Response body did not match the expected shape", {
+        status: response.status,
+        body: JSON.stringify(response.body).slice(0, 2000),
+      }),
+    ),
+  );
 interface Sessions {
   readonly session: (cookies?: Redacted.Redacted<BrowserCookies>) => Effect.Effect<Session>;
   readonly request: (
@@ -187,6 +195,12 @@ export class Api extends Context.Service<Api, Sessions>()("e2e/Api") {
           Effect.gen(function* () {
             const traceId = randomBytes(16).toString("hex"),
               spanId = randomBytes(8).toString("hex");
+            yield* evidence.sending({
+              method,
+              path: new URL(path, origin).pathname,
+              traceId,
+              spanId,
+            });
             const start = yield* Clock.currentTimeMillis;
             const response = yield* actor.send(method, path, data, {
               origin,

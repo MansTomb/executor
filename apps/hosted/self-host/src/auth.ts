@@ -5,10 +5,12 @@ import { betterAuth } from "better-auth";
 import { HostedAppSessions, hostedAppSessions } from "@executor-js/hosted-server/app-ui";
 import {
   McpAuthentication,
-  mcpAuthenticationError,
+  mcpBrowserGrantError,
+  mcpConnectionStore,
   provisionHostedOAuthResources,
   ApiAuthentication,
-  apiAuthenticationError,
+  apiBearerAccess,
+  mcpBearerAccess,
   Authentication,
   AuthenticationUnavailable,
   sessionPrincipal,
@@ -18,13 +20,15 @@ import {
   deleteOrganizationRecords,
 } from "@executor-js/hosted-server";
 import { Effect, Layer, Option, Redacted } from "effect";
+import { SqlClient } from "effect/sql";
 import { AuthDatabase } from "./contracts/database.ts";
-import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpServerRequest, HttpServerResponse } from "effect/http";
 
 /** Initialize auth before listening; the database owns persistent users and sessions. */
 export const selfHostAuth = Effect.gen(function* () {
   const settings = yield* selfHostAuthSettings;
   const database = yield* AuthDatabase;
+  const sql = yield* SqlClient.SqlClient;
   const base = selfHostAuthOptions(settings, ["x-executor-client-ip"]);
   const options = {
     ...base,
@@ -72,27 +76,30 @@ export const selfHostAuth = Effect.gen(function* () {
   const mcpIdentity = Layer.succeed(McpAuthentication, {
     origin: settings.url,
     authenticate: (headers, mode, organization) =>
-      Effect.tryPromise({
-        try: () => auth.api.getMcpAccess({ headers, query: { mode, organization } }),
-        catch: mcpAuthenticationError,
-      }).pipe(Effect.withSpan("auth.authenticate")),
+      mcpBearerAccess(settings.url, { headers, mode, organization }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.withSpan("auth.authenticate"),
+      ),
     browserGrant: (headers, id) =>
       Effect.tryPromise({
         try: () => auth.api.getMcpBrowserAccess({ headers, body: { id } }),
-        catch: mcpAuthenticationError,
+        catch: mcpBrowserGrantError,
       }),
     metadata: Effect.tryPromise({
       try: () => auth.api.getOAuthServerConfig(),
       catch: () => new AuthenticationUnavailable(),
     }),
+    connections: mcpConnectionStore((run) =>
+      Effect.tryPromise({ try: () => run(auth.api), catch: (cause) => cause }),
+    ),
   });
   const apiIdentity = Layer.succeed(ApiAuthentication, {
     origin: settings.url,
     authenticate: (headers, organization) =>
-      Effect.tryPromise({
-        try: () => auth.api.getApiAccess({ headers, query: { organization } }),
-        catch: apiAuthenticationError,
-      }).pipe(Effect.withSpan("auth.authenticate")),
+      apiBearerAccess(settings.url, { headers, organization }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.withSpan("auth.authenticate"),
+      ),
   });
   const handler = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;

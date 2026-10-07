@@ -99,7 +99,7 @@ function LaunchLocation({
             origin={location.url}
             returnTo={returnTo}
             accounts={accounts}
-            contexts={accountContexts(app, profiles)}
+            contexts={accountContexts(app, profiles, true)}
             manage={
               <Link
                 to="/org/$organizationSlug/apps/$appId"
@@ -109,6 +109,15 @@ function LaunchLocation({
                 Manage accounts
               </Link>
             }
+            review={(profile) => (
+              <Link
+                to="/org/$organizationSlug/apps/$appId"
+                params={{ organizationSlug: slug, appId: app.id }}
+                search={{ view: "accounts", profile }}
+              >
+                Review accounts
+              </Link>
+            )}
           />
         ) : (
           <p className="p-6 text-sm text-muted-foreground" role="status">

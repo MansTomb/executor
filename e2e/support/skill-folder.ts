@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "./actors.ts";
 import { Api, body } from "./api.ts";
 import { App } from "./contracts.ts";
+import { appsManifest } from "./apps-release.ts";
 
 const Bundle = Schema.Struct({
   skills: Schema.Array(
@@ -19,6 +20,8 @@ const Bundle = Schema.Struct({
 export const skillDocument = (name: string) =>
   `---\nname: ${name}\ndescription: Packaged instructions.\nmetadata:\n  version: "1"\n---\n# ${name}`;
 const packaged = [
+  // Loose files beside skill directories are not skills.
+  { path: "skills/README.md", content: "# Skills\n" },
   { path: "skills/local-guide/SKILL.md", content: skillDocument("local-guide") },
   { path: "skills/local-guide/references/example.md", content: "Packaged reference" },
   { path: "guides/extra-guide/SKILL.md", content: skillDocument("extra-guide") },
@@ -40,6 +43,7 @@ export const skillFolderFixture = Effect.gen(function* () {
             content: `import { defineApp } from "apps";\n${imports}\nexport default defineApp({ accounts: {} }, async (ctx) => (${definition}));`,
           },
           ...files,
+          appsManifest,
         ],
       });
       expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);

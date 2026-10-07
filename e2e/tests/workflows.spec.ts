@@ -15,7 +15,9 @@ import {
   WorkflowApp as App,
   WorkflowRun as Run,
   WorkflowRows as Rows,
+  workflowToolKinds,
 } from "../support/workflow-app.ts";
+import { appsManifest } from "../support/apps-release.ts";
 
 const workflowFixture = Effect.gen(function* () {
   const api = yield* Api,
@@ -117,10 +119,11 @@ const workflowFixture = Effect.gen(function* () {
         yield* Effect.sleep("100 millis");
       }
     });
-  const call = (tool: string, input: Schema.Json = {}) =>
+  const call = (tool: keyof typeof workflowToolKinds, input: Schema.Json = {}) =>
     api.request(actors.owner, "POST", `${path}/tools/call`, {
       profile: profile.id,
       tool,
+      kind: workflowToolKinds[tool],
       input,
     });
   return {
@@ -141,26 +144,24 @@ const workflowFixture = Effect.gen(function* () {
   };
 });
 
+/** Starts the held `process` run and waits until its first step saved with the original account. */
+const startPinnedRun = (fixture: Effect.Success<typeof workflowFixture>) =>
+  Effect.gen(function* () {
+    const run = yield* fixture.start("process", { label: "pinned" }, fixture.name);
+    const beforeDeadline = (yield* Clock.currentTimeMillis) + 15000;
+    while ((yield* body(Rows, yield* fixture.call("rows"))).length < 1) {
+      expect(yield* Clock.currentTimeMillis).toBeLessThan(beforeDeadline);
+      yield* Effect.sleep("100 millis");
+    }
+    return run;
+  });
+
 layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
-  it.effect(scenarios.workflows.title, (context) =>
+  it.effect(scenarios.workflowStarts.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const {
-          api,
-          actors,
-          prefix,
-          name,
-          app,
-          path,
-          submit,
-          profile,
-          connect,
-          account,
-          start,
-          wait,
-          call,
-        } = yield* workflowFixture;
+        const { api, actors, name, path, profile, start, call } = yield* workflowFixture;
         expect(
           (yield* api.request(actors.member, "POST", `${path}/workflow-runs`, {
             profile: profile.id,
@@ -185,22 +186,38 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
             key: name,
           })).status,
         ).toBeGreaterThanOrEqual(400);
-        const isolation = yield* call("queries.isolation");
+        const isolation = yield* call("isolation");
         expect(isolation.status).toBe(200);
         expect(isolation.body).toEqual({
           hostEnvironmentAtImport: false,
           hostEnvironmentAtCall: false,
           hostFileAccess: false,
         });
-        const beforeDeadline = (yield* Clock.currentTimeMillis) + 15000;
-        while ((yield* body(Rows, yield* call("queries.rows"))).length < 1) {
-          expect(yield* Clock.currentTimeMillis).toBeLessThan(beforeDeadline);
-          yield* Effect.sleep("100 millis");
-        }
+      }),
+    ),
+  );
+  it.effect(scenarios.workflowsInUse.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const fixture = yield* workflowFixture;
+        const { api, actors, prefix, path, account } = fixture;
+        yield* startPinnedRun(fixture);
         expect(
           (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
         ).toBe(409);
         expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(409);
+      }),
+    ),
+  );
+  it.effect(scenarios.workflows.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const fixture = yield* workflowFixture;
+        const { api, actors, prefix, app, path, submit, connect, account, start, wait, call } =
+          fixture;
+        const run = yield* startPinnedRun(fixture);
         const reconnect = yield* api.request(
           actors.owner,
           "POST",
@@ -216,7 +233,7 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
         });
         expect(updated.status, JSON.stringify(updated.body)).toBe(200);
         // The original run may proceed only after credentials and deployment have changed.
-        expect((yield* call("mutations.release", { label: "pinned" })).status).toBe(200);
+        expect((yield* call("release", { label: "pinned" })).status).toBe(200);
         const completed = yield* wait(run.id, "complete");
         expect(completed.deployment).toBe(app.activeDeployment);
         const output = yield* Schema.decodeUnknownEffect(
@@ -239,7 +256,7 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
         });
         expect(output.first.key.length).toBe(64);
         expect(
-          (yield* body(Rows, yield* call("queries.rows")))
+          (yield* body(Rows, yield* call("rows")))
             .filter((row) => row.label !== "pinned:before")
             .map((row) => row.source),
         ).toEqual(["synthetic-refreshed", "synthetic-refreshed"]);
@@ -255,12 +272,12 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
           yield* workflowFixture;
         const run = yield* start("quick");
         expect((yield* wait(run.id, "complete")).output).toBe("v1");
-        const launched = yield* call("mutations.launch", { key: name + "-handler" });
+        const launched = yield* call("launch", { key: name + "-handler" });
         expect(launched.status).toBe(200);
         const internal = yield* body(Run, launched);
         resources.runs.push({ app: app.id, id: internal.id });
         expect((yield* wait(internal.id, "complete")).output).toBe("v1");
-        expect((yield* call("queries.history")).status).toBe(200);
+        expect((yield* call("history")).status).toBe(200);
         expect(
           (yield* api.request(
             actors.member,
@@ -294,6 +311,7 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
               content:
                 'import { defineApp } from "apps"; export default defineApp({accounts:{}}, {});',
             },
+            appsManifest,
           ],
         });
         expect(other.status).toBe(200);
@@ -313,7 +331,7 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, path, start, wait, call } = yield* workflowFixture;
+        const { start, wait } = yield* workflowFixture;
         for (const [workflow, reason] of [
           ["deniedRun", "approval"],
           ["approvalRun", "approval"],
@@ -323,12 +341,57 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
           const failed = yield* wait((yield* start(workflow)).id, "errored");
           expect(failed.error).toBe(reason);
         }
+      }),
+    ),
+  );
+  it.effect(scenarios.workflowFailureDetails.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { start, wait } = yield* workflowFixture;
+        // Errored runs name the failing step and carry the app's own error.
+        const [fatal, exploded, leaked] = yield* Effect.forEach(
+          ["fatal", "explodeRun", "leak"],
+          (workflow) => Effect.flatMap(start(workflow), (run) => wait(run.id, "errored")),
+          { concurrency: 3 },
+        );
+        expect(fatal?.failure).toEqual({
+          step: "fatal",
+          errorName: "NonRetryableError",
+          message: "Synthetic private exception",
+        });
+        expect(exploded?.failure).toEqual({
+          step: "explode",
+          errorName: "TypeError",
+          message: "Synthetic mutation failure",
+        });
+        // Account credentials never appear in a recorded message.
+        expect(leaked?.failure).toEqual({
+          step: "leak",
+          errorName: "NonRetryableError",
+          message: "Rejected token [redacted]",
+        });
+        expect(JSON.stringify(leaked)).not.toContain("synthetic-original");
+      }),
+    ),
+  );
+  it.effect(scenarios.workflowStepTimeout.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { start, wait, call } = yield* workflowFixture;
         yield* wait((yield* start("timeoutRun")).id, "errored");
         expect(
-          (yield* body(Rows, yield* call("queries.rows"))).some(
-            (row) => row.label === "timeout:rollback",
-          ),
+          (yield* body(Rows, yield* call("rows"))).some((row) => row.label === "timeout:rollback"),
         ).toBe(false);
+      }),
+    ),
+  );
+  it.effect(scenarios.workflowTermination.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, path, start, wait, call } = yield* workflowFixture;
         const slow = yield* start("slow");
         expect(
           (yield* api.request(actors.member, "POST", `${path}/workflow-runs/${slow.id}/terminate`))
@@ -340,9 +403,7 @@ layer(HostedLive, { excludeTestServices: true })("App workflows", (it) => {
         ).toBe(200);
         expect((yield* wait(slow.id, "terminated")).status).toBe("terminated");
         expect(
-          (yield* body(Rows, yield* call("queries.rows"))).some(
-            (row) => row.label === "cancel:after",
-          ),
+          (yield* body(Rows, yield* call("rows"))).some((row) => row.label === "cancel:after"),
         ).toBe(false);
       }),
     ),

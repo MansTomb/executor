@@ -34,6 +34,7 @@ import {
   ElicitationResponseInvalid,
   ResumeInput,
   type InteractionId,
+  type InteractionTool,
   type ToolInputPending,
   type ExecuteResult,
   type McpExecutionResult,
@@ -61,6 +62,21 @@ class ApprovalUnavailable extends Schema.TaggedError<ApprovalUnavailable>()(
   "ApprovalUnavailable",
   {},
 ) {}
+
+/** The asking call's identity. A call without a profile omits the keys; MCP results are JSON. */
+const interactionTool = (call: {
+  readonly app: InteractionTool["app"];
+  readonly tool: InteractionTool["tool"];
+  readonly profile?: InteractionTool["profile"] | undefined;
+  readonly expectedProfileRevision?: InteractionTool["expectedProfileRevision"] | undefined;
+}): InteractionTool => ({
+  app: call.app,
+  tool: call.tool,
+  ...(call.profile === undefined ? {} : { profile: call.profile }),
+  ...(call.expectedProfileRevision === undefined
+    ? {}
+    : { expectedProfileRevision: call.expectedProfileRevision }),
+});
 
 type Operation = { readonly waiting: Set<InteractionId> };
 type Pending = {
@@ -188,6 +204,15 @@ export const makeExecutions = (
       if (waiting && call.outcome === "running") call.outcome = "awaiting-approval";
       if (!waiting && call.outcome === "awaiting-approval") call.outcome = "running";
     };
+    /** A completed call whose tool reported an error is a failure, even when the program handles it. */
+    const semanticFailure = (
+      run: Run,
+      index: number | undefined,
+      result: { readonly toolError?: true },
+    ) => {
+      const call = index === undefined ? undefined : run.progress.calls[index];
+      if (result.toolError === true && call !== undefined) call.outcome = "failure";
+    };
     /** The active-time budget is spent: nothing new may start, park or resume. */
     const expired = (run: Run) => Deferred.isDoneUnsafe(run.expired);
     yield* Effect.addFinalizer(() =>
@@ -221,11 +246,7 @@ export const makeExecutions = (
       });
 
     const elicitation =
-      (
-        run: Run,
-        operation: Operation,
-        tool: (typeof ToolInputPending.Type)["tool"],
-      ): ElicitationHandler =>
+      (run: Run, operation: Operation, tool: InteractionTool): ElicitationHandler =>
       (input, signal) =>
         Effect.gen(function* () {
           const form = yield* prepareElicitation(input);
@@ -334,7 +355,7 @@ export const makeExecutions = (
         listApps: (input) => exchange((backend) => backend.listApps(input)),
         listTargets: (input) => exchange((backend) => backend.listTargets(input)),
         indexTools: (input) => exchange((backend) => backend.indexTools(input)),
-        listTools: (input) => exchange((backend) => backend.listTools(input)),
+        listTools: (input, options) => exchange((backend) => backend.listTools(input, options)),
         callTool: (input) =>
           Effect.flatMap(Effect.fiberId, (fiber) => {
             const call = run.progress.callFibers.get(fiber);
@@ -342,12 +363,7 @@ export const makeExecutions = (
               (backend, operation) =>
                 backend
                   .callTool(input, {
-                    elicitation: elicitation(run, operation, {
-                      app: input.app,
-                      tool: input.tool,
-                      profile: input.profile,
-                      expectedProfileRevision: input.expectedProfileRevision,
-                    }),
+                    elicitation: elicitation(run, operation, interactionTool(input)),
                   })
                   .pipe(
                     Effect.withSpan("mcp.tool.call", {
@@ -359,9 +375,7 @@ export const makeExecutions = (
                   ),
               (result, response) => {
                 if (result.status === "completed") {
-                  const completed = call === undefined ? undefined : run.progress.calls[call];
-                  if (result.toolError === true && completed !== undefined)
-                    completed.outcome = "failure";
+                  semanticFailure(run, call, result);
                   return Deferred.succeed(response, result).pipe(Effect.asVoid);
                 }
                 return record({
@@ -620,12 +634,16 @@ export const makeExecutions = (
               launch(run, backend, (active, operation) =>
                 active
                   .resumeInvocation(pending.request, response, {
-                    elicitation: elicitation(run, operation, {
-                      app: pending.request.invocation.app,
-                      tool: pending.request.invocation.tool,
-                      profile: pending.request.invocation.profile,
-                      expectedProfileRevision: pending.request.invocation.profileRevision,
-                    }),
+                    elicitation: elicitation(
+                      run,
+                      operation,
+                      interactionTool({
+                        app: pending.request.invocation.app,
+                        tool: pending.request.invocation.tool,
+                        profile: pending.request.invocation.profile,
+                        expectedProfileRevision: pending.request.invocation.profileRevision,
+                      }),
+                    ),
                   })
                   .pipe(
                     Effect.withSpan("mcp.tool.resume", {
@@ -637,12 +655,7 @@ export const makeExecutions = (
                     Effect.flatMap((result) =>
                       Match.value(result).pipe(
                         Match.when({ status: "completed" }, (result) => {
-                          const completed =
-                            pending.call === undefined
-                              ? undefined
-                              : run.progress.calls[pending.call];
-                          if (result.toolError === true && completed !== undefined)
-                            completed.outcome = "failure";
+                          semanticFailure(run, pending.call, result);
                           return Deferred.succeed(pending.response, result);
                         }),
                         Match.when({ status: "denied" }, () =>

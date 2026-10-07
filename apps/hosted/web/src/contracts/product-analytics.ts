@@ -1,7 +1,7 @@
 /** Explicit browser actions carry only authored labels and outcomes, never form values or URLs. */
 import { Effect, Exit, Cause, Schema } from "effect";
 
-const Label = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_.-]{0,79}$/));
+const Label = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_.-]{0,79}$/u));
 
 /** The Cloud listener parses the event boundary and discards undeclared fields. */
 export const BrowserUsage = Schema.Struct({
@@ -11,8 +11,12 @@ export const BrowserUsage = Schema.Struct({
 });
 export type BrowserUsage = typeof BrowserUsage.Type;
 
-/** Shared UI can announce actions; only an enabled Cloud host installs a collector. */
+/**
+ * Shared UI can announce actions; only an enabled Cloud host installs a collector. A server render
+ * is not a browser action, so reads it performs are not reported.
+ */
 export const reportBrowserUsage = (usage: BrowserUsage) => {
+  if (typeof window === "undefined") return;
   window.dispatchEvent(new CustomEvent("executor:product-usage", { detail: usage }));
 };
 

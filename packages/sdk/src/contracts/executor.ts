@@ -2,31 +2,53 @@ import { ProfileHost, type ProfileDispatcher } from "./profiles.ts";
 import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
 import { type Effect, type Redacted, type Stream, Schema } from "effect";
-import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
+import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { WebhookSetupApi } from "./webhook-setup.ts";
 import type { ExecutorApi } from "./http.ts";
-import type { Credentials } from "./storage.ts";
+import { StorageHost, type Credentials } from "./storage.ts";
 import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
-import type { ToolInvocationOptions } from "./tools.ts";
+import type { ToolInvocationOptions, ToolListOptions } from "./tools.ts";
 import type { App } from "./apps.ts";
 import type { Account } from "./account.ts";
-import type { AccountConnectionId, StorageError } from "./shared.ts";
+import type { AccountConnectionId, AccountId, StorageError } from "./shared.ts";
 import type { BlobStorage } from "./blobs.ts";
-import type { AppSourceStorage } from "./source.ts";
+import { RepositoryHost, type RepositoryBackend } from "./source.ts";
+import type { RegistryOptions } from "./registry.ts";
 
+/** The connection being completed, with what the product needs to recheck without reading SDK tables. */
+export interface AccountConnectionCompletion {
+  readonly id: AccountConnectionId;
+  readonly owner: import("./shared.ts").OwnerId;
+  readonly reconnectAccount: import("./shared.ts").AccountId | null;
+  /** The profile the connection targets, as stored now; null for a plain account connection. */
+  readonly target: {
+    readonly app: import("./shared.ts").AppId;
+    readonly profile: import("./profiles.ts").Profile;
+  } | null;
+}
 /** Product metadata participates in the resource transaction; hooks must perform no external I/O. */
 export interface ResourceLifecycle {
-  /** Recheck the saved subject before any profile-backed execution, including background work. */
+  /**
+   * Recheck the saved subject before any profile-backed execution, including background work,
+   * together with the selected accounts `accountsResolving` would check for that subject. Returns
+   * the IDs of the accounts the product still authorizes; the SDK refuses the others.
+   */
   readonly profileResolving?: (
     profile: import("./profiles.ts").Profile,
-  ) => Effect.Effect<void, StorageError>;
-  /** Recheck product authority immediately before acquiring and returning account credentials. */
-  readonly accountResolving: (account: Account) => Effect.Effect<void, StorageError>;
+    accounts: readonly Account[],
+  ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
+  /**
+   * Recheck product authority before acquiring account credentials, and again after any renewal.
+   * Returns the IDs of the accounts the product still authorizes; the SDK refuses the others.
+   */
+  readonly accountsResolving: (
+    accounts: readonly [Account, ...Account[]],
+  ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
   /** Recheck a saved connection after external authentication, before committing its result. */
   readonly connectionCompleting: (
-    connection: AccountConnectionId,
+    connection: AccountConnectionCompletion,
   ) => Effect.Effect<void, StorageError>;
   /** Called once after inserting a new configured app, before its transaction commits. */
   readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
@@ -36,28 +58,46 @@ export interface ResourceLifecycle {
   readonly accountRemoving: (account: Account) => Effect.Effect<void, StorageError>;
 }
 
-/** Caller-owned SQL, blobs, execution and encryption; constructors do not migrate or close them. */
-export interface ExecutorOptions {
-  /** Optional product-owned metadata lifecycle. Failures roll back the resource write. */
-  readonly lifecycle?: ResourceLifecycle;
-  /** Public callback origin, provided by the serving product. Local providers need a reachable tunnel. */
-  readonly workflows?: WorkflowRuntime;
-  readonly webhookOrigin?: string;
-  readonly storage: ExecutorDatabase;
-  readonly appStorage?: import("@executor-js/app-data").AppDatabases;
+/** Evaluated declarations and tool listings: where they are kept and how long they are trusted. */
+export interface ExecutorCache {
+  /** Per process or isolate. Defaults to a store owned by this executor. */
+  readonly memory?: import("./declarations.ts").DeclarationCache;
+  /** Kept beyond this process or isolate, read when `memory` misses. */
+  readonly durable?: import("./declarations.ts").DurableDeclarations;
+  /** Overrides of `defaultToolListingPolicy`. */
+  readonly toolListings?: Partial<import("./declarations.ts").ToolListingPolicy>;
+}
+
+/** Caller-owned database, blobs, Git and execution; constructors do not migrate or close them. */
+export interface ExecutorInputs {
+  /** Executor tables, app data and the catalog live here. Migrated by the host before use. */
+  readonly database: ExecutorDatabase;
+  /** Public origin: webhook callbacks and the address of a stored catalog. */
+  readonly origin?: string;
+  /** The Git backend behind app source. The executor derives revision storage from it. */
+  readonly git: RepositoryBackend;
   readonly blobs: BlobStorage;
-  readonly sources: AppSourceStorage;
   readonly runtime: AppRuntime;
-  readonly credentials: Credentials;
   readonly oauth?: OAuthOptions;
-  /** Evaluated skills, workflows and webhooks, shared per process or isolate. Defaults to this executor. */
-  readonly declarations?: import("./declarations.ts").DeclarationCache;
+  /** Defaults to reading the hosted Executor registry. */
+  readonly registry?: RegistryOptions;
+  /** Optional product-owned metadata lifecycle. Failures roll back the resource write. */
+  readonly hooks?: ResourceLifecycle;
+  readonly workflows?: WorkflowRuntime;
+  readonly cache?: ExecutorCache;
   /**
    * Revalidates stale declarations and revokes deleted accounts' OAuth grants after the response.
    * Without it, stale declarations revalidate first and revocation runs inline.
    */
   readonly background?: import("./declarations.ts").BackgroundWork;
 }
+
+/** A hex-encoded 256-bit key encrypts saved credentials with AES-GCM; a custom store replaces that. */
+export type ExecutorOptions = ExecutorInputs &
+  (
+    | { readonly secret: Redacted.Redacted<string>; readonly credentials?: undefined }
+    | { readonly credentials: Credentials; readonly secret?: undefined }
+  );
 
 /** No valid remote response was received; the operation may already have completed. */
 export class TransportError extends Schema.TaggedError<TransportError>()("TransportError", {
@@ -113,6 +153,9 @@ type Groups<Api> = Api extends HttpApi.HttpApi<infer _Id, infer G> ? G : never;
 type WithInvocationOptions<M> = M extends (input: infer Input) => infer Output
   ? (input: Input, options?: ToolInvocationOptions) => Output
   : M;
+type WithListOptions<M> = M extends (input: infer Input) => infer Output
+  ? (input: Input, options?: ToolListOptions) => Output
+  : M;
 
 /**
  * Effect-native operations exposed by @executor-js/sdk/core, projected from
@@ -127,7 +170,9 @@ type FlatExecutor = {
     ]: HttpApiGroup.Identifier<G> extends "tools"
       ? HttpApiEndpoint.Identifier<E> extends "call" | "resume"
         ? WithInvocationOptions<Method<E>>
-        : Method<E>
+        : HttpApiEndpoint.Identifier<E> extends "list"
+          ? WithListOptions<Method<E>>
+          : Method<E>
       : Method<E>;
   };
 };
@@ -144,6 +189,8 @@ export type Executor = Omit<
   };
   readonly [ProfileHost]: ProfileDispatcher;
   readonly [WorkflowHost]: import("./workflow-runtime.ts").WorkflowHost;
+  readonly [RepositoryHost]: RepositoryHost;
+  readonly [StorageHost]: StorageHost;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
 };
 
@@ -153,5 +200,12 @@ type Promisify<T> = T extends (...args: infer Args) => Effect.Effect<infer A, in
 
 /** Root SDK facade over the same operations: plain inputs, Promises, and AsyncIterable subscriptions. */
 export type PromiseExecutor = Promisify<
-  Omit<Executor, typeof WorkflowHost | typeof ProfileHost | "scheduler">
+  Omit<
+    Executor,
+    | typeof WorkflowHost
+    | typeof ProfileHost
+    | typeof RepositoryHost
+    | typeof StorageHost
+    | "scheduler"
+  >
 >;

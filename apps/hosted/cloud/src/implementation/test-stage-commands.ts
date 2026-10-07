@@ -1,18 +1,23 @@
 /** Deploy isolated previews with explicit database, retention and background policies. */
-import { Clock, Config, Console, Effect, Option, Result, Schema } from "effect";
-import { Argument, Command, Flag } from "effect/unstable/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { createHash } from "node:crypto";
+import { Clock, Config, Console, Effect, FileSystem, Option, Path, Result, Schema } from "effect";
+import { Argument, Command, Flag } from "effect/cli";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { TestStageSlug, testStagePrefix } from "../infrastructure/stage.ts";
 import {
   canDeployTestStage,
   isTestStageDue,
+  stagesToEvict,
+  testStageLimit,
   TestStageLease,
   testStageDeployMilliseconds,
   testStageLifetimeMilliseconds,
   TestStageFailed,
 } from "../contracts/test-stage-lifetime.ts";
+import { ReleaseRefusal, releaseRefusalReport } from "../contracts/release-guard.ts";
 import { withStageAdmin } from "./test-stage-inventory.ts";
 import { discoverTestStages } from "./test-stage-discovery.ts";
+import { awaitStageRollout } from "./test-stage-rollout.ts";
 
 const slug = Argument.String("slug").pipe(Argument.withSchema(TestStageSlug));
 const owner = Flag.String("owner").pipe(Flag.withSchema(Schema.NonEmptyString), Flag.optional);
@@ -23,7 +28,7 @@ const revision = Effect.gen(function* () {
   return yield* spawner.string(ChildProcess.make("git", ["rev-parse", "HEAD"])).pipe(
     Effect.map((value) => value.trim()),
     Effect.flatMap(
-      Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/))),
+      Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u))),
     ),
   );
 });
@@ -43,7 +48,58 @@ const runChild = (command: ChildProcess.Command) =>
     const code = Number(yield* spawner.exitCode(command));
     if (code !== 0) return yield* failure(`The child command exited with status ${code}.`);
   });
-const destroy = (stageSlug: string, automatic: boolean) =>
+/** A release guard's refusal recorded by the Alchemy process, if it stopped the deploy. */
+const releaseRefusal = (report: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    if (!(yield* fs.exists(report))) return Option.none();
+    return Option.some(
+      yield* Schema.decodeUnknownEffect(ReleaseRefusal)(yield* fs.readFileString(report)),
+    );
+  });
+const PackedApps = Schema.fromJsonString(Schema.Struct({ version: Schema.NonEmptyString }));
+/**
+ * Build and pack this checkout's `apps` package for the stage's compiler, which serves the package
+ * files as its own assets and uses them wherever an app declares the same version. Apps on the
+ * stage then run the unpublished framework. The directory is named by the package's content.
+ */
+const stageAppsFramework = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* path.fromFileUrl(new URL("../../../../..", import.meta.url));
+  for (const script of ["apps:build", "e2e:apps"])
+    yield* runChild(
+      ChildProcess.make("bun", ["run", script], {
+        cwd: root,
+        extendEnv: true,
+        stdout: "inherit",
+        stderr: "inherit",
+      }),
+    );
+  const packed = path.join(root, ".local/test-runtime/apps.tgz");
+  const unpacked = yield* fs.makeTempDirectoryScoped();
+  yield* runChild(ChildProcess.make("tar", ["-xzf", packed, "-C", unpacked]));
+  const packageRoot = path.join(unpacked, "package");
+  const files: Record<string, string> = {};
+  for (const entry of yield* fs.readDirectory(packageRoot, { recursive: true })) {
+    const file = path.join(packageRoot, entry);
+    if ((yield* fs.stat(file)).type === "File")
+      files[entry.split(path.sep).join("/")] = yield* fs.readFileString(file);
+  }
+  const { version } = yield* Schema.decodeUnknownEffect(PackedApps)(files["package.json"]);
+  const content = JSON.stringify(files);
+  const digest = createHash("sha256").update(content).digest("hex").slice(0, 16);
+  const directory = path.join(root, ".local/stage-apps", `apps-${version}-${digest}`);
+  yield* fs.makeDirectory(directory, { recursive: true });
+  yield* fs.writeFileString(path.join(directory, "framework.json"), content);
+  yield* Console.log(`Apps on this stage that declare apps@${version} use this checkout's build.`);
+  return { EXECUTOR_APPS_FRAMEWORK: directory, EXECUTOR_APPS_VERSION: version };
+}).pipe(Effect.scoped);
+/**
+ * `expectedOwner` destroys the stage only while the registry names exactly that owner. It is
+ * checked under the stage lock, so no deploy can reassign the stage between the check and removal.
+ */
+const destroy = (stageSlug: string, automatic: boolean, expectedOwner: Option.Option<string>) =>
   withStageAdmin((admin) =>
     Effect.gen(function* () {
       yield* admin.lock(stageSlug);
@@ -53,6 +109,10 @@ const destroy = (stageSlug: string, automatic: boolean) =>
         (lease === undefined || !isTestStageDue(lease, yield* Clock.currentTimeMillis))
       )
         return;
+      if (Option.isSome(expectedOwner) && lease?.owner !== expectedOwner.value)
+        return yield* failure(
+          `test-${stageSlug} is not registered to ${expectedOwner.value}. It was not destroyed.`,
+        );
       yield* Console.log(`Removing test-${stageSlug} and its database branch.`);
       yield* runChild(
         ChildProcess.make(
@@ -109,6 +169,19 @@ const operation = (name: "deploy" | "plan") =>
             return yield* failure(
               "A preview's database and retention cannot change on redeploy. Use a new slug.",
             );
+          // A new stage replaces the oldest ones beyond the limit, before it creates resources.
+          if (existing === undefined)
+            for (const stage of stagesToEvict(yield* admin.list, input.slug)) {
+              yield* Console.log(
+                `${name === "deploy" ? "Removing" : "Deploying will remove"} the oldest test stage, ${stage.slug} (${stage.owner}), to stay within ${testStageLimit}.`,
+              );
+              if (name === "deploy")
+                yield* destroy(stage.slug, false, Option.none()).pipe(
+                  Effect.catch(() =>
+                    Console.error(`Could not remove ${stage.slug}; deploying anyway.`),
+                  ),
+                );
+            }
           const lease =
             name === "deploy"
               ? yield* admin.reserve(metadata)
@@ -148,22 +221,41 @@ const operation = (name: "deploy" | "plan") =>
                   stderr: "inherit",
                 }),
               );
+            const apps = name === "deploy" ? yield* stageAppsFramework : {};
+            const path = yield* Path.Path;
+            const report = path.join(
+              yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped(),
+              "release-refusal.json",
+            );
             yield* runChild(
               ChildProcess.make(
                 "alchemy",
                 [name, ...(input.noInput ? ["--no-input"] : []), ...(input.yes ? ["--yes"] : [])],
                 {
-                  env,
+                  env: { ...env, ...apps, [releaseRefusalReport]: report },
                   extendEnv: true,
                   stdin: "inherit",
                   stdout: "inherit",
                   stderr: "inherit",
                 },
               ),
+            ).pipe(
+              Effect.catchTag("TestStageFailed", (failed) =>
+                Effect.gen(function* () {
+                  const refusal = yield* releaseRefusal(report);
+                  return yield* Option.isSome(refusal) ? refusal.value : failed;
+                }),
+              ),
             );
-          }).pipe(Effect.timeout(testStageDeployMilliseconds));
-          if (name === "deploy")
-            yield* Console.log(`Ready: https://${input.slug}.executor.engineering`);
+          }).pipe(Effect.scoped, Effect.timeout(testStageDeployMilliseconds));
+          if (name === "deploy") {
+            const domain = yield* Config.String("TEST_STAGE_DOMAIN").pipe(
+              Config.withDefault("executor.engineering"),
+            );
+            const origin = `https://${input.slug}.${domain}`;
+            yield* awaitStageRollout(origin);
+            yield* Console.log(`Ready: ${origin}`);
+          }
         }),
       ),
   );
@@ -229,7 +321,7 @@ const cleanup = Command.make("cleanup", {}, () =>
     const results = yield* Effect.forEach(
       stages.filter((stage) => isTestStageDue(stage, now)),
       (stage) =>
-        destroy(stage.slug, true).pipe(
+        destroy(stage.slug, true, Option.none()).pipe(
           Effect.as(true),
           Effect.catch(() =>
             Console.error(`Cleanup failed for ${stage.slug}; its lease remains for retry.`).pipe(
@@ -263,12 +355,16 @@ export const testStageCommand = Command.make("test-stage").pipe(
       "destroy",
       {
         slug,
+        expectedOwner: Flag.String("expected-owner").pipe(
+          Flag.withSchema(Schema.NonEmptyString),
+          Flag.optional,
+        ),
         noInput: Flag.Boolean("no-input").pipe(Flag.withDefault(false)),
         yes: Flag.Boolean("yes").pipe(Flag.withDefault(false)),
       },
       (input) =>
         input.yes
-          ? destroy(input.slug, false)
+          ? destroy(input.slug, false, input.expectedOwner)
           : Effect.fail(
               failure("Destruction removes this preview and its data. Pass --yes to proceed."),
             ),

@@ -1,10 +1,11 @@
 import { DashboardApi } from "./dashboard.ts";
-import { LocalAppManagementApi } from "./app-management.ts";
+import { LocalAppManagementApi, LocalFrameworkApi } from "./app-management.ts";
 /** The local agent-facing API, projected from the contracts that serve its requests. */
 import { ExecutorApi } from "@executor-js/sdk/core";
-import { HttpApi, HttpApiGroup, OpenApi } from "effect/unstable/httpapi";
+import { HttpApi, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AccountConnectApi } from "./account-connections.ts";
 import { LocalWebhookSetupApi } from "./webhook-setup.ts";
+import { LocalFeedbackApi } from "./feedback.ts";
 
 const api = HttpApi.make("local-management")
   .add(ExecutorApi.groups.analytics)
@@ -37,7 +38,9 @@ const api = HttpApi.make("local-management")
     ),
   )
   .add(LocalWebhookSetupApi.groups.webhookLinks)
-  .addHttpApi(LocalAppManagementApi);
+  .addHttpApi(LocalAppManagementApi)
+  .addHttpApi(LocalFrameworkApi)
+  .addHttpApi(LocalFeedbackApi);
 
 /** Browser secret exchange, raw delivery, subscriptions and approval protocols are not management tools. */
 export const localManagementDocument = (): OpenApi.OpenAPISpec => {
