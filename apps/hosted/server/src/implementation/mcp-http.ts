@@ -36,9 +36,15 @@ type RequestError =
   | Effect.Error<ReturnType<HostedBackend[keyof HostedBackend]>>
   | Effect.Error<ReturnType<McpAuthentication["Service"]["authenticate"]>>;
 const unavailable = () => Effect.fail(new McpUnauthorized());
-const RequestCaller = Context.Reference<string>("hosted/McpRequestCaller", {
-  defaultValue: () => "unavailable",
+const RequestCaller = Context.Reference<string | undefined>("hosted/McpRequestCaller", {
+  defaultValue: () => undefined,
 });
+// Programs belong to the caller across MCP sessions, so a request without one must not share a partition.
+const requestCaller = Effect.flatMap(RequestCaller, (caller) =>
+  caller === undefined
+    ? Effect.die("MCP request has no authenticated caller")
+    : Effect.succeed(caller),
+);
 const RequestBackend = Context.Reference<McpBackend<RequestError>>("hosted/McpRequestBackend", {
   defaultValue: () => ({
     listSkills: unavailable,
@@ -76,7 +82,7 @@ export const makeHostedMcp = (beforeExecute?: McpOptions["beforeExecute"]) =>
   makeMcp({
     backend: requestBackend,
     ...(beforeExecute === undefined ? {} : { beforeExecute }),
-    caller: RequestCaller,
+    caller: requestCaller,
     instructions: executorIntro,
     limits: defaultMcpLimits,
     browser: {

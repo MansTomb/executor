@@ -28,8 +28,8 @@ export interface McpOptions {
   /** Admit each new program once. Resumes never call this hook. */
   readonly beforeExecute?: Effect.Effect<void, ExecutionRejected>;
   readonly browser?: BrowserDelivery;
-  /** Additional product identity partition. The validated HTTP MCP session ID is included when the protocol has sessions. */
-  readonly caller?: Effect.Effect<string>;
+  /** Authenticated principal that owns model and native executions across its MCP sessions. Browser approvals also include the session ID. */
+  readonly caller: Effect.Effect<string>;
   /** Sent as the server instructions when a client connects. Hosts send the Executor app's intro. */
   readonly instructions: string;
   readonly limits: McpLimits;

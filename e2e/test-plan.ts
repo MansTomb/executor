@@ -3803,6 +3803,25 @@ export const scenarios = {
       local: na("Local has no personal access tokens."),
     },
   },
+  localMcpResumeAcrossSessions: {
+    file: "local-mcp-connections.spec.ts",
+    title: "Local MCP model-mode resume continues from a new MCP session of the same grant only",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted products cover the same partition in patMcpResumeAcrossSessions."),
+      cloud: na("Hosted products cover the same partition in patMcpResumeAcrossSessions."),
+    },
+  },
+  patMcpResumeAcrossSessions: {
+    fixtures: "actors",
+    file: "pat-mcp.spec.ts",
+    title: "PAT MCP model-mode resume continues from a new MCP session of the same token only",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no personal access tokens."),
+    },
+  },
   patMcpRenamedOrganization: {
     fixtures: "actors",
     file: "pat-mcp.spec.ts",

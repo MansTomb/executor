@@ -66,13 +66,19 @@ export const localMcp = (
         authorizeElicitation: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
       }),
     });
-    const Caller = Context.Reference<string>("local/McpCaller", {
-      defaultValue: () => "unavailable",
+    const Caller = Context.Reference<string | undefined>("local/McpCaller", {
+      defaultValue: () => undefined,
     });
+    // Programs belong to the caller across MCP sessions, so a request without one must not share a partition.
+    const caller = Effect.flatMap(Caller, (grant) =>
+      grant === undefined
+        ? Effect.die("MCP request has no authenticated grant")
+        : Effect.succeed(grant),
+    );
     const host = yield* makeMcp({
       browser: {
         url: (address) =>
-          Effect.map(Caller, (caller) => {
+          Effect.map(caller, (caller) => {
             const url = new URL(`/mcp/approve/${address.requestId}`, oauth.origin);
             url.searchParams.set("sessionId", address.sessionId);
             url.searchParams.set("grantId", caller);
@@ -93,7 +99,7 @@ export const localMcp = (
         authorizeElicitation: (input) =>
           Effect.flatMap(RequestBackend, (b) => b.authorizeElicitation(input)),
       },
-      caller: Caller,
+      caller,
       instructions: executorIntro,
       limits,
     });

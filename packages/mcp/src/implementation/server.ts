@@ -104,8 +104,12 @@ const protocols = [
 const nativeProtocols = [McpProtocol.v2025_11_25, McpProtocol.v2025_06_18] as const;
 
 const query = Schema.Struct({ elicitation_mode: Schema.optionalKey(ElicitationMode) });
-const identity = (product: string, mode: ElicitationMode, session: string) =>
-  JSON.stringify([product, mode, session]);
+// Model and native programs belong to the authenticated caller, so a client may resume from
+// any of its MCP sessions. Browser approval links address one protocol session.
+const callerIdentity = (product: string, mode: "model" | "native") =>
+  JSON.stringify([product, mode]);
+const browserIdentity = (product: string, session: string) =>
+  JSON.stringify([product, "browser", session]);
 
 const withSseHeartbeat = (response: HttpServerResponse.HttpServerResponse) => {
   const body = response.body;
@@ -157,9 +161,15 @@ export const makeMcp = (options: McpOptions) =>
         const served = mode === "native" ? nativeProtocols : protocols;
         const caller = Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          const product = options.caller === undefined ? "" : yield* options.caller;
+          const product = yield* options.caller;
           const sessionId = request.headers["mcp-session-id"] ?? "stateless";
-          return { id: identity(product, mode, sessionId), sessionId };
+          return {
+            id:
+              mode === "browser"
+                ? browserIdentity(product, sessionId)
+                : callerIdentity(product, mode),
+            sessionId,
+          };
         });
         const skill = (input: Parameters<typeof skills>[0]) =>
           skills(input, options.backend).pipe(Effect.withSpan("mcp.skills"));
@@ -306,10 +316,10 @@ export const makeMcp = (options: McpOptions) =>
     }).pipe(Effect.map(withSseHeartbeat));
     const approvals: BrowserApprovals = {
       get: (product, address) =>
-        executions.browserView(identity(product, "browser", address.sessionId), address.requestId),
+        executions.browserView(browserIdentity(product, address.sessionId), address.requestId),
       answer: (product, address, response) =>
         executions.answerInBrowser(
-          identity(product, "browser", address.sessionId),
+          browserIdentity(product, address.sessionId),
           address.requestId,
           response,
         ),
