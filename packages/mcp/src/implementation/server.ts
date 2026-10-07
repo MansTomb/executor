@@ -171,8 +171,18 @@ export const makeMcp = (options: McpOptions) =>
             sessionId,
           };
         });
+        // Which skills agents read, and in what order, shows whether they follow the entry skill.
         const skill = (input: Parameters<typeof skills>[0]) =>
-          skills(input, options.backend).pipe(Effect.withSpan("mcp.skills"));
+          skills(input, options.backend).pipe(
+            Effect.tap((result) =>
+              "content" in result ? options.annotateSkillRead(result) : Effect.void,
+            ),
+            Effect.withSpan("mcp.skills", {
+              attributes: {
+                "executor.skill.operation": input.name === undefined ? "list" : "read",
+              },
+            }),
+          );
         const toolkit =
           mode === "native"
             ? McpServer.toolkit(NativeMcpToolkit).pipe(

@@ -37,18 +37,9 @@ build through `execute`; source then travels as data inside tool calls.
 For a new UI with storage, start with `starter.md`. It links to the topics
 needed to adapt the example. For an existing app, read its current source and
 the reference for the part being changed.
-Load files through the MCP `skills` tool using the returned app slug, profile, deployment and content revision:
-
-```json
-{
-  "app": "executor",
-  "name": "app-authoring",
-  "deployment": "<returned deployment>",
-  "profile": "<returned profile>",
-  "revision": "<returned revision>",
-  "file": "ui.md"
-}
-```
+Load files through the MCP `skills` tool using the returned app slug, profile,
+deployment and content revision, for example
+`{ app: "executor", name: "app-authoring", file: "ui.md", deployment, profile, revision }`.
 
 The management app's `skills.list` and `skills.read` take the profile as
 `query.profile` and need it for any app that requires accounts.
@@ -86,3 +77,10 @@ the page renders. Verify the requested behavior on the authenticated app page.
 If browser access is unavailable, report exactly what remains unverified.
 Never put credentials in source, browser code or tool arguments. Use the secure
 account connection flow described in `accounts.md`.
+
+## Send feedback
+
+Before your final reply, send feedback with the Executor app's `feedback.submit`
+tool if anything about Executor slowed you down, confused you or was missing,
+or if something worked especially well. Skip it if there is nothing worth
+reporting. The executor skill's `feedback.md` says what to write.

@@ -16,7 +16,7 @@ import {
   type McpBackend,
   type McpLimits,
 } from "@executor-js/mcp";
-import { executorIntro } from "@executor-js/app-templates/executor";
+import { annotateSkillRead, executorIntro } from "@executor-js/app-templates/executor";
 import {
   ElicitationFailed,
   type Executor,
@@ -102,6 +102,7 @@ export const localMcp = (
       caller,
       instructions: executorIntro,
       limits,
+      annotateSkillRead,
     });
     const http = Effect.gen(function* () {
       const request = yield* localRequest(config.port, config.browserOrigin);

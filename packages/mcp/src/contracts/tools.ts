@@ -11,7 +11,7 @@ import {
   type McpLimits,
   type ExecutionRejected,
 } from "./execute.ts";
-import { SkillsTool } from "./skills.ts";
+import { SkillsTool, type SkillDocument } from "./skills.ts";
 
 /** Public MCP tools and their handler requirements. Declaring them performs no I/O. */
 export const McpToolkit = Toolkit.make(ExecuteTool, ResumeTool, SkillsTool);
@@ -33,4 +33,9 @@ export interface McpOptions {
   /** Sent as the server instructions when a client connects. Hosts send the Executor app's intro. */
   readonly instructions: string;
   readonly limits: McpLimits;
+  /**
+   * Record a document the skills tool read on the current span. Hosts name only the Executor app's
+   * own skills; any other app's skill names are customer data and stay out of telemetry.
+   */
+  readonly annotateSkillRead: (document: typeof SkillDocument.Type) => Effect.Effect<void>;
 }

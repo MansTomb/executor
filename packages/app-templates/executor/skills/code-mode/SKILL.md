@@ -162,5 +162,5 @@ Inside a program, a caught tool error's `message` is the same JSON as
 `status: "capacity-exceeded"` means the server is running too many programs.
 Wait briefly, then retry.
 
-If Executor itself blocks you, send feedback with the Executor app's
-`feedback.submit` tool; the `executor` skill says how.
+Send feedback with the Executor app's `feedback.submit` tool when Executor gets
+in your way or something works especially well; the `executor` skill says how.

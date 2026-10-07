@@ -1,5 +1,9 @@
 import { localSourceFormatter } from "@executor-js/app-management/source-format";
-import { publishedSkillRoutes, readExecutorSkills } from "@executor-js/app-templates/executor";
+import {
+  publishedSkillRoutes,
+  readExecutorSkills,
+  annotateSkillRead,
+} from "@executor-js/app-templates/executor";
 import { localAppBrowserHandlers } from "./app-browser.ts";
 import { startupPhase } from "./startup-diagnostics.ts";
 import {
@@ -230,6 +234,11 @@ export const localApi = (
           Layer.provide(
             executorHandlers({
               ...api,
+              // The Executor app's skills.read tool reads here, not through the MCP skills tool.
+              skills: {
+                ...api.skills,
+                read: (input) => api.skills.read(input).pipe(Effect.tap(annotateSkillRead)),
+              },
               accountConnections: {
                 ...api.accountConnections,
                 create: (input) => {

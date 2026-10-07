@@ -4577,6 +4577,28 @@ export const scenarios = {
       ),
     },
   },
+  skillReadTelemetry: {
+    fixtures: "actors",
+    managementProfiles: ["owner"],
+    file: "skill-read-telemetry.spec.ts",
+    title: "hosted skill reads trace only the Executor app's own skill names",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Self-host runs the same hosted MCP options and skill routes; Cloud adds only its transport.",
+      ),
+      local: na("localSkillReadTelemetry covers Local's MCP and management API."),
+    },
+  },
+  localSkillReadTelemetry: {
+    file: "skill-read-telemetry.spec.ts",
+    title: "Local skill reads trace only the Executor app's own skill names",
+    targets: {
+      local: scheduled,
+      "self-host": na("skillReadTelemetry covers hosted skill reads."),
+      cloud: na("skillReadTelemetry covers hosted skill reads."),
+    },
+  },
   localAppsCli: {
     file: "local-apps-cli.spec.ts",
     title:

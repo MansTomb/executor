@@ -19,7 +19,7 @@ import {
   type McpBackend,
   type McpOptions,
 } from "@executor-js/mcp";
-import { executorIntro } from "@executor-js/app-templates/executor";
+import { annotateSkillRead, executorIntro } from "@executor-js/app-templates/executor";
 import { Context, Effect, Option, Result, Schema } from "effect";
 import { ElicitationFailed } from "@executor-js/sdk/core";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -85,6 +85,7 @@ export const makeHostedMcp = (beforeExecute?: McpOptions["beforeExecute"]) =>
     caller: requestCaller,
     instructions: executorIntro,
     limits: defaultMcpLimits,
+    annotateSkillRead,
     browser: {
       url: (address) =>
         Effect.flatMap(RequestApprovalUrl, (url) =>
