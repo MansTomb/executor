@@ -639,26 +639,21 @@ function dispatch(
         );
       }
       if (request.operation === "inspect") {
-        const summary =
-          request.detail === "summary" &&
-          (yield* Clock.currentTimeMillis) - evaluationStarted < slowToolCatalogMillis;
-        const read = (summary: boolean) =>
-          readCatalog(definition.tools, {
-            summary,
-            secrets,
-            ...(request.tools === undefined ? {} : { wanted: new Set(request.tools) }),
-            ...(request.scheduled === true ? { scheduled: true } : {}),
-            schedules: (name) =>
-              Object.entries(definition.schedules ?? {})
-                .filter(([, schedule]) => schedule.tool === name)
-                .map(([name, { tool: _tool, ...schedule }]) => ({ name, ...schedule })),
-          }).pipe(Effect.withSpan("app.catalog.read"));
-        let catalog = yield* read(summary);
-        if (
-          summary &&
-          (yield* Clock.currentTimeMillis) - evaluationStarted >= slowToolCatalogMillis
-        )
-          catalog = yield* read(false);
+        const catalog = yield* readCatalog(definition.tools, {
+          summary:
+            request.detail === "summary"
+              ? Clock.currentTimeMillis.pipe(
+                  Effect.map((now) => now - evaluationStarted < slowToolCatalogMillis),
+                )
+              : false,
+          secrets,
+          ...(request.tools === undefined ? {} : { wanted: new Set(request.tools) }),
+          ...(request.scheduled === true ? { scheduled: true } : {}),
+          schedules: (name) =>
+            Object.entries(definition.schedules ?? {})
+              .filter(([, schedule]) => schedule.tool === name)
+              .map(([name, { tool: _tool, ...schedule }]) => ({ name, ...schedule })),
+        }).pipe(Effect.withSpan("app.catalog.read"));
         // Router errors are tagged classes; encoding keeps only their serialized safe fields.
         return yield* safe(
           () =>

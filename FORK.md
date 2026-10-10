@@ -140,8 +140,11 @@ summary patch's original no-cross-request-cache policy. Deployment, profile,
 account, credential and app-cache invalidation checks still apply.
 
 The app framework includes schemas when factory evaluation or catalog discovery
-is slow, using the same evaluated factory. Bounded search can then describe
-selected tools from that retained result. Existing summary-only app builds need
+is slow, using the same evaluated factory. Dynamic routers are listed once with
+schemas, then projected to summaries if the read finishes quickly. Static
+operations render schemas only when the completed read requires them. Bounded
+search can describe selected tools from that retained result without rereading
+the routers. Existing summary-only app builds need
 recompilation to provide those schemas. Ordinary SDK and HTTP index reads and
 explicit live descriptions still evaluate live. Read-only grants force live
 metadata; the shared grant wrapper also rechecks when its final policy newly
@@ -155,7 +158,8 @@ Executor's execute output budget is 65,536 bytes. A truncated result now include
 or returning smaller slices from read-only calls. Mutation results must be
 recovered through a safe read, not by repeating the mutation.
 
-The slow-listing, failure-recovery and output-recovery regressions are in the focused fork gate.
+The slow-listing, dynamic-router, failure-recovery and output-recovery regressions
+are in the focused fork gate.
 Immediate remote-catalog freshness assertions remain unchanged. The inherited
 `mcpListingInputs` scenario expects fast completed factories to be reused, which
 conflicts with the live-index behavior already on `selfhost`; it fails the same

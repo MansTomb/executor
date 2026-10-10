@@ -206,60 +206,87 @@ const heldCatalog = Effect.acquireRelease(
   }),
 );
 
-const slowCatalog = Effect.acquireRelease(
-  Effect.callback<{
-    server: ReturnType<typeof createHttpServer>;
-    requests: { count: number };
-    recover: () => void;
-    fail: () => void;
-  }>((resume) => {
-    const requests = { count: 0 };
-    let names = ["alpha", "beta", "gamma"];
-    let delay = discoveryWaitMs + 2_000;
-    let failed = false;
-    const pending = new Map<import("node:http").ServerResponse, ReturnType<typeof setTimeout>>();
-    const answer = (response: import("node:http").ServerResponse) => {
-      clearTimeout(pending.get(response));
-      pending.delete(response);
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify(failed ? null : names));
-    };
-    const server = createHttpServer((request, response) => {
-      requests.count += 1;
-      const timer = setTimeout(() => answer(response), delay);
-      pending.set(response, timer);
-      request.on("close", () => {
-        clearTimeout(timer);
+const slowCatalogWithDelay = (initialDelay: number) =>
+  Effect.acquireRelease(
+    Effect.callback<{
+      server: ReturnType<typeof createHttpServer>;
+      requests: { count: number };
+      recover: () => void;
+      fail: () => void;
+    }>((resume) => {
+      const requests = { count: 0 };
+      let names = ["alpha", "beta", "gamma"];
+      let delay = initialDelay;
+      let failed = false;
+      const pending = new Map<import("node:http").ServerResponse, ReturnType<typeof setTimeout>>();
+      const answer = (response: import("node:http").ServerResponse) => {
+        clearTimeout(pending.get(response));
         pending.delete(response);
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(failed ? null : names));
+      };
+      const server = createHttpServer((request, response) => {
+        requests.count += 1;
+        const timer = setTimeout(() => answer(response), delay);
+        pending.set(response, timer);
+        request.on("close", () => {
+          clearTimeout(timer);
+          pending.delete(response);
+        });
       });
-    });
-    const recover = () => {
-      names = ["alpha", "beta", "delta"];
-      delay = 0;
-      failed = false;
-      for (const response of pending.keys()) answer(response);
-    };
-    const fail = () => {
-      failed = true;
-      delay = discoveryWaitMs + 2_000;
-    };
-    server.listen(0, "127.0.0.1", () =>
-      resume(Effect.succeed({ server, requests, recover, fail })),
-    );
-  }),
-  ({ server }) =>
-    Effect.callback<void>((resume) => {
-      server.closeAllConnections();
-      server.close(() => resume(Effect.void));
+      const recover = () => {
+        names = ["alpha", "beta", "delta"];
+        delay = 0;
+        failed = false;
+        for (const response of pending.keys()) answer(response);
+      };
+      const fail = () => {
+        failed = true;
+        delay = discoveryWaitMs + 2_000;
+      };
+      server.listen(0, "127.0.0.1", () =>
+        resume(Effect.succeed({ server, requests, recover, fail })),
+      );
     }),
-).pipe(
-  Effect.flatMap(({ server, requests, recover, fail }) => {
-    const address = server.address();
-    return address !== null && typeof address === "object"
-      ? Effect.succeed({ url: `http://127.0.0.1:${address.port}/catalog`, requests, recover, fail })
-      : Effect.die(new Error("Slow catalog requires a TCP listener"));
-  }),
-);
+    ({ server }) =>
+      Effect.callback<void>((resume) => {
+        server.closeAllConnections();
+        server.close(() => resume(Effect.void));
+      }),
+  ).pipe(
+    Effect.flatMap(({ server, requests, recover, fail }) => {
+      const address = server.address();
+      return address !== null && typeof address === "object"
+        ? Effect.succeed({
+            url: `http://127.0.0.1:${address.port}/catalog`,
+            requests,
+            recover,
+            fail,
+          })
+        : Effect.die(new Error("Slow catalog requires a TCP listener"));
+    }),
+  );
+
+const slowCatalog = slowCatalogWithDelay(discoveryWaitMs + 2_000);
+
+const slowRouterSource = (
+  url: string,
+  summaries: boolean,
+) => `import { defineApp, dynamicRouter, query, object, string, router } from "apps";
+export default defineApp({ accounts: {} }, async (ctx) => {
+  const list = async () => {
+    const response = await ctx.fetch(${JSON.stringify(url)}, { signal: ctx.signal });
+    const names = await response.json();
+    return names.map((name) => ({ name, readOnly: true,
+      description: "Slow router tool " + name + " marker zqrouterq",
+      inputSchema: { type: "object", properties: { routerInput: { type: "string" } }, required: ["routerInput"] },
+    }));
+  };
+  return { tools: router({ remote: dynamicRouter({ list,
+    ${summaries ? "summaries: list," : ""}
+    resolve: async () => undefined,
+  }), local: query({ description: "Local tool marker zqrouterq", input: object({ localInput: string() }) }, async () => "local") }) };
+});`;
 
 /** Tools come from a slow upstream the factory awaits on every evaluation, without the app cache. */
 const slowAppSource = (
@@ -536,6 +563,76 @@ return { items: [...small.items, ...large.items] };`;
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
+  for (const [scenario, summaries] of [
+    [scenarios.mcpSlowRouter, false],
+    [scenarios.mcpSlowRouterSummaries, true],
+  ] as const)
+    it.effect(scenario.title, (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const api = yield* Api,
+            actors = yield* Actors;
+          const prefix = `/api/organizations/${actors.organization.id}`;
+          const upstream = yield* slowCatalogWithDelay(25_000);
+          const app = yield* body(
+            App,
+            yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+              name: `Slow router ${randomUUID().slice(0, 8)}`,
+              files: [
+                { path: "index.ts", content: slowRouterSource(upstream.url, summaries) },
+                appsManifest,
+              ],
+            }),
+          );
+          yield* Effect.addFinalizer(() =>
+            api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+          );
+          const execute = yield* connectActor(actors.owner, "Slow router", actors.organization.id);
+          const search = `return await tools.search({ query: "zqrouterq", namespace: ${JSON.stringify(app.slug)} });`;
+          const first = yield* execute("Start slow router discovery", search);
+          expect(first.completed.execution.ok).toBe(true);
+          expect(first.completed.unavailableApps.map((entry) => entry.app)).toEqual([app.id]);
+          expect(first.elapsed).toBeGreaterThanOrEqual(discoveryWaitMs - 1_000);
+          expect(upstream.requests.count).toBe(1);
+          const loaded = yield* Effect.gen(function* () {
+            const polled = yield* execute("Read pending slow router discovery", search);
+            expect(polled.completed.execution.ok).toBe(true);
+            expect(polled.elapsed).toBeLessThan(reportedBoundMs);
+            expect(upstream.requests.count).toBe(1);
+            if (polled.completed.unavailableApps.length === 0) return polled;
+            expect(polled.completed.unavailableApps.map((entry) => entry.app)).toEqual([app.id]);
+            return yield* Effect.fail("router still loading" as const);
+          }).pipe(
+            Effect.retry({
+              schedule: Schedule.spaced("500 millis"),
+              while: (error) => error === "router still loading",
+              times: 60,
+            }),
+          );
+          const check = (value: unknown) =>
+            Effect.gen(function* () {
+              const { items } = yield* Schema.decodeUnknownEffect(SearchValue)(value);
+              expect(items.map((item) => item.path).sort()).toEqual(
+                ["local", "remote.alpha", "remote.beta", "remote.gamma"].map(
+                  (name) => `tools[${JSON.stringify(app.slug)}].${name}`,
+                ),
+              );
+              for (const item of items)
+                expect(item.input).toContain(
+                  item.path.endsWith(".local") ? "localInput" : "routerInput",
+                );
+            });
+          yield* check(loaded.completed.execution.value);
+          const again = yield* execute("Reuse slow router schemas", search);
+          expect(again.completed.unavailableApps).toEqual([]);
+          expect(again.elapsed).toBeLessThan(reportedBoundMs);
+          yield* check(again.completed.execution.value);
+          expect(upstream.requests.count).toBe(1);
+        }).pipe(Effect.provide(McpClient.layer)),
+      ),
+    );
+
   it.effect(scenarios.mcpSlowListing.title, (context) =>
     withHostedCase(
       context,

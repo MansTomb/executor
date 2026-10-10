@@ -298,6 +298,26 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  mcpSlowRouter: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
+    title: "MCP discovery retains schemas from a slow dynamic router without summaries",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback slow upstream; the shared execute path is covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  mcpSlowRouterSummaries: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
+    title: "MCP discovery retains schemas from a slow dynamic router with summaries",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback slow upstream; the shared execute path is covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   mcpSlowListingRecovery: {
     fixtures: "actors",
     file: "mcp-catalog-scale.spec.ts",

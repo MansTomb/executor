@@ -43,6 +43,8 @@ const focused = [
       scenarios.mcpDiscoverySelection,
       scenarios.mcpDiscoverySchemas,
       scenarios.mcpSlowListing,
+      scenarios.mcpSlowRouter,
+      scenarios.mcpSlowRouterSummaries,
       scenarios.mcpSlowListingRecovery,
       scenarios.mcpOutputRecovery,
       scenarios.mcpExecuteReach,

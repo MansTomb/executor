@@ -198,8 +198,7 @@ export const fixedRouter = (
 });
 
 export interface CatalogOptions {
-  /** Omit schemas. */
-  readonly summary: boolean;
+  readonly summary: boolean | Effect.Effect<boolean>;
   /** Account secrets that a failure's message must not reveal. */
   readonly secrets: readonly string[];
   /** Only these full tool names. Routers with none of them are not read. */
@@ -225,7 +224,9 @@ const within = (wanted: ReadonlySet<string>, path: string) =>
  */
 export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options: CatalogOptions) =>
   Effect.gen(function* () {
-    const tools: Array<HostedTool | HostedToolSummary> = [];
+    const tools: Array<
+      (summary: boolean) => Effect.Effect<HostedTool | HostedToolSummary, HostRouterError>
+    > = [];
     const routers: HostedRouter[] = [];
     const { wanted, secrets } = options;
     /** One source's metadata and tools, named under `path`. `relative` limits a filtered read. */
@@ -236,7 +237,7 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
         const [meta, listed] = yield* Effect.all(
           [
             routerMeta(source, secrets),
-            options.summary && source.summaries !== undefined
+            options.summary === true && source.summaries !== undefined
               ? sourced(source.summaries, secrets)
               : relative !== undefined && describe !== undefined
                 ? sourced(
@@ -251,7 +252,7 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
           { concurrency: "unbounded" },
         );
         const parsed = yield* Schema.decodeUnknownEffect(
-          Schema.Array(options.summary ? HostedToolSummary : HostedTool),
+          Schema.Array(options.summary === true ? HostedToolSummary : HostedTool),
         )(listed).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
         const names = new Set<string>();
         const found: Array<HostedTool | HostedToolSummary> = [];
@@ -270,6 +271,15 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
         }
         return { meta, found };
       });
+    const keep = (found: readonly (HostedTool | HostedToolSummary)[]) =>
+      tools.push(
+        ...found.map(
+          (tool) => (summary: boolean) =>
+            summary
+              ? invalid(Schema.decodeUnknownEffect(HostedToolSummary)(tool))
+              : Effect.succeed(tool),
+        ),
+      );
     /**
      * Read a source into this catalog. The root is the whole app, so its failure fails the read,
      * as a single-source app did before routers. Elsewhere the failure is returned for the entry.
@@ -278,12 +288,12 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
       Effect.gen(function* () {
         if (path === "") {
           const { meta, found } = yield* readSource(source, path, relative);
-          tools.push(...found);
+          keep(found);
           return { meta, error: undefined };
         }
         const result = yield* Effect.result(readSource(source, path, relative));
         if (Result.isFailure(result)) return { meta: source.overrides, error: result.failure };
-        tools.push(...result.success.found);
+        keep(result.success.found);
         return { meta: result.success.meta, error: undefined };
       });
     const visit = (node: AppRouter, path: string): Effect.Effect<void, HostRouterError> =>
@@ -297,10 +307,10 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
             case "mutation":
               if (options.scheduled === true && options.schedules(name).length === 0) break;
               if (wanted === undefined || wanted.has(name))
-                tools.push(
-                  options.summary
-                    ? yield* operationSummary(name, path, child, options.schedules(name))
-                    : yield* operationDescription(name, path, child, options.schedules(name)),
+                tools.push((summary) =>
+                  summary
+                    ? operationSummary(name, path, child, options.schedules(name))
+                    : operationDescription(name, path, child, options.schedules(name)),
                 );
               break;
             case "router":
@@ -323,7 +333,8 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
       if (wanted === undefined && read.meta !== undefined)
         routers.push(yield* entry("", read.meta));
     }
-    return { tools, routers };
+    const summary = typeof options.summary === "boolean" ? options.summary : yield* options.summary;
+    return { tools: yield* Effect.forEach(tools, (describe) => describe(summary)), routers };
   });
 
 /**
