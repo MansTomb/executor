@@ -188,8 +188,12 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       mutate: (input) => run(AppDataInput, input, executor.appData.mutate),
     },
     tools: {
-      list: (input) => run(Schema.toType(ToolInputs.list), input, executor.tools.list),
-      index: (input) => run(Schema.toType(ToolInputs.index), input, executor.tools.index),
+      list: (input, options) =>
+        run(Schema.toType(ToolInputs.list), input, (value) => executor.tools.list(value, options)),
+      index: (input, options) =>
+        run(Schema.toType(ToolInputs.index), input, (value) =>
+          executor.tools.index(value, options),
+        ),
       get: (input) => run(Schema.toType(ToolInputs.get), input, executor.tools.get),
       call: (input, options) =>
         run(ToolInputs.call, input, (value) =>

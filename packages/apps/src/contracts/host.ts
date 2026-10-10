@@ -189,6 +189,7 @@ export const inspectCommand = (tools?: readonly string[], scheduled?: true) => (
   ...(scheduled === undefined ? {} : { scheduled }),
 });
 export const indexCommand = { operation: "inspect", detail: "summary" } as const;
+export const slowToolCatalogMillis = 10_000;
 /** Keep only the requested tools from an inspection that may have described every tool. */
 export const selectTools =
   (tools?: readonly string[]) =>

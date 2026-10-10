@@ -128,6 +128,7 @@ export interface PendingLoad {
 export interface DeclarationCache {
   readonly get: (key: string) => Effect.Effect<KeptEntry | undefined>;
   readonly set: (key: string, entry: KeptEntry) => Effect.Effect<void>;
+  readonly delete: (key: string) => Effect.Effect<void>;
   /** The evaluation of a key that is running now, if any. */
   readonly pending: (key: string) => PendingLoad | undefined;
   readonly begin: (key: string, load: PendingLoad) => void;

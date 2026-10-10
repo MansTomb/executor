@@ -206,32 +206,57 @@ const heldCatalog = Effect.acquireRelease(
   }),
 );
 
-/** A loopback catalog that answers every request after `slowListingMs` and counts requests. */
 const slowCatalog = Effect.acquireRelease(
-  Effect.callback<{ server: ReturnType<typeof createHttpServer>; requests: { count: number } }>(
-    (resume) => {
-      const requests = { count: 0 };
-      const server = createHttpServer((request, response) => {
-        requests.count += 1;
-        const timer = setTimeout(() => {
-          response.writeHead(200, { "content-type": "application/json" });
-          response.end(JSON.stringify(["alpha", "beta", "gamma"]));
-        }, slowListingMs);
-        request.on("close", () => clearTimeout(timer));
+  Effect.callback<{
+    server: ReturnType<typeof createHttpServer>;
+    requests: { count: number };
+    recover: () => void;
+    fail: () => void;
+  }>((resume) => {
+    const requests = { count: 0 };
+    let names = ["alpha", "beta", "gamma"];
+    let delay = discoveryWaitMs + 2_000;
+    let failed = false;
+    const pending = new Map<import("node:http").ServerResponse, ReturnType<typeof setTimeout>>();
+    const answer = (response: import("node:http").ServerResponse) => {
+      clearTimeout(pending.get(response));
+      pending.delete(response);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(failed ? null : names));
+    };
+    const server = createHttpServer((request, response) => {
+      requests.count += 1;
+      const timer = setTimeout(() => answer(response), delay);
+      pending.set(response, timer);
+      request.on("close", () => {
+        clearTimeout(timer);
+        pending.delete(response);
       });
-      server.listen(0, "127.0.0.1", () => resume(Effect.succeed({ server, requests })));
-    },
-  ),
+    });
+    const recover = () => {
+      names = ["alpha", "beta", "delta"];
+      delay = 0;
+      failed = false;
+      for (const response of pending.keys()) answer(response);
+    };
+    const fail = () => {
+      failed = true;
+      delay = discoveryWaitMs + 2_000;
+    };
+    server.listen(0, "127.0.0.1", () =>
+      resume(Effect.succeed({ server, requests, recover, fail })),
+    );
+  }),
   ({ server }) =>
     Effect.callback<void>((resume) => {
       server.closeAllConnections();
       server.close(() => resume(Effect.void));
     }),
 ).pipe(
-  Effect.flatMap(({ server, requests }) => {
+  Effect.flatMap(({ server, requests, recover, fail }) => {
     const address = server.address();
     return address !== null && typeof address === "object"
-      ? Effect.succeed({ url: `http://127.0.0.1:${address.port}/catalog`, requests })
+      ? Effect.succeed({ url: `http://127.0.0.1:${address.port}/catalog`, requests, recover, fail })
       : Effect.die(new Error("Slow catalog requires a TCP listener"));
   }),
 );
@@ -574,8 +599,111 @@ return { items: [...small.items, ...large.items] };`;
           expect(again.elapsed).toBeLessThan(reportedBoundMs);
         }
         expect(upstream.requests.count).toBe(1);
+        upstream.recover();
+        const changedTools = ["alpha", "beta", "delta"].map(
+          (name) => `tools[${JSON.stringify(app.slug)}].${name}`,
+        );
+        yield* Effect.gen(function* () {
+          const refreshed = yield* execute(
+            "Read the recovered catalog after slow retention expires",
+            search,
+          );
+          expect(refreshed.completed.unavailableApps).toEqual([]);
+          expect(refreshed.elapsed).toBeLessThan(reportedBoundMs);
+          const found = yield* paths(refreshed.completed.execution.value);
+          if (found.includes(`tools[${JSON.stringify(app.slug)}].delta`)) {
+            expect(found).toEqual(changedTools);
+            return;
+          }
+          expect(found).toEqual(tools);
+          return yield* Effect.fail("retained slow listing" as const);
+        }).pipe(
+          Effect.retry({
+            schedule: Schedule.spaced("500 millis"),
+            while: (error) => error === "retained slow listing",
+            times: 65,
+          }),
+        );
+        const fast = yield* execute("Read the fast recovered catalog live", search);
+        expect(yield* paths(fast.completed.execution.value)).toEqual(changedTools);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
+  );
+
+  it.effect(
+    scenarios.mcpSlowListingRecovery.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const api = yield* Api,
+            actors = yield* Actors;
+          const prefix = `/api/organizations/${actors.organization.id}`;
+          const upstream = yield* slowCatalog;
+          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+            name: `Catalog recovery ${randomUUID().slice(0, 8)}`,
+            files: [{ path: "index.ts", content: slowAppSource(upstream.url) }, appsManifest],
+          });
+          expect(deployed.status).toBe(200);
+          const app = yield* body(App, deployed);
+          yield* Effect.addFinalizer(() =>
+            api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+          );
+          const execute = yield* connectActor(
+            actors.owner,
+            "Catalog recovery",
+            actors.organization.id,
+          );
+          const search = `return await tools.search({ namespace: ${JSON.stringify(app.slug)} });`;
+          const poll = (step: string) => execute(step, search);
+          const first = yield* poll("Start the slow catalog");
+          expect(first.completed.unavailableApps.map((entry) => entry.app)).toEqual([app.id]);
+          yield* Effect.gen(function* () {
+            const result = yield* poll("Wait for the successful catalog");
+            if (result.completed.unavailableApps.length > 0)
+              return yield* Effect.fail("still loading" as const);
+          }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 10 }));
+          expect(upstream.requests.count).toBe(1);
+          upstream.fail();
+          yield* Effect.gen(function* () {
+            const result = yield* poll("Wait for catalog expiry and failure");
+            if (upstream.requests.count > 2) expect(result.elapsed).toBeLessThan(reportedBoundMs);
+            if (result.completed.unavailableApps.length === 0)
+              return yield* Effect.fail("still retained" as const);
+            if (result.completed.unavailableApps[0]?.reason.includes("timed out"))
+              return yield* Effect.fail("still evaluating" as const);
+            expect(result.completed.unavailableApps.map((entry) => entry.app)).toEqual([app.id]);
+          }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }));
+          const remembered = yield* poll("Read the remembered catalog failure");
+          expect(remembered.elapsed).toBeLessThan(reportedBoundMs);
+          expect(remembered.completed.unavailableApps.map((entry) => entry.app)).toEqual([app.id]);
+          upstream.recover();
+          yield* Effect.gen(function* () {
+            const result = yield* poll("Wait for recovery");
+            expect(result.elapsed).toBeLessThan(reportedBoundMs);
+            if (result.completed.unavailableApps.length > 0)
+              return yield* Effect.fail("still recovering" as const);
+          }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 35 }));
+          for (const attempt of [1, 2, 3]) {
+            const before = upstream.requests.count;
+            const result = yield* poll(`Read the fast recovered catalog ${attempt}`);
+            expect(result.completed.unavailableApps).toEqual([]);
+            expect(upstream.requests.count).toBeGreaterThan(before);
+            expect(
+              (yield* Schema.decodeUnknownEffect(SearchValue)(
+                result.completed.execution.value,
+              )).items
+                .map((item) => item.path)
+                .sort(),
+            ).toEqual(
+              ["alpha", "beta", "delta"].map(
+                (name) => `tools[${JSON.stringify(app.slug)}].${name}`,
+              ),
+            );
+          }
+        }).pipe(Effect.provide(McpClient.layer)),
+      ),
+    { timeout: 150_000 },
   );
 
   it.effect(

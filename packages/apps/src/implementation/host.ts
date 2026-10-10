@@ -15,6 +15,7 @@ import {
 import { makeWorkflowContext, workflowSafe } from "./workflow-context.ts";
 /** Framework-owned dispatch. Each inspect/call binds accounts and evaluates afresh. */
 import { Cause, Clock, Effect, Match, Option, Redacted, Schema } from "effect";
+import { slowToolCatalogMillis } from "../contracts/host.ts";
 import { captureTelemetry, type InvocationTelemetry } from "@executor-js/telemetry";
 import { appInvocationFetch } from "./network.ts";
 import type { AccountSlots, BoundContext } from "../contracts/app.ts";
@@ -509,6 +510,7 @@ function dispatch(
         fetch: yield* appInvocationFetch(fetching.signal),
         elicit: makeElicit(delivery, invocationSignal),
       };
+      const evaluationStarted = yield* Clock.currentTimeMillis;
       const definition = yield* evaluationSafe(native.evaluate(bound), secrets).pipe(
         Effect.withSpan("app.evaluate"),
       );
@@ -637,17 +639,26 @@ function dispatch(
         );
       }
       if (request.operation === "inspect") {
-        const summary = request.detail === "summary";
-        const catalog = yield* readCatalog(definition.tools, {
-          summary,
-          secrets,
-          ...(request.tools === undefined ? {} : { wanted: new Set(request.tools) }),
-          ...(request.scheduled === true ? { scheduled: true } : {}),
-          schedules: (name) =>
-            Object.entries(definition.schedules ?? {})
-              .filter(([, schedule]) => schedule.tool === name)
-              .map(([name, { tool: _tool, ...schedule }]) => ({ name, ...schedule })),
-        }).pipe(Effect.withSpan("app.catalog.read"));
+        const summary =
+          request.detail === "summary" &&
+          (yield* Clock.currentTimeMillis) - evaluationStarted < slowToolCatalogMillis;
+        const read = (summary: boolean) =>
+          readCatalog(definition.tools, {
+            summary,
+            secrets,
+            ...(request.tools === undefined ? {} : { wanted: new Set(request.tools) }),
+            ...(request.scheduled === true ? { scheduled: true } : {}),
+            schedules: (name) =>
+              Object.entries(definition.schedules ?? {})
+                .filter(([, schedule]) => schedule.tool === name)
+                .map(([name, { tool: _tool, ...schedule }]) => ({ name, ...schedule })),
+          }).pipe(Effect.withSpan("app.catalog.read"));
+        let catalog = yield* read(summary);
+        if (
+          summary &&
+          (yield* Clock.currentTimeMillis) - evaluationStarted >= slowToolCatalogMillis
+        )
+          catalog = yield* read(false);
         // Router errors are tagged classes; encoding keeps only their serialized safe fields.
         return yield* safe(
           () =>

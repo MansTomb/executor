@@ -40,7 +40,7 @@ export const localMcpBackend = (executor: Executor) =>
           yield* executor.accounts.list({ owner: app.owner }),
         );
       }),
-    indexTools: (input) => executor.tools.index(input),
+    indexTools: (input, options) => executor.tools.index(input, options),
     listTools: (input, options) => executor.tools.list(input, options),
     callTool: (input, options?: ToolInvocationOptions) => executor.tools.call(input, options),
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
@@ -92,7 +92,8 @@ export const localMcp = (
         readSkill: (input) => Effect.flatMap(RequestBackend, (b) => b.readSkill(input)),
         listApps: (input) => Effect.flatMap(RequestBackend, (b) => b.listApps(input)),
         listTargets: (input) => Effect.flatMap(RequestBackend, (b) => b.listTargets(input)),
-        indexTools: (input) => Effect.flatMap(RequestBackend, (b) => b.indexTools(input)),
+        indexTools: (input, options) =>
+          Effect.flatMap(RequestBackend, (b) => b.indexTools(input, options)),
         listTools: (input, options) =>
           Effect.flatMap(RequestBackend, (b) => b.listTools(input, options)),
         callTool: (input, options) =>

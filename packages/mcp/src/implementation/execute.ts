@@ -171,7 +171,12 @@ function indexTools<E extends Error>(backend: McpBackend<E>, app: AppId, target:
   return Effect.gen(function* () {
     const selection =
       target.kind === "app" ? {} : { profile: target.id, expectedProfileRevision: target.revision };
-    const index = yield* backend.indexTools({ app, ...selection });
+    const index = yield* backend.indexTools(
+      { app, ...selection },
+      {
+        reportRunningAfterMillis: defaultMcpRuntimeLimits.discoveryWaitMs,
+      },
+    );
     return {
       tools: index.items,
       routers: index.routers,
@@ -185,7 +190,7 @@ function indexTools<E extends Error>(backend: McpBackend<E>, app: AppId, target:
 function listTools<E extends Error>(
   backend: McpBackend<E>,
   input: Parameters<McpBackend<E>["listTools"]>[0],
-  options?: ToolListOptions,
+  options: ToolListOptions = { reportRunningAfterMillis: defaultMcpRuntimeLimits.discoveryWaitMs },
 ) {
   return Effect.gen(function* () {
     const tools: AppTool[] = [];
@@ -1537,7 +1542,19 @@ export function executeProgram(
       );
       if (timedOut) yield* Effect.annotateCurrentSpan("executor.timeout.phase", "program");
       yield* Effect.annotateCurrentSpan("executor.outcome", execution.ok ? "completed" : "failed");
-      return { execution, unavailableApps: prepared.unavailableApps() };
+      return {
+        execution,
+        unavailableApps: prepared.unavailableApps(),
+        ...(execution.truncated
+          ? {
+              outputRecovery: {
+                maxOutputBytes: limits.maxOutputBytes,
+                instructions:
+                  "Executor truncated this program's output. Return fewer fields and reduce console output. For read-only calls, use upstream pagination when available, or return data.slice(start, end) for an array or string in separate execute calls, keeping each slice below the output byte limit. Never rerun a mutation to recover output; inspect current state with a safe read instead.",
+              },
+            }
+          : {}),
+      };
     }).pipe(
       Effect.catch((error) => Effect.succeed(failure("ExecutionFailure", diagnostic(error)))),
     );

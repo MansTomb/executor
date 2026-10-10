@@ -11,6 +11,7 @@ import {
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import {
   Tool,
+  ToolSummary,
   ToolListingTimedOut,
   type AppEvaluationFailed,
   type AppProviderFailed,
@@ -25,29 +26,16 @@ import type { makeOAuth } from "./oauth.ts";
 import { resolve, type InvocationSnapshot } from "./tools.ts";
 
 /** Every tool of one app for one invocation state, sorted by name. */
-export interface ToolListing {
+export interface ToolListing<T extends ToolSummary = Tool> {
   readonly catalog: {
     readonly deployment: DeploymentId;
     readonly profile?: ProfileId;
     readonly profileRevision?: number;
   };
-  readonly items: ReadonlyArray<Tool>;
+  readonly items: ReadonlyArray<T>;
   /** Every router in the catalog, on every page. */
   readonly routers: ReadonlyArray<ToolRouter>;
 }
-/** A listing's JSON text, as another process or isolate kept it. */
-const ListingJson = Schema.fromJsonString(
-  Schema.Struct({
-    catalog: Schema.Struct({
-      deployment: DeploymentId,
-      profile: Schema.optionalKey(ProfileId),
-      profileRevision: Schema.optionalKey(ProfileRevision),
-    }),
-    items: Schema.Array(Tool),
-    routers: Schema.Array(ToolRouter),
-  }),
-);
-
 /** Failures of the evaluation itself. Credential and storage failures are never remembered. */
 export type ListingFailure = AppEvaluationFailed | AppProviderFailed | ToolListingTimedOut;
 type ResolveError = Effect.Error<ReturnType<typeof resolve>>;
@@ -55,8 +43,18 @@ type ResolveError = Effect.Error<ReturnType<typeof resolve>>;
 /** What a finished evaluation left for its readers; only the first two are kept. */
 class Listed {
   readonly listing: ToolListing;
-  constructor(listing: ToolListing) {
+  readonly completedAt: number;
+  constructor(listing: ToolListing, completedAt: number) {
     this.listing = listing;
+    this.completedAt = completedAt;
+  }
+}
+class Indexed {
+  readonly listing: ToolListing<ToolSummary>;
+  readonly completedAt: number;
+  constructor(listing: ToolListing<ToolSummary>, completedAt: number) {
+    this.listing = listing;
+    this.completedAt = completedAt;
   }
 }
 class Failed {
@@ -81,7 +79,6 @@ class Stopped {
     this.elapsedMs = elapsedMs;
   }
 }
-type Outcome = Listed | Failed | Unkept | Stopped;
 
 /**
  * Keep each evaluated listing in the shared declaration store under the declaration key, so a
@@ -102,23 +99,57 @@ type Outcome = Listed | Failed | Unkept | Stopped;
  * time retries; other readers evaluate again, so they never see a failure a live read would not. Kept listings are shared by reference and
  * never mutated, so consumers may derive projections that live exactly as long as the listing.
  */
-export const makeListings = (options: {
+interface ListingOptions {
   readonly cache: DeclarationCache;
   readonly background: BackgroundWork | undefined;
   readonly declarations: Declarations;
   readonly resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"];
   readonly lifecycle: ResourceLifecycle | undefined;
   readonly policy?: ToolListingPolicy;
-}) => {
+}
+
+const makeListingReader = <T extends ToolSummary, I>(
+  options: ListingOptions,
+  Listed: new (
+    listing: ToolListing<T>,
+    completedAt: number,
+  ) => { readonly listing: ToolListing<T>; readonly completedAt: number },
+  item: Schema.Codec<T, I>,
+  command: string,
+) => {
+  type Outcome = InstanceType<typeof Listed> | Failed | Unkept | Stopped;
+  const ListingJson = Schema.fromJsonString(
+    Schema.Struct({
+      catalog: Schema.Struct({
+        deployment: DeploymentId,
+        profile: Schema.optionalKey(ProfileId),
+        profileRevision: Schema.optionalKey(ProfileRevision),
+      }),
+      items: Schema.Array(item),
+      routers: Schema.Array(ToolRouter),
+    }),
+  );
   const policy = options.policy ?? defaultToolListingPolicy;
   const { cache, background } = options;
+  const discovery = command === "tools.index";
+  const freshMillis = discovery ? Math.min(policy.freshMillis, 30_000) : policy.freshMillis;
   return {
+    retained: (state: InvocationSnapshot) =>
+      Effect.gen(function* () {
+        const id = yield* options.declarations.key(command, state);
+        const entry = yield* cache.get(id);
+        if (entry?.kind !== "value" || !(entry.value instanceof Listed)) return undefined;
+        const now = yield* Clock.currentTimeMillis;
+        if (now - entry.value.completedAt >= freshMillis) return undefined;
+        yield* options.declarations.authorize(state);
+        return entry.value.listing;
+      }),
     read: (
       state: InvocationSnapshot,
       /** May renew a refused account, which fails like resolving it; such failures are not kept. */
       evaluate: (
         context: Effect.Success<ReturnType<typeof resolve>>,
-      ) => Effect.Effect<ToolListing, AppEvaluationFailed | AppProviderFailed | ResolveError>,
+      ) => Effect.Effect<ToolListing<T>, AppEvaluationFailed | AppProviderFailed | ResolveError>,
       read: ToolListOptions = {},
     ) =>
       Effect.gen(function* () {
@@ -127,7 +158,7 @@ export const makeListings = (options: {
           Effect.flatMap(evaluate),
         );
         if (policy.maxStaleMillis <= 0) return yield* evaluated;
-        const id = yield* options.declarations.key("tools.list", state);
+        const id = yield* options.declarations.key(command, state);
         const now = yield* Clock.currentTimeMillis;
         const authorize = options.declarations.authorize(state);
         const timedOut = (elapsedMs: number, running: boolean) =>
@@ -144,6 +175,11 @@ export const makeListings = (options: {
         const keep = (outcome: Outcome, load: PendingLoad) =>
           Effect.gen(function* () {
             if (outcome instanceof Listed) {
+              if (
+                discovery &&
+                outcome.completedAt - load.started < (read.reportRunningAfterMillis ?? Infinity)
+              )
+                return yield* cache.delete(id);
               yield* cache.set(id, {
                 kind: "value",
                 app: state.app.id,
@@ -163,7 +199,9 @@ export const makeListings = (options: {
             if (
               current?.kind === "value" &&
               current.value instanceof Listed &&
-              outcome.at - current.at < policy.maxStaleMillis
+              (discovery
+                ? outcome.at - current.value.completedAt < freshMillis
+                : outcome.at - current.at < policy.maxStaleMillis)
             )
               return;
             // Stamped with its start, so an app cache change during the evaluation discards it.
@@ -180,7 +218,7 @@ export const makeListings = (options: {
          * outcome, and encodes with the write, so they never wait for it.
          */
         const store = (outcome: Outcome, load: PendingLoad) =>
-          outcome instanceof Listed
+          outcome instanceof Listed && !discovery
             ? options.declarations.persist(
                 state.app.id,
                 id,
@@ -213,7 +251,11 @@ export const makeListings = (options: {
          */
         const run = (load: PendingLoad, owner: "host" | "reader") =>
           evaluated.pipe(
-            Effect.map((listing): Outcome => new Listed(listing)),
+            Effect.flatMap((listing) =>
+              Clock.currentTimeMillis.pipe(
+                Effect.map((at): Outcome => new Listed(listing, discovery ? at : load.started)),
+              ),
+            ),
             Effect.catch((error) =>
               Clock.currentTimeMillis.pipe(
                 Effect.map((at): Outcome =>
@@ -311,13 +353,17 @@ export const makeListings = (options: {
 
         // Without background work a stale listing is evaluated again first, like a missing one.
         const servable = (at: number) =>
-          now - at < policy.freshMillis ||
-          (now - at < policy.maxStaleMillis && background !== undefined);
+          now - at < freshMillis ||
+          (!discovery && now - at < policy.maxStaleMillis && background !== undefined);
         /** Serve a kept listing, refreshing it in the background once it is past `freshMillis`. */
-        const serve = (at: number, listed: Listed, source: "memory" | "durable") =>
+        const serve = (
+          at: number,
+          listed: InstanceType<typeof Listed>,
+          source: "memory" | "durable",
+        ) =>
           Effect.gen(function* () {
             yield* authorize;
-            const stale = now - at >= policy.freshMillis;
+            const stale = !discovery && now - at >= policy.freshMillis;
             yield* Effect.annotateCurrentSpan({
               "executor.declarations.cache": stale ? "stale" : "hit",
               "executor.declarations.source": source,
@@ -338,12 +384,15 @@ export const makeListings = (options: {
             ),
           );
         const early = yield* keptListing;
-        if (early?.value instanceof Listed && servable(early.at))
+        if (early?.value instanceof Listed && servable(early.value.completedAt))
           return yield* serve(early.at, early.value, "memory");
         // Another isolate's listing, unless an invalidation seen here replaced it. It is kept
         // here too when it fits. A remembered failure here does not hide it.
         const recalling = yield* Effect.forkChild(
-          options.declarations.recall(state.app.id, id).pipe(
+          (discovery
+            ? Effect.succeed(undefined)
+            : options.declarations.recall(state.app.id, id)
+          ).pipe(
             Effect.flatMap((recalled) =>
               Effect.gen(function* () {
                 if (
@@ -356,7 +405,7 @@ export const makeListings = (options: {
                   Effect.option,
                 );
                 if (Option.isNone(decoded)) return undefined;
-                const listed = new Listed(decoded.value);
+                const listed = new Listed(decoded.value, recalled.at);
                 yield* cache.set(id, {
                   kind: "value",
                   app: state.app.id,
@@ -379,7 +428,7 @@ export const makeListings = (options: {
          * an evaluation beside it and answer with whichever settles first. A listing the read
          * finds still wins.
          */
-        const orRecalled = <E, R>(evaluation: Effect.Effect<ToolListing, E, R>) =>
+        const orRecalled = <E, R>(evaluation: Effect.Effect<ToolListing<T>, E, R>) =>
           Option.isSome(recalled)
             ? evaluation
             : Effect.raceFirst(
@@ -395,7 +444,7 @@ export const makeListings = (options: {
         // what is kept never misses both.
         const before = cache.pending(id);
         const kept = yield* keptListing;
-        if (kept?.value instanceof Listed && servable(kept.at))
+        if (kept?.value instanceof Listed && servable(kept.value.completedAt))
           return yield* serve(kept.at, kept.value, "memory");
         // A remembered failure spares a reader with a wait bound, such as MCP discovery, from
         // waiting on the evaluation again. A reader prepared to wait, such as the dashboard,
@@ -444,6 +493,26 @@ export const makeListings = (options: {
       }).pipe(
         Effect.withSpan("sdk.tools.listing", {
           attributes: { "executor.app.id": state.app.id },
+        }),
+      ),
+  };
+};
+export const makeListings = (options: ListingOptions) => {
+  const index = makeListingReader(
+    options,
+    Indexed,
+    Schema.Union([Tool, ToolSummary]),
+    "tools.index",
+  );
+  return {
+    read: makeListingReader(options, Listed, Tool, "tools.list").read,
+    index: index.read,
+    schemas: (state: InvocationSnapshot) =>
+      index.retained(state).pipe(
+        Effect.map((listing) => {
+          if (listing === undefined) return undefined;
+          const items = Schema.decodeUnknownOption(Schema.Array(Tool))(listing.items);
+          return Option.isSome(items) ? { ...listing, items: items.value } : undefined;
         }),
       ),
   };

@@ -126,11 +126,17 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           permitsTarget(policy, input.app, target.kind === "app" ? undefined : target.id),
         );
       }),
-    indexTools: (input) =>
+    indexTools: (input, options) =>
       Effect.gen(function* () {
         yield* checkApp(input.app, input.profile);
-        const index = yield* backend.indexTools(input);
-        const policy = yield* authority;
+        const current = yield* authority;
+        const live = options?.live === true || requiresToolMetadata(current.tools, input.app);
+        let index = yield* backend.indexTools(input, live ? { ...options, live: true } : options);
+        let policy = yield* authority;
+        if (!live && requiresToolMetadata(policy.tools, input.app)) {
+          index = yield* backend.indexTools(input, { ...options, live: true });
+          policy = yield* authority;
+        }
         return {
           ...index,
           items: index.items.filter((tool) =>
@@ -148,8 +154,14 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
     listTools: (input, options) =>
       Effect.gen(function* () {
         yield* checkApp(input.app, input.profile);
-        const page = yield* backend.listTools(input, options);
-        const policy = yield* authority;
+        const current = yield* authority;
+        const live = options?.live === true || requiresToolMetadata(current.tools, input.app);
+        let page = yield* backend.listTools(input, live ? { ...options, live: true } : options);
+        let policy = yield* authority;
+        if (!live && requiresToolMetadata(policy.tools, input.app)) {
+          page = yield* backend.listTools(input, { ...options, live: true });
+          policy = yield* authority;
+        }
         return {
           ...page,
           items: page.items.filter((tool) =>

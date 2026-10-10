@@ -170,7 +170,7 @@ type FlatExecutor = {
     ]: HttpApiGroup.Identifier<G> extends "tools"
       ? HttpApiEndpoint.Identifier<E> extends "call" | "resume"
         ? WithInvocationOptions<Method<E>>
-        : HttpApiEndpoint.Identifier<E> extends "list"
+        : HttpApiEndpoint.Identifier<E> extends "list" | "index"
           ? WithListOptions<Method<E>>
           : Method<E>
       : Method<E>;
