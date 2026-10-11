@@ -10,6 +10,7 @@ import {
   HostedTool,
   HostedToolSummary,
   type HostRouterError,
+  type HostedCatalogSummary,
 } from "../contracts/host.ts";
 import type { AppOperation } from "../contracts/operations.ts";
 import type { AppRouter, DynamicRouter, RouterMeta } from "../contracts/router.ts";
@@ -224,21 +225,24 @@ const within = (wanted: ReadonlySet<string>, path: string) =>
  */
 export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options: CatalogOptions) =>
   Effect.gen(function* () {
-    const tools: Array<
-      (summary: boolean) => Effect.Effect<HostedTool | HostedToolSummary, HostRouterError>
-    > = [];
-    const routers: HostedRouter[] = [];
+    const parts: Array<(summary: boolean) => Effect.Effect<HostedCatalogSummary, HostRouterError>> =
+      [];
     const { wanted, secrets } = options;
     /** One source's metadata and tools, named under `path`. `relative` limits a filtered read. */
     const readSource = (source: DynamicRouter, path: string, relative?: readonly string[]) =>
       Effect.gen(function* () {
         const describe = source.describe;
+        const summaries = source.summaries;
+        const summaryRead =
+          options.summary !== false &&
+          summaries !== undefined &&
+          (options.summary === true || describe !== undefined);
         // Read together, so a source that keeps both in one cached manifest reads it once.
         const [meta, listed] = yield* Effect.all(
           [
             routerMeta(source, secrets),
-            options.summary === true && source.summaries !== undefined
-              ? sourced(source.summaries, secrets)
+            summaryRead && summaries !== undefined
+              ? sourced(summaries, secrets)
               : relative !== undefined && describe !== undefined
                 ? sourced(
                     () =>
@@ -252,7 +256,7 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
           { concurrency: "unbounded" },
         );
         const parsed = yield* Schema.decodeUnknownEffect(
-          Schema.Array(options.summary === true ? HostedToolSummary : HostedTool),
+          Schema.Array(summaryRead ? Schema.Union([HostedTool, HostedToolSummary]) : HostedTool),
         )(listed).pipe(Effect.mapError(() => new HostDeclarationInvalid()));
         const names = new Set<string>();
         const found: Array<HostedTool | HostedToolSummary> = [];
@@ -271,35 +275,56 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
         }
         return { meta, found };
       });
-    const keep = (found: readonly (HostedTool | HostedToolSummary)[]) =>
-      tools.push(
-        ...found.map(
-          (tool) => (summary: boolean) =>
-            summary
-              ? invalid(Schema.decodeUnknownEffect(HostedToolSummary)(tool))
-              : Effect.succeed(tool),
-        ),
+    const describeFound = (
+      source: DynamicRouter,
+      path: string,
+      found: readonly (HostedTool | HostedToolSummary)[],
+      summary: boolean,
+    ) =>
+      Effect.forEach(
+        found,
+        (tool) =>
+          Effect.gen(function* () {
+            if (summary) return yield* invalid(Schema.decodeUnknownEffect(HostedToolSummary)(tool));
+            if ("inputSchema" in tool) return tool;
+            const describe = source.describe;
+            if (describe === undefined) return yield* new HostDeclarationInvalid();
+            const relative = path === "" ? tool.name : tool.name.slice(path.length + 1);
+            const described = yield* sourced(() => describe(relative), secrets);
+            if (described === undefined) return yield* new HostDeclarationInvalid();
+            return yield* invalid(
+              Schema.decodeUnknownEffect(HostedTool)({ ...described, ...tool }),
+            );
+          }),
+        { concurrency: "unbounded" },
       );
-    /**
-     * Read a source into this catalog. The root is the whole app, so its failure fails the read,
-     * as a single-source app did before routers. Elsewhere the failure is returned for the entry.
-     */
     const include = (source: DynamicRouter, path: string, relative?: readonly string[]) =>
       Effect.gen(function* () {
-        if (path === "") {
-          const { meta, found } = yield* readSource(source, path, relative);
-          keep(found);
-          return { meta, error: undefined };
-        }
         const result = yield* Effect.result(readSource(source, path, relative));
-        if (Result.isFailure(result)) return { meta: source.overrides, error: result.failure };
-        keep(result.success.found);
-        return { meta: result.success.meta, error: undefined };
+        if (path === "" && Result.isFailure(result)) return yield* Effect.fail(result.failure);
+        const meta = Result.isFailure(result) ? source.overrides : result.success.meta;
+        const part = (
+          tools: readonly (HostedTool | HostedToolSummary)[],
+          error?: HostRouterError,
+        ) =>
+          path !== "" || (wanted === undefined && meta !== undefined)
+            ? entry(path, meta, error).pipe(Effect.map((router) => ({ tools, routers: [router] })))
+            : Effect.succeed({ tools, routers: [] });
+        parts.push((summary) =>
+          Result.isFailure(result)
+            ? part([], result.failure)
+            : describeFound(source, path, result.success.found, summary).pipe(
+                Effect.flatMap((tools) => part(tools)),
+                Effect.catch((error) => (path === "" ? Effect.fail(error) : part([], error))),
+              ),
+        );
       });
     const visit = (node: AppRouter, path: string): Effect.Effect<void, HostRouterError> =>
       Effect.gen(function* () {
-        if (path !== "" || (wanted === undefined && node.meta !== undefined))
-          routers.push(yield* entry(path, node.meta));
+        if (path !== "" || (wanted === undefined && node.meta !== undefined)) {
+          const router = yield* entry(path, node.meta);
+          parts.push(() => Effect.succeed({ tools: [], routers: [router] }));
+        }
         for (const [key, child] of Object.entries(node.children)) {
           const name = joinPath(path, key);
           switch (child.kind) {
@@ -307,10 +332,11 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
             case "mutation":
               if (options.scheduled === true && options.schedules(name).length === 0) break;
               if (wanted === undefined || wanted.has(name))
-                tools.push((summary) =>
-                  summary
+                parts.push((summary) =>
+                  (summary
                     ? operationSummary(name, path, child, options.schedules(name))
-                    : operationDescription(name, path, child, options.schedules(name)),
+                    : operationDescription(name, path, child, options.schedules(name))
+                  ).pipe(Effect.map((tool) => ({ tools: [tool], routers: [] }))),
                 );
               break;
             case "router":
@@ -321,20 +347,21 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
               if (options.scheduled === true) break;
               const relative = wanted === undefined ? undefined : within(wanted, name);
               if (relative !== undefined && relative.length === 0) break;
-              const read = yield* include(child, name, relative);
-              routers.push(yield* entry(name, read.meta, read.error));
+              yield* include(child, name, relative);
             }
           }
         }
       });
     if (root?.kind === "router") yield* visit(root, "");
     else if (root?.kind === "dynamic" && options.scheduled !== true) {
-      const read = yield* include(root, "", wanted === undefined ? undefined : [...wanted]);
-      if (wanted === undefined && read.meta !== undefined)
-        routers.push(yield* entry("", read.meta));
+      yield* include(root, "", wanted === undefined ? undefined : [...wanted]);
     }
     const summary = typeof options.summary === "boolean" ? options.summary : yield* options.summary;
-    return { tools: yield* Effect.forEach(tools, (describe) => describe(summary)), routers };
+    const described = yield* Effect.forEach(parts, (describe) => describe(summary));
+    return {
+      tools: described.flatMap((part) => part.tools),
+      routers: described.flatMap((part) => part.routers),
+    };
   });
 
 /**

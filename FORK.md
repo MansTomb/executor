@@ -140,15 +140,22 @@ summary patch's original no-cross-request-cache policy. Deployment, profile,
 account, credential and app-cache invalidation checks still apply.
 
 The app framework includes schemas when factory evaluation or catalog discovery
-is slow, using the same evaluated factory. Dynamic routers are listed once with
-schemas, then projected to summaries if the read finishes quickly. Static
-operations render schemas only when the completed read requires them. Bounded
-search can describe selected tools from that retained result without rereading
-the routers. Existing summary-only app builds need
+is slow, using the same evaluated factory. The first dynamic catalog read is kept.
+Routers with summaries and named descriptions keep the selective path; full
+schemas supplied with summaries survive parsing. Slow sparse summaries obtain
+schemas by name without listing the catalog again. Routers without named
+schema reads are listed once with schemas. Static operations render schemas only
+when the completed read requires them. Bounded search can describe selected tools
+from that retained result. Existing summary-only app builds need
 recompilation to provide those schemas. Ordinary SDK and HTTP index reads and
 explicit live descriptions still evaluate live. Read-only grants force live
 metadata; the shared grant wrapper also rechecks when its final policy newly
 requires metadata.
+
+A sparse summary response does not contain schemas to retain. Its named schema
+reads still consume the 45-second evaluation lifetime; separate 25-second summary
+and description reads can exhaust it. This patch avoids catalog rereads, but does
+not guarantee one upstream request for sources that return only summaries.
 
 Custom SDK declaration-cache implementations must now provide `delete` so a
 fast successful retry can clear an obsolete remembered failure.

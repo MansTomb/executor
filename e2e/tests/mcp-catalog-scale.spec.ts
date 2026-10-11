@@ -283,7 +283,7 @@ export default defineApp({ accounts: {} }, async (ctx) => {
     }));
   };
   return { tools: router({ remote: dynamicRouter({ list,
-    ${summaries ? "summaries: list," : ""}
+    ${summaries ? "summaries: list, describe: async name => (await list()).find(tool => tool.name === name)," : ""}
     resolve: async () => undefined,
   }), local: query({ description: "Local tool marker zqrouterq", input: object({ localInput: string() }) }, async () => "local") }) };
 });`;

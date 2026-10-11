@@ -133,7 +133,11 @@ export const dynamicRouter = (source: {
       : {
           summaries: () =>
             fromPromise(summaries)().pipe(
-              Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedToolSummary))),
+              Effect.flatMap(
+                Schema.decodeUnknownEffect(
+                  Schema.Array(Schema.Union([HostedTool, HostedToolSummary])),
+                ),
+              ),
             ),
         }),
     ...(describe === undefined
