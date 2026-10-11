@@ -131,8 +131,10 @@ These are the defaults. The source limit is fixed; a host can change the others.
 - Program source: 65,536 characters, including app source passed as data. With
   a shell, deploy large apps with the `executor apps` CLI instead.
 - Output: 65,536 bytes for the returned value, warnings and logs together. A
-  larger value comes back as a truncated string that says so. Return fewer
-  fields, a count, or one page.
+  larger value comes back as a truncated string that says so, and the result
+  starts with `truncation`, which names the limit. `execution.ok` still reports
+  that the program ran, so check `truncation` or `execution.truncated` before
+  trusting the value. Return fewer fields, a count, or one page.
 - Tool calls: 100 per execution.
 - Time: 5 minutes per execution, including discovery. Time spent waiting for
   the user does not count.

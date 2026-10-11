@@ -129,9 +129,27 @@ export const ExecuteResult = Schema.Struct({
   ]),
   unavailableApps: Schema.Array(UnavailableApp),
 });
+/**
+ * Present only when the output budget cut the program's value, warnings or logs. `execution.ok`
+ * says the program ran; this says its output is incomplete. It precedes `execution`, so a reader
+ * that keeps only the start of the serialized result still sees it.
+ */
+export const OutputTruncation = Schema.Struct({
+  outputLimitBytes: Schema.Int,
+  notice: Schema.String,
+});
+export type OutputTruncation = typeof OutputTruncation.Type;
+export const outputTruncation = (outputLimitBytes: number): OutputTruncation => ({
+  outputLimitBytes,
+  notice: `Output incomplete: the returned value, warnings and logs exceeded the ${outputLimitBytes}-byte output limit, so execution holds only part of them. execution.ok reports that the program ran, not that its output is complete. Return fewer fields, a count or one page. The program already ran; if it changed anything, read current state instead of running it again.`,
+});
 /** MCP execution may return a live pause; completed program results retain the existing fields. */
 export const ExecutionOutcome = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("completed"), ...ExecuteResult.fields }),
+  Schema.Struct({
+    status: Schema.Literal("completed"),
+    truncation: Schema.optionalKey(OutputTruncation),
+    ...ExecuteResult.fields,
+  }),
   Schema.Struct({ status: Schema.Literal("unavailable"), requestId: InteractionId }),
   Schema.Struct({ status: Schema.Literal("busy"), requestId: InteractionId }),
   Schema.Struct({ status: Schema.Literal("capacity-exceeded") }),

@@ -39,6 +39,7 @@ import {
   type ExecuteResult,
   type McpExecutionResult,
   type McpLimits,
+  outputTruncation,
 } from "../contracts/execute.ts";
 import type { BrowserApprovalView, BrowserApprovalAcknowledgement } from "../contracts/browser.ts";
 import { programScheduler } from "./program-scheduler.ts";
@@ -428,7 +429,15 @@ export const makeExecutions = (
                   : launch(run, backend, handle).pipe(Effect.as(undefined)),
               ),
               Match.when({ kind: "done" }, ({ result }) =>
-                release(run).pipe(Effect.as({ status: "completed" as const, ...result })),
+                release(run).pipe(
+                  Effect.as({
+                    status: "completed" as const,
+                    ...(result.execution.truncated === true
+                      ? { truncation: outputTruncation(limits.maxOutputBytes) }
+                      : {}),
+                    ...result,
+                  }),
+                ),
               ),
               Match.when({ kind: "wake" }, () => Effect.succeed(undefined)),
               Match.exhaustive,

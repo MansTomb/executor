@@ -368,6 +368,16 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  mcpOutputTruncation: {
+    fixtures: "actors",
+    file: "mcp-output-truncation.spec.ts",
+    title: "MCP execute reports an incomplete output before the truncated value",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Shared execute path; covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   mcpCatalogRefresh: {
     fixtures: "actors",
     file: "mcp-catalog.spec.ts",
