@@ -49,6 +49,16 @@ The maintained branch is `selfhost`. Local patches:
   form. A scoped production search after five idle minutes fell from 27.5 to
   1.1 seconds end to end, and its warm repeat from 10.0 to 0.6 seconds. Selection, schema and grant-restriction E2Es
   cover scoped, unscoped, dynamic, repeated, mixed-app and narrowed searches.
+- `163e32725`: report truncated execute output before the cut value. Agent
+  harnesses keep only a prefix of a tool result (Pi and OptChat clip at 30,000
+  characters), and CodeMode appends its notice after the value while
+  `execution.ok` stays true, so agents lost both the notice and
+  `execution.truncated`. A completed result whose output was cut now carries
+  `truncation: { outputLimitBytes, notice }` ahead of `execution`, in
+  structured content and in the text JSON. The 65,536-byte limit and the
+  existing fields are unchanged. The output-truncation E2E covers the byte
+  boundary, multibyte text, objects, logs sharing the budget, a 30,000-character
+  prefix and a narrowed read.
 
 Keep these patches separate when merging upstream changes. Remove a patch when
 upstream provides the same behavior and its regression checks pass.
