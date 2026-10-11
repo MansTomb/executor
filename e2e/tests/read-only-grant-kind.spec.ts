@@ -18,10 +18,10 @@ import { McpClient } from "../support/mcp-client.ts";
 type Kind = "query" | "mutation";
 
 const kindFixture = Effect.gen(function* () {
-  const summaryArrived = yield* Deferred.make<void>();
-  const summaryRelease = yield* Deferred.make<void>();
-  yield* Effect.addFinalizer(() => Deferred.succeed(summaryRelease, undefined));
-  let holdSummary = false;
+  const catalogArrived = yield* Deferred.make<void>();
+  const catalogRelease = yield* Deferred.make<void>();
+  yield* Effect.addFinalizer(() => Deferred.succeed(catalogRelease, undefined));
+  let holdCatalog = false;
   let kind: Kind = "query";
   let flipAfterDescribe = false;
   const invoked: Kind[] = [];
@@ -31,25 +31,20 @@ const kindFixture = Effect.gen(function* () {
     readOnly: kind === "query",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   });
+  const catalog = (summary: boolean) =>
+    Effect.gen(function* () {
+      const described = metadata();
+      if (holdCatalog) {
+        holdCatalog = false;
+        yield* Deferred.succeed(catalogArrived, undefined);
+        yield* Deferred.await(catalogRelease);
+      }
+      const { inputSchema: _schema, ...fields } = described;
+      return HttpServerResponse.jsonUnsafe([summary ? fields : described]);
+    });
   const routes = [
-    HttpRouter.add(
-      "GET",
-      "/list",
-      Effect.sync(() => HttpServerResponse.jsonUnsafe([metadata()])),
-    ),
-    HttpRouter.add(
-      "GET",
-      "/summaries",
-      Effect.gen(function* () {
-        const { inputSchema: _schema, ...summary } = metadata();
-        if (holdSummary) {
-          holdSummary = false;
-          yield* Deferred.succeed(summaryArrived, undefined);
-          yield* Deferred.await(summaryRelease);
-        }
-        return HttpServerResponse.jsonUnsafe([summary]);
-      }),
-    ),
+    HttpRouter.add("GET", "/list", catalog(false)),
+    HttpRouter.add("GET", "/summaries", catalog(true)),
     HttpRouter.add(
       "GET",
       "/describe/toggle",
@@ -87,11 +82,11 @@ const kindFixture = Effect.gen(function* () {
   return {
     origin: `http://127.0.0.1:${server.address.port}`,
     invoked,
-    holdSummary: Effect.sync(() => {
-      holdSummary = true;
+    holdCatalog: Effect.sync(() => {
+      holdCatalog = true;
     }),
-    summaryArrived: Deferred.await(summaryArrived).pipe(Effect.timeout("10 seconds")),
-    releaseSummary: Deferred.succeed(summaryRelease, undefined),
+    catalogArrived: Deferred.await(catalogArrived).pipe(Effect.timeout("10 seconds")),
+    releaseCatalog: Deferred.succeed(catalogRelease, undefined),
     become: (next: Kind) => {
       kind = next;
       flipAfterDescribe = false;
@@ -176,9 +171,9 @@ layer(HostedLive, { excludeTestServices: true })("Read-only grant kind", (it) =>
             { signal },
           ),
         );
-        yield* fixture.holdSummary;
+        yield* fixture.holdCatalog;
         const pendingSearch = yield* Effect.forkChild(search);
-        yield* fixture.summaryArrived;
+        yield* fixture.catalogArrived;
         fixture.become("mutation");
         const narrow = (id: string) =>
           api.request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {
@@ -190,7 +185,7 @@ layer(HostedLive, { excludeTestServices: true })("Read-only grant kind", (it) =>
             },
           });
         expect((yield* narrow(discoveryGrant.grantId)).status).toBe(200);
-        yield* fixture.releaseSummary;
+        yield* fixture.releaseCatalog;
         const narrowedSearch = yield* Fiber.join(pendingSearch);
         const Search = Schema.Struct({
           execution: Schema.Struct({
