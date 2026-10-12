@@ -47,6 +47,7 @@ export const makeDeclarationCache = (
     bytes -= size(entry);
   };
   return {
+    delete: (key) => Effect.sync(() => remove(key)),
     get: (key) =>
       Effect.sync(() => {
         const entry = entries.get(key);

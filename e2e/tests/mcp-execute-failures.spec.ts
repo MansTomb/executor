@@ -459,6 +459,62 @@ const localApp = (name: string, source: string) =>
   });
 
 layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", (it) => {
+  it.effect(scenarios.mcpOutputRecovery.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { client, slug } = yield* hostedApp(
+          "Long read",
+          `import { defineApp, query, object, router } from "apps";
+export default defineApp({ accounts: {} }, async () => ({ tools: router({
+  read: query({ input: object({}) }, async () => "x".repeat(70_000) + "TAIL"),
+}) }));`,
+        );
+        const read = `await tools[${JSON.stringify(slug)}].read({})`;
+        const result = yield* executeOnce(
+          client,
+          "Return a long read",
+          `return ${read};`,
+          "long-read.json",
+        );
+        const RecoveryResult = Schema.Struct({
+          execution: Schema.Struct({
+            ok: Schema.Boolean,
+            value: Schema.String,
+            truncated: Schema.optional(Schema.Boolean),
+          }),
+          outputRecovery: Schema.optional(
+            Schema.Struct({ maxOutputBytes: Schema.Number, instructions: Schema.String }),
+          ),
+        });
+        const cut = yield* Schema.decodeUnknownEffect(RecoveryResult)(result.structured);
+        expect(cut.execution.ok).toBe(true);
+        expect(cut.execution.truncated).toBe(true);
+        expect(cut.execution.value).not.toContain("TAIL");
+        expect(cut.outputRecovery?.maxOutputBytes).toBe(65_536);
+        expect(cut.outputRecovery?.instructions).toContain("slice(start, end)");
+        expect(cut.outputRecovery?.instructions).toContain("Never rerun a mutation");
+        let complete = "";
+        for (const [start, end] of [
+          [0, 35_000],
+          [35_000, 70_004],
+        ]) {
+          const page = yield* executeOnce(
+            client,
+            "Return a read slice",
+            `const data = ${read}; return data.slice(${start}, ${end});`,
+            `long-read-${start}.json`,
+          );
+          const decoded = yield* Schema.decodeUnknownEffect(RecoveryResult)(page.structured);
+          expect(decoded.execution.ok).toBe(true);
+          expect(decoded.execution.truncated).toBeUndefined();
+          expect(decoded.outputRecovery).toBeUndefined();
+          complete += decoded.execution.value;
+        }
+        expect(complete).toBe("x".repeat(70_000) + "TAIL");
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
   it.effect(scenarios.mcpExecuteApprovalAfterRefresh.title, (context) =>
     withHostedCase(
       context,

@@ -3,7 +3,7 @@ import { CodeMode } from "@opencode-ai/codemode";
 import { Schema } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { McpSchema, Tool as McpTool } from "effect/ai";
-import { ApiErrorResponse, ElicitationResponse } from "apps/contracts";
+import { ApiErrorResponse, ElicitationResponse, slowToolCatalogMillis } from "apps/contracts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { InteractionId, PendingInteraction, ElicitationResponseInvalid } from "./interactions.ts";
 export * from "./interactions.ts";
@@ -30,7 +30,7 @@ export const defaultMcpRuntimeLimits = McpRuntimeLimits.make({
   maxExecutions: 64,
   discoveryConcurrency: 8,
   // Together well inside the default 5 minute execution budget, which leaves the program time to run.
-  discoveryWaitMs: 10_000,
+  discoveryWaitMs: slowToolCatalogMillis,
   discoveryIdleMs: 5_000,
 });
 
@@ -128,6 +128,9 @@ export const ExecuteResult = Schema.Struct({
     }),
   ]),
   unavailableApps: Schema.Array(UnavailableApp),
+  outputRecovery: Schema.optionalKey(
+    Schema.Struct({ maxOutputBytes: Schema.Number, instructions: Schema.String }),
+  ),
 });
 /**
  * Present only when the output budget cut the program's value, warnings or logs. `execution.ok`

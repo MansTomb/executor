@@ -139,6 +139,49 @@ A release requires no OOM or restart in the soak, the focused fork scenarios,
 native upgrade and backup restoration, and a 15-minute production watch with one
 read per connected app.
 
+## Slack read recovery
+
+Bounded MCP discovery now joins an index evaluation already running instead of
+starting a new one after each ten-second discovery timeout. Fast completed indexes
+remain live on the next read. Slow completed indexes are kept only in process
+memory for at most 30 seconds after completion, without background refresh or
+extending the window on access. This is a bounded-staleness exception to the
+summary patch's original no-cross-request-cache policy. Deployment, profile,
+account, credential and app-cache invalidation checks still apply.
+
+The app framework includes schemas when factory evaluation or catalog discovery
+is slow, using the same evaluated factory. The first dynamic catalog read is kept.
+Routers with summaries and named descriptions keep the selective path; full
+schemas supplied with summaries survive parsing. Slow sparse summaries obtain
+schemas by name without listing the catalog again. Routers without named
+schema reads are listed once with schemas. Static operations render schemas only
+when the completed read requires them. Bounded search can describe selected tools
+from that retained result. Existing summary-only app builds need
+recompilation to provide those schemas. Ordinary SDK and HTTP index reads and
+explicit live descriptions still evaluate live. Read-only grants force live
+metadata; the shared grant wrapper also rechecks when its final policy newly
+requires metadata.
+
+A sparse summary response does not contain schemas to retain. Its named schema
+reads still consume the 45-second evaluation lifetime; separate 25-second summary
+and description reads can exhaust it. This patch avoids catalog rereads, but does
+not guarantee one upstream request for sources that return only summaries.
+
+Custom SDK declaration-cache implementations must now provide `delete` so a
+fast successful retry can clear an obsolete remembered failure.
+
+Executor's execute output budget is 65,536 bytes. A truncated result now includes
+`outputRecovery` with the configured limit and instructions for upstream paging
+or returning smaller slices from read-only calls. Mutation results must be
+recovered through a safe read, not by repeating the mutation.
+
+The slow-listing, dynamic-router, failure-recovery and output-recovery regressions
+are in the focused fork gate.
+Immediate remote-catalog freshness assertions remain unchanged. The inherited
+`mcpListingInputs` scenario expects fast completed factories to be reused, which
+conflicts with the live-index behavior already on `selfhost`; it fails the same
+evaluation-ID assertion with the original SDK and is not added to the gate.
+
 ## Merging upstream
 
 Upstream's exported history and `selfhost` are now connected through the merge of

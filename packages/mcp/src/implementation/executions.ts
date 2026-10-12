@@ -355,7 +355,7 @@ export const makeExecutions = (
         readSkill: (input) => exchange((backend) => backend.readSkill(input)),
         listApps: (input) => exchange((backend) => backend.listApps(input)),
         listTargets: (input) => exchange((backend) => backend.listTargets(input)),
-        indexTools: (input) => exchange((backend) => backend.indexTools(input)),
+        indexTools: (input, options) => exchange((backend) => backend.indexTools(input, options)),
         listTools: (input, options) => exchange((backend) => backend.listTools(input, options)),
         callTool: (input) =>
           Effect.flatMap(Effect.fiberId, (fiber) => {

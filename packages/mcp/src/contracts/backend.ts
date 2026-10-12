@@ -49,10 +49,11 @@ export interface McpBackend<E extends Error> {
   readonly listTargets: (input: McpTargetInput) => Effect.Effect<readonly McpTarget[], E>;
   /**
    * The live catalog's names and descriptions, without schemas. Authorize the app and its
-   * selected accounts before evaluating it; it is never served from an earlier request.
+   * selected accounts before reading it; bounded discovery may reuse an authorized listing.
    */
   readonly indexTools: (
     input: Parameters<Executor["tools"]["index"]>[0],
+    options?: ToolListOptions,
   ) => Effect.Effect<ToolIndex, E>;
   /**
    * Authorize the app and its selected accounts before evaluating each catalog page. A `tools`

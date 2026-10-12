@@ -254,7 +254,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
         dispatch(
           { ...input, database: false },
           indexCommand,
-          HostedCatalogSummary,
+          Schema.Union([HostedCatalog, HostedCatalogSummary]),
           HostInspectError,
         ).pipe(Effect.withSpan(span("index"))),
       query: (input) =>

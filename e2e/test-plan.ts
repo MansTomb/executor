@@ -298,6 +298,37 @@ export const scenarios = {
       local: na("Hosted deployment API scenario"),
     },
   },
+  mcpSlowRouter: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
+    title: "MCP discovery retains schemas from a slow dynamic router without summaries",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback slow upstream; the shared execute path is covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  mcpSlowRouterSummaries: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
+    title: "MCP discovery retains schemas from a slow dynamic router with summaries",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback slow upstream; the shared execute path is covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
+  mcpSlowListingRecovery: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
+    title:
+      "MCP discovery remembers failures after slow catalog expiry and clears them on fast recovery",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback slow upstream; the shared execute path is covered on self-host"),
+      local: na("Hosted deployment API scenario"),
+    },
+  },
   // The two Cloud listing scenarios read a running listing or a remembered timeout, which live only
   // in the isolate that ran the listing. The local Worker serves every search from one isolate; a
   // deployed one may not.
@@ -346,6 +377,16 @@ export const scenarios = {
       "self-host": scheduled,
       cloud: na("Shared execute path; covered on self-host"),
       local: na("Hosted deployment API scenario"),
+    },
+  },
+  mcpOutputRecovery: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title: "Truncated MCP output explains how to recover a long read in complete slices",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Shared output boundary covered on self-host"),
     },
   },
   mcpSearchConcise: {

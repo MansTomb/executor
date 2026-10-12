@@ -43,6 +43,7 @@ import {
   ToolPolicyFailed,
   ToolElicitationFailed,
   ToolInvocation,
+  type ToolSummary,
   ToolInputs,
   type ToolInvocationOptions,
   type ToolListOptions,
@@ -648,33 +649,46 @@ export const makeTools = (
       Effect.gen(function* () {
         const requested = input.tools;
         const state = yield* listed(input);
+        const retained =
+          options?.reportRunningAfterMillis !== undefined && options.live !== true
+            ? yield* listings.schemas(state)
+            : undefined;
         // Named tools, or every tool for a caller that asks for the live catalog, are described
         // live; earlier builds describe every tool.
         const listing: ToolListing =
-          requested === undefined && options?.live !== true
-            ? yield* listings.read(state, listingOf(state), options)
-            : yield* liveCatalog(state, (options, toolIndex) =>
-                runtime.inspect(
-                  toolIndex && requested !== undefined ? { ...options, tools: requested } : options,
+          retained !== undefined
+            ? {
+                ...retained,
+                items: retained.items.filter(
+                  (tool) => requested === undefined || requested.includes(tool.name),
                 ),
-              ).pipe(
-                Effect.map(({ tools, routers }) => {
-                  const names = requested === undefined ? undefined : new Set<string>(requested);
-                  return {
-                    catalog: catalogOf(state),
-                    routers,
-                    items: tools
-                      .filter((tool) => names === undefined || names.has(tool.name))
-                      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-                      .map((tool) => ({
-                        ...tool,
-                        app: state.app.id,
-                        deployment: state.deployment.id,
-                        name: ToolName.make(tool.name),
-                      })),
-                  };
-                }),
-              );
+              }
+            : requested === undefined && options?.live !== true
+              ? yield* listings.read(state, listingOf(state), options)
+              : yield* liveCatalog(state, (options, toolIndex) =>
+                  runtime.inspect(
+                    toolIndex && requested !== undefined
+                      ? { ...options, tools: requested }
+                      : options,
+                  ),
+                ).pipe(
+                  Effect.map(({ tools, routers }) => {
+                    const names = requested === undefined ? undefined : new Set<string>(requested);
+                    return {
+                      catalog: catalogOf(state),
+                      routers,
+                      items: tools
+                        .filter((tool) => names === undefined || names.has(tool.name))
+                        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+                        .map((tool) => ({
+                          ...tool,
+                          app: state.app.id,
+                          deployment: state.deployment.id,
+                          name: ToolName.make(tool.name),
+                        })),
+                    };
+                  }),
+                );
         // Pages share the listing's item objects, so a caller can recognise a kept listing.
         const cursor: string | undefined = input.cursor;
         const after =
@@ -717,34 +731,31 @@ export const makeTools = (
      * The catalog without schemas, evaluated live for this request. Builds with a tool index read
      * only summaries, so no schema is rendered; earlier builds describe every tool.
      */
-    index: (input: Parameters<Executor["tools"]["index"]>[0]) =>
+    index: (input: Parameters<Executor["tools"]["index"]>[0], options?: ToolListOptions) =>
       Effect.gen(function* () {
         const state = yield* listed(input);
-        const { tools, routers } = yield* liveCatalog(state, (options, toolIndex) =>
-          toolIndex
-            ? runtime.index(options)
-            : runtime.inspect(options).pipe(
-                Effect.map((catalog) => ({
-                  ...catalog,
-                  tools: catalog.tools.map(
-                    ({ inputSchema: _input, outputSchema: _output, _meta: _ignored, ...summary }) =>
-                      summary,
-                  ),
+        const evaluate = (context: InvocationContext) =>
+          readCatalog(state, context, (options, toolIndex) =>
+            toolIndex ? runtime.index(options) : runtime.inspect(options),
+          ).pipe(
+            Effect.map(({ tools, routers }): ToolListing<ToolSummary> => ({
+              catalog: catalogOf(state),
+              routers,
+              items: [...tools]
+                .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+                .map((tool) => ({
+                  ...tool,
+                  app: state.app.id,
+                  deployment: state.deployment.id,
+                  name: ToolName.make(tool.name),
                 })),
-              ),
-        );
-        return {
-          ...catalogOf(state),
-          routers,
-          items: [...tools]
-            .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-            .map((tool) => ({
-              ...tool,
-              app: state.app.id,
-              deployment: state.deployment.id,
-              name: ToolName.make(tool.name),
             })),
-        };
+          );
+        const listing =
+          options?.reportRunningAfterMillis === undefined || options.live === true
+            ? yield* resolve(state, resolveAccount, lifecycle).pipe(Effect.flatMap(evaluate))
+            : yield* listings.index(state, evaluate, options);
+        return { ...listing.catalog, routers: listing.routers, items: listing.items };
       }).pipe(Effect.withSpan("sdk.tools.index")),
     /**
      * One tool's schemas from the kept listing. A tool the listing does not name, such as one a

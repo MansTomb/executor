@@ -38,13 +38,19 @@ export const listTools = (
     };
   });
 /** Names and descriptions for browsing; schemas are read per tool. */
-export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
+export const indexTools = (
+  input: Parameters<Executor["tools"]["index"]>[0],
+  options?: ToolListOptions,
+) =>
   Effect.gen(function* () {
     const policy = yield* authorizeTarget(input.app, input.profile);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
     const deployment = yield* selectedActiveDeployment(executor, owner, input);
-    const index = yield* executor.tools.index({ ...input, deployment });
+    const index = yield* executor.tools.index(
+      { ...input, deployment },
+      requiresToolMetadata(policy.tools, input.app) ? { ...options, live: true } : options,
+    );
     return {
       ...index,
       items: index.items.filter((tool) =>

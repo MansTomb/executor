@@ -1,6 +1,6 @@
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { Deferred, Effect, Fiber, Layer, Redacted, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -13,10 +13,15 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
+import { McpClient } from "../support/mcp-client.ts";
 
 type Kind = "query" | "mutation";
 
 const kindFixture = Effect.gen(function* () {
+  const catalogArrived = yield* Deferred.make<void>();
+  const catalogRelease = yield* Deferred.make<void>();
+  yield* Effect.addFinalizer(() => Deferred.succeed(catalogRelease, undefined));
+  let holdCatalog = false;
   let kind: Kind = "query";
   let flipAfterDescribe = false;
   const invoked: Kind[] = [];
@@ -26,20 +31,20 @@ const kindFixture = Effect.gen(function* () {
     readOnly: kind === "query",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   });
+  const catalog = (summary: boolean) =>
+    Effect.gen(function* () {
+      const described = metadata();
+      if (holdCatalog) {
+        holdCatalog = false;
+        yield* Deferred.succeed(catalogArrived, undefined);
+        yield* Deferred.await(catalogRelease);
+      }
+      const { inputSchema: _schema, ...fields } = described;
+      return HttpServerResponse.jsonUnsafe([summary ? fields : described]);
+    });
   const routes = [
-    HttpRouter.add(
-      "GET",
-      "/list",
-      Effect.sync(() => HttpServerResponse.jsonUnsafe([metadata()])),
-    ),
-    HttpRouter.add(
-      "GET",
-      "/summaries",
-      Effect.sync(() => {
-        const { inputSchema: _schema, ...summary } = metadata();
-        return HttpServerResponse.jsonUnsafe([summary]);
-      }),
-    ),
+    HttpRouter.add("GET", "/list", catalog(false)),
+    HttpRouter.add("GET", "/summaries", catalog(true)),
     HttpRouter.add(
       "GET",
       "/describe/toggle",
@@ -77,6 +82,11 @@ const kindFixture = Effect.gen(function* () {
   return {
     origin: `http://127.0.0.1:${server.address.port}`,
     invoked,
+    holdCatalog: Effect.sync(() => {
+      holdCatalog = true;
+    }),
+    catalogArrived: Deferred.await(catalogArrived).pipe(Effect.timeout("10 seconds")),
+    releaseCatalog: Deferred.succeed(catalogRelease, undefined),
     become: (next: Kind) => {
       kind = next;
       flipAfterDescribe = false;
@@ -128,7 +138,8 @@ layer(HostedLive, { excludeTestServices: true })("Read-only grant kind", (it) =>
           actors = yield* Actors,
           browser = yield* Browser,
           evidence = yield* Evidence,
-          oauth = yield* McpOAuth;
+          oauth = yield* McpOAuth,
+          mcp = yield* McpClient;
         const fixture = yield* kindFixture;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -143,17 +154,64 @@ layer(HostedLive, { excludeTestServices: true })("Read-only grant kind", (it) =>
         );
 
         yield* browser.login(actors.owner);
-        const grant = yield* oauth.authorizeApi;
-        expect(
-          (yield* api.request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {
-            id: grant.grantId,
+        const discoveryGrant = yield* oauth.authorize;
+        const client = yield* mcp.connect(
+          Redacted.make(Redacted.value(discoveryGrant.tokens).access_token),
+          "live-kind-discovery",
+        );
+        const search = client.use("Search during a grant change", (client, signal) =>
+          client.callTool(
+            {
+              name: "execute",
+              arguments: {
+                code: `return await tools.search({namespace: ${JSON.stringify(app.slug)}});`,
+              },
+            },
+            undefined,
+            { signal },
+          ),
+        );
+        yield* fixture.holdCatalog;
+        const pendingSearch = yield* Effect.forkChild(search);
+        yield* fixture.catalogArrived;
+        fixture.become("mutation");
+        const narrow = (id: string) =>
+          api.request(actors.owner, "POST", "/api/auth/mcp/grants/narrow", {
+            id,
             policy: {
               kind: "tools",
               apps: [{ app: app.id, tools: { kind: "readOnly" } }],
               approval: "client",
             },
-          })).status,
-        ).toBe(200);
+          });
+        expect((yield* narrow(discoveryGrant.grantId)).status).toBe(200);
+        yield* fixture.releaseCatalog;
+        const narrowedSearch = yield* Fiber.join(pendingSearch);
+        const Search = Schema.Struct({
+          execution: Schema.Struct({
+            ok: Schema.Literal(true),
+            value: Schema.Struct({ items: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+          }),
+        });
+        expect(
+          (yield* Schema.decodeUnknownEffect(Search)(
+            narrowedSearch.structuredContent,
+          )).execution.value.items.map((item) => item.path),
+        ).toEqual([`tools[${JSON.stringify(app.slug)}].toggle`]);
+        const nextSearch = yield* search;
+        expect(
+          (yield* Schema.decodeUnknownEffect(Search)(nextSearch.structuredContent)).execution.value
+            .items,
+        ).toEqual([]);
+        fixture.become("query");
+        const restoredSearch = yield* search;
+        expect(
+          (yield* Schema.decodeUnknownEffect(Search)(
+            restoredSearch.structuredContent,
+          )).execution.value.items.map((item) => item.path),
+        ).toEqual([`tools[${JSON.stringify(app.slug)}].toggle`]);
+        const grant = yield* oauth.authorizeApi;
+        expect((yield* narrow(grant.grantId)).status).toBe(200);
         const anonymous = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(grant.tokens).access_token}` };
         const call = api.request(
@@ -199,7 +257,7 @@ layer(HostedLive, { excludeTestServices: true })("Read-only grant kind", (it) =>
         });
         expect(raced.status, JSON.stringify(raced.body)).toBe(409);
         expect(fixture.invoked).toEqual([]);
-      }).pipe(Effect.provide(McpOAuth.layer)),
+      }).pipe(Effect.provide(Layer.merge(McpOAuth.layer, McpClient.layer))),
     ),
   );
 });
