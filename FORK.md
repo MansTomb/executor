@@ -238,6 +238,16 @@ call)` suffix; reconnect errors name the account's label and ID, and add the
   `69a64ab74` and `613ce0b00`, the schema batching of `f70d35bcc`, and the
   read-only kind binding of the October integration. Their scenarios stay in the
   focused gate and must pass on upstream's implementation.
+- Freshness changes with that retirement. Upstream serves a kept listing for 30
+  seconds (`EXECUTOR_TOOL_LISTING_FRESH_SECONDS`), then serves it stale while a
+  background read refreshes it, for up to a day
+  (`EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS`). MCP search reads stored rows with
+  `refreshStale: false`, so a catalog change reaches search only after something
+  lists the app again. The fork's live index made such changes visible at once.
+  Assertions in `mcpDiscoverySchemas`, `mcpDiscoverySelection`,
+  `readOnlyGrantLiveKind`, `mcpSlowListing` and `mcpSlowListingRecovery` that
+  require live reads or the 30-second index retention are unresolved; they need a
+  decision before this branch ships.
 - `scopedConnectionProfiles` became upstream's `scopedConnectionAccounts`, and the
   output-truncation scenario joined the focused gate.
 

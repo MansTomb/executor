@@ -995,10 +995,6 @@ export const oauthCompletionRecovery = {
 /** Parsed OAuthCompletionFailed failure. */
 export type OAuthCompletionFailed = typeof OAuthCompletionFailed.Type;
 
-/**
- * The saved grant cannot supply a fresh token. Its account identity remains available for
- * reconnection. `cause` is present when the token endpoint refused a renewal.
- */
 /** The account an OAuth failure concerns, as its owner and an agent name it. */
 const accountIdentity = (account: string, label: string | undefined) =>
   label === undefined ? account : `"${label}" (${account})`;
@@ -1026,6 +1022,10 @@ const forAccount = (
     : {}),
 });
 
+/**
+ * The saved grant cannot supply a fresh token. Its account identity remains available for
+ * reconnection. `cause` is present when the token endpoint refused a renewal.
+ */
 export const OAuthReconnectRequired = UserFacingError.define({
   tag: "OAuthReconnectRequired",
   status: 409,

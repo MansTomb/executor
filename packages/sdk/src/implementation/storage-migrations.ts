@@ -471,17 +471,20 @@ const version4 = <Version extends string>(version: Version, up?: CustomMigration
     },
   });
 
-/** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
+/** Indexes of the analytics table this fork's 4.0.2 added; a new database builds them too. */
 export const analyticsIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_analytics_scope_time ON executor_analytics_events (app, owner, timestamp)",
   "CREATE INDEX IF NOT EXISTS executor_analytics_time ON executor_analytics_events (timestamp)",
 ] as const;
+
+/** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
 export const storageSchemas = [
   version4("4.0.0"),
   version4("4.0.1", () =>
     Effect.succeed(storageIndexes.map((sql) => ({ type: "custom" as const, sql }))),
   ),
-  // Additive: existing accounts start at generation 0 and the running server ignores the column.
+  // This fork's shipped 4.0.2: the analytics table and its indexes. Upstream's 4.0.2 credential
+  // generations arrive in 4.0.3 here. Never change this step.
   schema({
     version: "4.0.2",
     tables: { ...version4Tables, analyticsEvents: analyticsTable },
@@ -502,7 +505,8 @@ export const storageSchemas = [
       }),
     },
   }),
-  // Additive: a new account checks table that the running server never reads.
+  // Additive: credential generations, starting at 0, and a new account checks table, neither of
+  // which the running server reads.
   schema({
     version: "4.0.3",
     tables: { ...version403Tables, analyticsEvents: analyticsTable },
