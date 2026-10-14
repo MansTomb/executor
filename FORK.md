@@ -6,6 +6,13 @@ Upstream `main` currently contains the older 1.x architecture.
 
 The maintained branch is `selfhost`. Local patches:
 
+- The default Executor management app is an immutable deployment inside Executor.
+  Replacing the Dokploy image does not rebuild its saved bundle or update its
+  bundled framework; legacy deployments can retain obsolete behavior. After
+  each weekly server rollout, deploy the current `defaultExecutorAppSource`
+  separately, preserve its account links, and verify the new deployment's tools
+  and skills through a fresh MCP session. The production procedure is in
+  `~/Work/Agents/projects/executor/weekly-merge.md`.
 - `433ab7f6f`, `c77c0baec`: retain up to 16 idle app workers for five minutes.
   The October upstream merge ports this policy to `app-worker-residency.ts`;
   upstream capacity eviction is retained, with the fork limit and idle expiry.
@@ -299,6 +306,16 @@ Upstream's exported history and `selfhost` are now connected through the merge o
 the identical `4c9392fed` baseline. Fetch `upstream/v2` and merge it into `selfhost`.
 Never rebase or re-export `selfhost` after a merge, and never force-push it. Fetch,
 merge anything new on `origin/selfhost`, and push as a fast-forward.
+
+The home Dokploy service uses raw Compose and has no Git push trigger. A server
+image deploy does not replace the saved management app. Treat the current
+`defaultExecutorAppSource` as a second deploy artifact on each weekly rollout.
+Back up `/app/data` before deploying the app, record its previous deployment,
+and verify its complete MCP catalog plus `executor` and `code-mode` skills
+afterward. Do not use a pre-deploy hosted migration as the release trigger: the
+old Cloud worker can complete its queued job before the replacement server is
+active. Follow the production steps in the weekly
+merge runbook for the exact Dokploy and app operations.
 
 Effect follows upstream only: take the `effect` version and APIs upstream ships, and
 do not pin a different build here. Keep every patch listed above. Drop one only when
