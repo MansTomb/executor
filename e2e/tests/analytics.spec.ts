@@ -65,7 +65,7 @@ export default defineApp({}, { tools: router({ queries: router({ emit: query({ i
         const path = `/v1/apps/${app.id}`;
         yield* Effect.addFinalizer(() => send("DELETE", path).pipe(Effect.orDie));
         yield* serverControl("stop");
-        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.6", events: 0 });
+        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.15", events: 0 });
         yield* analyticsVolume("backup");
         yield* serverControl("start");
         expect((yield* send("GET", path)).status).toBe(200);
@@ -136,14 +136,14 @@ export default defineApp({}, { tools: router({ queries: router({ emit: query({ i
         expect(expired.retainedFrom).toBeGreaterThan(started);
         yield* serverControl("stop");
         const stored = yield* analyticsDatabase("inspect");
-        expect(stored.version).toBe("4.0.6");
+        expect(stored.version).toBe("4.0.15");
         expect(stored.events).toBe(6252);
         yield* analyticsVolume("restore");
-        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.6", events: 0 });
+        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.15", events: 0 });
         yield* serverControl("start");
         expect((yield* send("GET", path)).status).toBe(200);
         yield* serverControl("stop");
-        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.6", events: 0 });
+        expect(yield* analyticsDatabase("inspect")).toEqual({ version: "4.0.15", events: 0 });
         yield* serverControl("start");
       }),
     ),

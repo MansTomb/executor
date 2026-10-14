@@ -155,18 +155,55 @@ layer(HostedLive, { excludeTestServices: true })("MCP app discovery", (it) => {
           expect((yield* execute(code)).execution, code).toMatchObject({ ok: true, value: 1 });
         }
         expect(fixture.calls(), "A literal search namespace must not load other apps").toBe(0);
-        for (const code of [
-          `const selected = tools; return await selected[${JSON.stringify(fast.slug)}].queries.version({})`,
-          `const slug = ${JSON.stringify(fast.slug)}; return await tools[slug].queries.version({})`,
-          `const names = Object.keys(tools); return names.includes(${JSON.stringify(slow.slug)}) ? 1 : 0`,
-          `const found = await tools.search({ namespace: ${JSON.stringify(slow.slug)} }); return found.items.length`,
-          `const found = await search({ namespace: ${JSON.stringify(slow.slug)} }); return found.items.length`,
-          `const found = await tools.search({ query: "version" }); return found.items.some((item) => item.path.includes(${JSON.stringify(slow.slug)})) ? 1 : 0`,
-          `const namespace = ${JSON.stringify(fast.slug)}; const found = await tools.search({ namespace }); return found.items.length`,
-          `const options = { namespace: ${JSON.stringify(fast.slug)} }; const found = await tools.search({ ...options }); return found.items.length`,
-          `const found = await tools.search({ namespace: ${JSON.stringify(`tools.${fast.slug}`)} }); return found.items.length`,
-          `await tools.search({ namespace: ${JSON.stringify(fast.slug)} }); const found = await tools.search({ query: ${JSON.stringify(slow.slug)} }); return found.items.length`,
-          `const found = await tools.search({ namespace: ${JSON.stringify(fast.slug)} }); return found.items.length * (await tools[${JSON.stringify(slow.slug)}].queries.version({})) / 99`,
+        // Programs that reach an app by any name load it on first use, and only it: reaching the
+        // fast app dynamically, listing app names, or searching a namespace given at run time
+        // leaves the unrelated slow app unevaluated, while searching or calling the slow app, or
+        // searching every app, evaluates it.
+        for (const { code, reachesSlow } of [
+          {
+            code: `const selected = tools; return await selected[${JSON.stringify(fast.slug)}].queries.version({})`,
+            reachesSlow: false,
+          },
+          {
+            code: `const slug = ${JSON.stringify(fast.slug)}; return await tools[slug].queries.version({})`,
+            reachesSlow: false,
+          },
+          {
+            code: `const names = Object.keys(tools); return names.includes(${JSON.stringify(slow.slug)}) ? 1 : 0`,
+            reachesSlow: false,
+          },
+          {
+            code: `const found = await tools.search({ namespace: ${JSON.stringify(slow.slug)} }); return found.items.length`,
+            reachesSlow: true,
+          },
+          {
+            code: `const found = await search({ namespace: ${JSON.stringify(slow.slug)} }); return found.items.length`,
+            reachesSlow: true,
+          },
+          {
+            code: `const found = await tools.search({ query: "version" }); return found.items.some((item) => item.path.includes(${JSON.stringify(slow.slug)})) ? 1 : 0`,
+            reachesSlow: true,
+          },
+          {
+            code: `const namespace = ${JSON.stringify(fast.slug)}; const found = await tools.search({ namespace }); return found.items.length`,
+            reachesSlow: false,
+          },
+          {
+            code: `const options = { namespace: ${JSON.stringify(fast.slug)} }; const found = await tools.search({ ...options }); return found.items.length`,
+            reachesSlow: false,
+          },
+          {
+            code: `const found = await tools.search({ namespace: ${JSON.stringify(`tools.${fast.slug}`)} }); return found.items.length`,
+            reachesSlow: false,
+          },
+          {
+            code: `await tools.search({ namespace: ${JSON.stringify(fast.slug)} }); const found = await tools.search({ query: ${JSON.stringify(slow.slug)} }); return found.items.length`,
+            reachesSlow: true,
+          },
+          {
+            code: `const found = await tools.search({ namespace: ${JSON.stringify(fast.slug)} }); return found.items.length * (await tools[${JSON.stringify(slow.slug)}].queries.version({})) / 99`,
+            reachesSlow: true,
+          },
         ]) {
           const previous = fixture.calls();
           const result = yield* execute(code);
@@ -174,15 +211,17 @@ layer(HostedLive, { excludeTestServices: true })("MCP app discovery", (it) => {
             ok: true,
             value: 1,
           });
-          expect(fixture.calls()).toBeGreaterThan(previous);
+          if (reachesSlow) expect(fixture.calls(), code).toBeGreaterThan(previous);
+          else expect(fixture.calls(), code).toBe(previous);
         }
+        // A program that does not run evaluates no app.
         for (const code of [
           `const { [${JSON.stringify(fast.slug)}]: selected } = tools; return await selected.queries.version({})`,
           "return tools[",
         ]) {
           const previous = fixture.calls();
-          expect((yield* execute(code)).execution.ok).toBe(false);
-          expect(fixture.calls()).toBeGreaterThan(previous);
+          expect((yield* execute(code)).execution.ok, code).toBe(false);
+          expect(fixture.calls(), code).toBe(previous);
         }
         fixture.fail();
         expect((yield* execute(`return await ${fastTool}({})`)).execution).toMatchObject({

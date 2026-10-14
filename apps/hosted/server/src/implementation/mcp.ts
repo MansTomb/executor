@@ -39,7 +39,7 @@ import {
 import { ConcurrentStatements, HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 import { CurrentMcpGrant } from "../contracts/mcp.ts";
-import { listTools, searchableTools, searchTools } from "./tools.ts";
+import { indexTools, listTools, searchableTools, searchTools } from "./tools.ts";
 import { listAppSkills, readAppSkill } from "./skills.ts";
 
 /**
@@ -239,6 +239,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
             .map((link) => ({ requirement: link.requirement, account: link })),
         );
       }).pipe((work) => observe("listAccounts", work, "read")),
+    indexTools: (input, options) =>
+      observe("indexTools", grantRefusal(indexTools(input, options)), "read"),
     listTools: (input, options) =>
       observe("listTools", grantRefusal(listTools(input, options)), "read"),
     searchableTools: (input, options) =>

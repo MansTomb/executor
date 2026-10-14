@@ -6,10 +6,10 @@ import {
   type AccountId,
   type AppAccounts,
   type AppId,
-  type Cursor,
   type DeploymentId,
   type ToolKind,
   type ToolName,
+  type ToolIndex,
   type ToolListOptions,
   type ToolPage,
 } from "@executor-js/sdk/core";
@@ -47,6 +47,8 @@ interface Invocation {
   readonly kind?: ToolKind | undefined;
 }
 type ToolListInput = Parameters<McpBackend<never>["listTools"]>[0];
+/** A metadata read that is always evaluated again, never served from an earlier one. */
+const liveMetadata = { slowMillis: Number.POSITIVE_INFINITY };
 /**
  * Every user account an operation names: the caller's own accounts, which a grant's targets list.
  * App accounts are bound to the app and authorized by app access, so grants never list them.
@@ -101,6 +103,33 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       permitsRouter(policy, { app, path: router.path }, page.items),
     ),
   });
+  /**
+   * A catalog read as the grant is after the read: its app and the accounts the host resolved,
+   * which one entry must permit together, are checked again, and the result is narrowed with it.
+   */
+  const granted = <A extends { readonly accounts: AppAccounts }>(
+    policy: AuthorizationPolicy,
+    app: AppId,
+    read: A,
+    narrow: (policy: AuthorizationPolicy, app: AppId, read: A) => A,
+  ) =>
+    Effect.gen(function* () {
+      yield* refuse(appRefusal(policy, app));
+      yield* refuse(accountsRefusal(policy, app, named(read.accounts)));
+      return narrow(policy, app, read);
+    });
+  /** The index's tools and routers this policy lets the caller discover. */
+  const permittedIndex = (
+    policy: AuthorizationPolicy,
+    app: AppId,
+    index: ToolIndex,
+  ): ToolIndex => ({
+    ...index,
+    items: index.items.filter((tool) => discoversTool(policy, { app, tool })),
+    routers: index.routers.filter((router) =>
+      permitsRouter(policy, { app, path: router.path }, index.items),
+    ),
+  });
   /** Every page of one listing, pinned to the first page's deployment. */
   const fullListing = (input: ToolListInput, options: ToolListOptions | undefined) =>
     Effect.gen(function* () {
@@ -153,23 +182,35 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           refusal: targetRefusal(input.app, named(input.accounts)),
         });
       const listed = yield* fullListing({ ...input, accounts: first.accounts }, options);
-      const items = new Map<string, ToolPage["items"][number]>();
-      const routers = new Map<string, ToolPage["routers"][number]>();
-      const merge = (entry: AuthorizationPolicy, page: ToolPage) => {
-        const permitted = permittedPage(entry, input.app, page);
-        for (const tool of permitted.items) if (!items.has(tool.name)) items.set(tool.name, tool);
-        for (const router of permitted.routers)
-          if (!routers.has(router.path)) routers.set(router.path, router);
-      };
-      merge(first.entry, listed);
+      const pages = [{ accounts: first.accounts, page: listed }];
       for (const part of rest)
-        merge(
-          part.entry,
-          yield* fullListing(
+        pages.push({
+          accounts: part.accounts,
+          page: yield* fullListing(
             { ...input, accounts: part.accounts, deployment: listed.deployment },
             options,
           ),
-        );
+        });
+      // The grant may have narrowed while the catalogs were read: each page contributes only what
+      // an entry of the grant as it is now permits for that page's accounts.
+      const current = yield* authority;
+      yield* refuse(appRefusal(current, input.app));
+      const items = new Map<string, ToolPage["items"][number]>();
+      const routers = new Map<string, ToolPage["routers"][number]>();
+      let permitted = false;
+      for (const { accounts, page } of pages)
+        for (const entry of appEntryPolicies(current, input.app) ?? []) {
+          if (!permitsAccounts(entry, input.app, named(accounts))) continue;
+          permitted = true;
+          const narrowed = permittedPage(entry, input.app, page);
+          for (const tool of narrowed.items) if (!items.has(tool.name)) items.set(tool.name, tool);
+          for (const router of narrowed.routers)
+            if (!routers.has(router.path)) routers.set(router.path, router);
+        }
+      if (!permitted)
+        return yield* new GrantForbidden({
+          refusal: targetRefusal(input.app, named(input.accounts)),
+        });
       return {
         deployment: listed.deployment,
         accounts: input.accounts,
@@ -177,25 +218,19 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         routers: [...routers.values()],
       } satisfies ToolPage;
     });
-  /** Find one tool in the live catalog this invocation would use, pinned to its deployment. */
+  /** Describe one tool live, as the catalog this invocation would use lists it now. */
   const describe = (input: Invocation) =>
-    Effect.gen(function* () {
-      let cursor: Cursor | undefined;
-      let deployment = input.deployment;
-      do {
-        const page = yield* backend.listTools({
-          app: input.app,
-          accounts: input.accounts,
-          deployment,
-          cursor,
-        });
-        deployment = page.deployment;
-        const tool = page.items.find((item) => item.name === input.tool);
-        if (tool !== undefined) return { tool, deployment };
-        cursor = page.next;
-      } while (cursor !== undefined);
-      return undefined;
-    });
+    backend
+      .listTools(
+        { app: input.app, accounts: input.accounts, deployment: input.deployment },
+        { tools: [input.tool] },
+      )
+      .pipe(
+        Effect.map((page) => {
+          const tool = page.items.find((item) => item.name === input.tool);
+          return tool === undefined ? undefined : { tool, deployment: page.deployment };
+        }),
+      );
   /**
    * Check the invocation against the grant. Exact names and all-tools decide from the name;
    * a read-only rule reads the live catalog, and the call then runs on that same deployment, as a
@@ -309,10 +344,19 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           ids.length === 0 ||
           permitsAccounts(policy, input.app, ids)
         ) {
-          const page = yield* backend.listTools(input, options);
-          // The page names the accounts the host resolved; one entry must permit all of them.
-          yield* refuse(accountsRefusal(policy, input.app, named(page.accounts)));
-          return permittedPage(policy, input.app, page);
+          let page = yield* backend.listTools(input, options);
+          let current = yield* authority;
+          // A grant that newly reads tool metadata decides from a live read, not a kept one.
+          if (
+            options?.live === undefined &&
+            options?.tools === undefined &&
+            !requiresToolMetadata(policy.tools, input.app) &&
+            requiresToolMetadata(current.tools, input.app)
+          ) {
+            page = yield* backend.listTools(input, { ...options, live: liveMetadata });
+            current = yield* authority;
+          }
+          return yield* granted(current, input.app, page, permittedPage);
         }
         // No entry permits every named account, such as all of a many() requirement's linked
         // accounts when entries target different ones. List each entry's catalog with the named
@@ -322,11 +366,41 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           return yield* new GrantForbidden({ refusal: targetRefusal(input.app, ids) });
         return yield* entryCatalogs(policy, { ...input, accounts: input.accounts }, options);
       }),
+    indexTools: (input, options) =>
+      Effect.gen(function* () {
+        const policy = yield* authority;
+        yield* refuse(appRefusal(policy, input.app));
+        const ids = named(input.accounts);
+        if (
+          input.accounts === undefined ||
+          ids.length === 0 ||
+          permitsAccounts(policy, input.app, ids)
+        ) {
+          const index = yield* backend.indexTools(input, options);
+          return yield* granted(yield* authority, input.app, index, permittedIndex);
+        }
+        // As for `listTools`, entries that each permit some of the named accounts contribute what
+        // they permit; their merged catalog is listed with schemas, which the index omits.
+        const merged = yield* entryCatalogs(
+          policy,
+          { ...input, accounts: input.accounts },
+          options,
+        );
+        return {
+          deployment: merged.deployment,
+          accounts: merged.accounts,
+          routers: merged.routers,
+          items: merged.items.map(
+            ({ inputSchema: _input, outputSchema: _output, _meta, ...summary }) => summary,
+          ),
+        } satisfies ToolIndex;
+      }),
     searchableTools: (input, options) =>
       Effect.gen(function* () {
         yield* checkApp(input.app, input.accounts);
         const searchable = yield* backend.searchableTools(input, options);
         const policy = yield* authority;
+        yield* refuse(appRefusal(policy, input.app));
         // The listing names the accounts the host resolved; one entry must permit all of them.
         yield* refuse(accountsRefusal(policy, input.app, named(searchable.accounts)));
         // Failed routers list no tools, so the grant decides them without the catalog.

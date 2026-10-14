@@ -44,7 +44,7 @@ export interface ToolAuthorization {
 }
 /**
  * Check exact tool identity before executing or resuming work, independent of HTTP/MCP
- * authentication. A read-only rule reads the tool's live flag from the pinned deployment with the
+ * authentication. A read-only rule describes the tool live on the pinned deployment with the
  * call's accounts, unless the caller passes the tool this check read before with the same
  * accounts; an unknown tool or missing flag is forbidden. Callers resolve the deployment and every
  * account first; one grant entry must permit the tool and the whole set of user accounts. When only
@@ -72,11 +72,22 @@ export const authorizeTool = (
       return { tool: undefined, kind: input.kind } satisfies ToolAuthorization;
     }
     const executor = yield* Effect.flatten(HostedExecutor);
+    // Described live: a kept listing could still call a tool read-only after it became a mutation.
     const tool: ToolIdentity =
       described ??
       (yield* executor.tools
-        .get(input)
-        .pipe(Effect.catchTag("ToolNotFound", () => Effect.fail(new OrganizationForbidden()))));
+        .list(
+          { app: input.app, accounts: input.accounts, deployment: input.deployment },
+          { tools: [input.tool] },
+        )
+        .pipe(
+          Effect.flatMap((page) => {
+            const found = page.items.find((item) => item.name === input.tool);
+            return found === undefined
+              ? Effect.fail(new OrganizationForbidden())
+              : Effect.succeed(found);
+          }),
+        ));
     const permission = runPermission(policy, { ...request, tool });
     if (permission === undefined) return yield* new OrganizationForbidden();
     if (permission === "any") return { tool, kind: input.kind } satisfies ToolAuthorization;

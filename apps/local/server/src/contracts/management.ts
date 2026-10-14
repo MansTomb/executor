@@ -14,6 +14,7 @@ import { LocalFeedbackApi } from "./feedback.ts";
  * organization's owner in process, never through these routes.
  */
 export const LocalExecutorApi = HttpApi.make("executor").add(
+  ExecutorApi.groups.analytics,
   ExecutorApi.groups.accounts,
   ExecutorApi.groups.accountConnections,
   ExecutorApi.groups.oauthClients,

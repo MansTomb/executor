@@ -49,6 +49,7 @@ const grantedBackend = (sql: SqlClient.SqlClient, executor: Executor, principal:
         Effect.flatMap((version) => versionRequirementAccounts(sql, executor, version)),
         Effect.map((accounts) => accounts.userLinks),
       ),
+    indexTools: (input, options) => executor.tools.index(input, options),
     listTools: (input, options) => executor.tools.list(input, options),
     searchableTools: (input, options) => executor.tools.searchable(input, options),
     searchTools: (input) => executor.tools.search(input),
@@ -112,6 +113,8 @@ export const localMcpBackend = <G extends Error>(
       resolved(input, true).pipe(Effect.flatMap((input) => restricted.listSkills(input, options))),
     readSkill: (input) =>
       resolved(input, true).pipe(Effect.flatMap((input) => restricted.readSkill(input))),
+    indexTools: (input, options) =>
+      resolved(input, false).pipe(Effect.flatMap((input) => restricted.indexTools(input, options))),
     listTools: (input, options) =>
       resolved(input, false).pipe(Effect.flatMap((input) => restricted.listTools(input, options))),
     searchableTools: (input, options) =>
@@ -138,6 +141,7 @@ export const localMcp = (
         readSkill: () => Effect.fail(new LocalMcpUnauthorized()),
         listApps: () => Effect.fail(new LocalMcpUnauthorized()),
         listAccounts: () => Effect.fail(new LocalMcpUnauthorized()),
+        indexTools: () => Effect.fail(new LocalMcpUnauthorized()),
         listTools: () => Effect.fail(new LocalMcpUnauthorized()),
         searchableTools: () => Effect.fail(new LocalMcpUnauthorized()),
         searchTools: () => Effect.fail(new LocalMcpUnauthorized()),
@@ -175,6 +179,8 @@ export const localMcp = (
         readSkill: (input) => Effect.flatMap(RequestBackend, (b) => b.readSkill(input)),
         listApps: (input) => Effect.flatMap(RequestBackend, (b) => b.listApps(input)),
         listAccounts: (input) => Effect.flatMap(RequestBackend, (b) => b.listAccounts(input)),
+        indexTools: (input, options) =>
+          Effect.flatMap(RequestBackend, (b) => b.indexTools(input, options)),
         listTools: (input, options) =>
           Effect.flatMap(RequestBackend, (b) => b.listTools(input, options)),
         searchableTools: (input, options) =>

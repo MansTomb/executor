@@ -7,6 +7,7 @@ import type {
   ToolResumeResult,
   ToolPage,
   SearchableTools,
+  ToolIndex,
   ToolSearchPage,
   ToolInvocationOptions,
   ToolListOptions,
@@ -81,6 +82,15 @@ export interface McpBackend<E extends Error> {
     input: Parameters<Executor["tools"]["list"]>[0],
     options?: ToolListOptions,
   ) => Effect.Effect<ToolPage, E>;
+  /**
+   * The catalog's names and descriptions without schemas, authorized and narrowed to the tools
+   * the caller may discover as `listTools` is. Discovery reads it live
+   * (`ToolListOptions.live`) and reads schemas only for the tools it selects.
+   */
+  readonly indexTools: (
+    input: Parameters<Executor["tools"]["index"]>[0],
+    options?: ToolListOptions,
+  ) => Effect.Effect<ToolIndex, E>;
   /**
    * Authorize the app and its selected accounts as for `listTools`, then keep the target's current
    * listing as search rows. Only failed routers the caller may discover are returned.

@@ -89,6 +89,19 @@ export interface ToolListOptions extends CatalogReadOptions {
    * at once about a remembered slow failure. Without it the read waits for a live evaluation.
    */
   readonly reportRunningAfterMillis?: number;
+  /**
+   * Read the catalog as it is now. An evaluation that finishes within `slowMillis` is never served
+   * to a later live read; each one evaluates again. A slower one is shared with the readers that
+   * arrive while it runs, and served to live reads for at most 30 seconds after it finishes, so a
+   * slow catalog is not evaluated again by every read. Remembered failures, invalidation and
+   * access checks apply as for any read.
+   */
+  readonly live?: { readonly slowMillis: number };
+  /**
+   * Describe only these tools, from a live evaluation that is neither kept nor shared. Builds
+   * without a tool index evaluate the whole catalog and return these tools from it.
+   */
+  readonly tools?: ReadonlyArray<ToolName>;
 }
 export {
   ElicitationFailed,
@@ -398,6 +411,8 @@ export interface SearchableTools {
   readonly accounts: AppAccounts;
   /** The listing's routers that could not list their tools. */
   readonly routers: ReadonlyArray<ToolRouter>;
+  /** How many tools the listing names, when this read evaluated or served it rather than its rows. */
+  readonly tools?: number;
 }
 
 /**

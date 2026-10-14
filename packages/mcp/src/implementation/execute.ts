@@ -7,6 +7,7 @@ import {
   JsonObject,
   routerFailure,
   approvalRequired,
+  AppEvaluationFailed,
   ToolListingTimedOut,
   ToolSearchUnavailable,
   resolveLinkedAccounts,
@@ -19,6 +20,8 @@ import {
   type DeploymentId,
   type SearchableTools,
   type Tool as AppTool,
+  type ToolListOptions,
+  type ToolSummary,
   type ToolRouter,
   type ToolSearchItem,
   type ToolSearchListing,
@@ -212,41 +215,64 @@ const toolName = (path: string) =>
     )
     .join(".");
 
-function listTools<E extends Error>(
+/**
+ * A live read: a catalog that evaluates within discovery's wait is read again by every discovery;
+ * a slower one is shared while it runs and reused for at most 30 seconds after it finishes.
+ */
+const liveCatalog = { slowMillis: defaultMcpRuntimeLimits.discoveryWaitMs };
+
+/**
+ * An app's tool names and descriptions, read live. Schemas are read only for the tools a search
+ * page, describe or call selects; the app validates every call's input against its live schema.
+ */
+function indexTools<E extends Error>(
   backend: McpBackend<E>,
   app: AppId,
   accounts: AppAccounts,
-  /** Records each page as progress. */
-  paged: Effect.Effect<void>,
+  /** Records the read as progress. */
+  read: Effect.Effect<void>,
+) {
+  return backend
+    .indexTools(
+      { app, accounts },
+      // The catalog's watcher owns the pre-program wait bound. A dynamic namespace is governed
+      // by CodeMode's execution deadline and must be allowed to join a listing already running.
+      { refreshStale: false, live: liveCatalog },
+    )
+    .pipe(
+      Effect.tap(() => read),
+      Effect.map((index) => ({
+        tools: index.items,
+        routers: index.routers,
+        deployment: index.deployment,
+        accounts: index.accounts,
+      })),
+    );
+}
+
+/** Every page of a listing with schemas, pinned to the first page's deployment. */
+function listTools<E extends Error>(
+  backend: McpBackend<E>,
+  input: { readonly app: AppId; readonly accounts: AppAccounts; readonly deployment: DeploymentId },
+  options: ToolListOptions,
 ) {
   return Effect.gen(function* () {
-    const list = (deployment?: DeploymentId, cursor?: Cursor) =>
-      backend
-        .listTools(
-          { app, accounts, deployment, cursor, limit: 2_000 },
-          // The catalog's watcher owns the pre-program wait bound. A dynamic namespace is governed
-          // by CodeMode's execution deadline and must be allowed to join a listing already running.
-          { refreshStale: false },
-        )
-        .pipe(Effect.tap(() => paged));
+    const list = (cursor?: Cursor) =>
+      backend.listTools({ ...input, cursor, limit: 2_000 }, options);
     let page = yield* list();
-    // Later pages are pinned to the first page's deployment.
-    const deployment = page.deployment;
     const tools: AppTool[] = [...page.items];
     while (page.next !== undefined) {
-      page = yield* list(deployment, page.next);
+      page = yield* list(page.next);
       tools.push(...page.items);
     }
-    return { tools, routers: page.routers, deployment };
+    return tools;
   });
 }
 
 /**
- * Projections of kept tool listings. The SDK serves every page of a kept listing from the same
- * item objects, so a projection keyed by those objects lives exactly as long as the listing and
- * is not recomputed while the listing is reused. A listing evaluated again has new objects, and
- * nothing here outlives the listing it was derived from. Schemas are rendered only for tools a
- * program can call and tools a search or describe returns; ranking reads none of them.
+ * Projections of described tools, keyed by the described objects, so nothing here outlives the
+ * description it was derived from. Schemas are rendered only for tools a search or describe
+ * returns and calls that need them; ranking and program namespaces read none of them.
  */
 const renderedSchemas = new WeakMap<
   AppTool,
@@ -277,6 +303,10 @@ type Place = {
 };
 /** A loaded app, whose tools a program can call. */
 type Target = Place & {
+  /** The accounts its index was read with; its tools are described with them. */
+  readonly listed: AppAccounts;
+  /** How many tools its index names. */
+  readonly size: number;
   /** The app's routers by router path. The root router has path "". */
   readonly routers: ReadonlyMap<string, ToolRouter>;
   /**
@@ -288,11 +318,11 @@ type Target = Place & {
   /** The caller's linked accounts, which each call resolves its accounts from. */
   readonly linked: McpAppAccounts;
 };
-/** One callable tool of a loaded app. */
+/** One callable tool of a loaded app, listed without schemas. */
 type Entry = {
   /** Canonical path below `tools`. */
   readonly path: string;
-  readonly tool: AppTool;
+  readonly tool: ToolSummary;
   readonly target: Target;
 };
 /** An app whose current listing is kept as search rows. */
@@ -300,6 +330,111 @@ type SearchTarget = Place & {
   readonly listing: ToolSearchListing;
   /** The accounts the listing was read with. */
   readonly listed: AppAccounts;
+  /** The deployment the listing was read from; its tools are described from it. */
+  readonly deployment: DeploymentId;
+  /** How many tools the listing names, when the read that made it searchable knew. */
+  readonly size: number | undefined;
+};
+
+/** A tool whose schemas a search page, describe or call needs, and the listing that named it. */
+type Selected = {
+  /** Canonical path below `tools`. */
+  readonly path: string;
+  readonly app: AppId;
+  readonly deployment: DeploymentId;
+  readonly accounts: AppAccounts;
+  readonly size: number | undefined;
+  readonly name: ToolName;
+};
+const selectedEntry = (entry: Entry): Selected => ({
+  path: entry.path,
+  app: entry.target.id,
+  deployment: entry.target.deployment,
+  accounts: entry.target.listed,
+  size: entry.target.size,
+  name: entry.tool.name,
+});
+const selectedRow = (target: SearchTarget, name: ToolName): Selected => ({
+  path: `${target.path}.${toolPath(name)}`,
+  app: target.id,
+  deployment: target.deployment,
+  accounts: target.listed,
+  size: target.size,
+  name,
+});
+/** A selected tool's live description and its rendered schemas. */
+type DescribedTool = { readonly tool: AppTool; readonly schemas: RenderedSchemas };
+/** Reads the live schemas of the selected tools, in the order given. */
+type Describe = (
+  selected: ReadonlyArray<Selected>,
+) => Effect.Effect<ReadonlyArray<DescribedTool>, Error>;
+
+/** A batch larger than this that names every tool of a listing reads the whole listing instead. */
+const bulkDescribe = 64;
+
+/**
+ * Describe selected tools live, batched by app and deployment, and at most once each per
+ * execution. Every read authorizes the app and its accounts again. A batch that names every tool
+ * of a listing larger than `bulkDescribe` reads the whole listing live; when that fails, such as a
+ * source that cannot list every schema at once, the tools are described by name.
+ */
+const describer = (backend: McpBackend<Error>): Describe => {
+  const described = new Map<string, AppTool>();
+  const keyOf = (selected: Selected) =>
+    JSON.stringify([selected.app, selected.deployment, selected.name]);
+  return (selected) =>
+    Effect.gen(function* () {
+      const batches = new Map<string, Map<ToolName, Selected>>();
+      for (const tool of selected) {
+        if (described.has(keyOf(tool))) continue;
+        const batch = JSON.stringify([tool.app, tool.deployment]);
+        const names = batches.get(batch) ?? new Map<ToolName, Selected>();
+        batches.set(batch, names);
+        names.set(tool.name, tool);
+      }
+      yield* Effect.forEach(
+        batches.values(),
+        (batch) =>
+          Effect.gen(function* () {
+            const tools = [...batch.values()];
+            const [first] = tools;
+            if (first === undefined) return;
+            const input = {
+              app: first.app,
+              accounts: first.accounts,
+              deployment: first.deployment,
+            };
+            // A slow index that described its tools answers these without evaluating again.
+            const named = listTools(backend, input, {
+              tools: [...batch.keys()],
+              live: liveCatalog,
+            });
+            const found = yield* tools.length > bulkDescribe && tools.length === first.size
+              ? listTools(backend, input, { live: liveCatalog }).pipe(
+                  Effect.catch((error) =>
+                    Schema.is(AppEvaluationFailed)(error) ? named : Effect.fail(error),
+                  ),
+                )
+              : named;
+            for (const tool of found)
+              if (batch.has(tool.name)) described.set(keyOf({ ...first, name: tool.name }), tool);
+          }),
+        { concurrency: defaultMcpRuntimeLimits.discoveryConcurrency, discard: true },
+      );
+      return yield* Effect.forEach(selected, (tool): Effect.Effect<DescribedTool, Error> => {
+        const found = described.get(keyOf(tool));
+        return found === undefined
+          ? Effect.fail(
+              toolError(
+                `Tool metadata is no longer available for '${CodeMode.toolExpression(tool.path)}'`,
+              ),
+            )
+          : renderSchemas(found).pipe(
+              Effect.map((schemas) => ({ tool: found, schemas })),
+              Effect.mapError(() => toolError("Tool metadata is invalid")),
+            );
+      });
+    }).pipe(Effect.withSpan("mcp.discovery.schemas"));
 };
 
 /** CodeMode's signature for the schemas given, `(input: ...): Promise<...>`, without a path. */
@@ -385,7 +520,7 @@ const signature = (schemas: RenderedSchemas) =>
 const cut = (text: string, characters: number) =>
   text.length <= characters ? text : `${text.slice(0, characters - 1)}…`;
 /** The first line of a tool's description, or its title when it has none. */
-const summary = (tool: AppTool) =>
+const summary = (tool: ToolSummary) =>
   cut(
     tool.description
       .split("\n")
@@ -581,6 +716,7 @@ const searchPage = <E extends Error>(
   searchable: Searchable<E>,
   lost: Lost,
   search: McpBackend<E>["searchTools"],
+  describe: Describe,
   limits: McpLimits,
   input: typeof SearchInput.Type,
 ) =>
@@ -591,19 +727,24 @@ const searchPage = <E extends Error>(
       offset,
       limit: input.limit ?? defaultSearchLimits.defaultItems,
     });
+    // Only the ranked page's schemas are read.
+    const details = yield* describe(
+      ranked.items.map(({ found, first }) => selectedRow(first.target, found.tool.name)),
+    );
     const page = yield* fill(
-      ranked.items,
+      ranked.items.map((ranked, index) => ({ ...ranked, detail: details[index] })),
       searchPageBytes(limits),
       jsonBytes({ items: [], namespaces: [], remaining: 0, next: { ...input, offset } }),
       (
-        { found, first },
+        { found, first, detail },
         page: ReadonlyArray<{
           readonly item: typeof SearchItem.Type;
           readonly added: ReadonlyArray<SearchNamespace>;
         }>,
       ) =>
         Effect.gen(function* () {
-          const type = yield* inputType(yield* renderSchemas(found.tool));
+          if (detail === undefined) return yield* Effect.die("Each ranked tool has a description");
+          const type = yield* inputType(detail.schemas);
           const item = {
             path: CodeMode.toolExpression(first.path),
             description: summary(found.tool),
@@ -640,6 +781,7 @@ const globalSearchPage = <E extends Error>(
   searchable: Searchable<E>,
   lost: Lost,
   search: McpBackend<E>["searchTools"],
+  describe: Describe,
   limits: McpLimits,
   input: CodeMode.SearchRequest,
   rendered: () => void,
@@ -651,13 +793,18 @@ const globalSearchPage = <E extends Error>(
       offset,
       limit: input.limit ?? defaultSearchLimits.defaultItems,
     });
+    const details = yield* describe(
+      ranked.items.map(({ found, first }) => selectedRow(first.target, found.tool.name)),
+    );
     const items = yield* fill(
-      ranked.items,
+      ranked.items.map((ranked, index) => ({ ...ranked, detail: details[index] })),
       searchPageBytes(limits),
       jsonBytes({ items: [], remaining: 0, next: { offset } }),
-      ({ found, first }) =>
-        renderSchemas(found.tool).pipe(
-          Effect.flatMap(signature),
+      ({ found, first, detail }) =>
+        (detail === undefined
+          ? Effect.die("Each ranked tool has a description")
+          : signature(detail.schemas)
+        ).pipe(
           Effect.tap(() => Effect.sync(rendered)),
           Effect.map((typed) => {
             const path = CodeMode.toolExpression(first.path);
@@ -674,11 +821,24 @@ const globalSearchPage = <E extends Error>(
  * Full detail for exact tool paths. A path that names no tool is reported with the paths in its
  * app that are fewest edits away.
  */
-const describeTools = <E>(described: Described<E>, paths: ReadonlyArray<string>) =>
+const describeTools = <E>(
+  described: Described<E>,
+  describe: Describe,
+  paths: ReadonlyArray<string>,
+) =>
   Effect.gen(function* () {
     const named = paths.map(canonical);
     const entries = yield* described(named.filter((path) => path !== ""));
     const byPath = new Map(entries.map((entry) => [entry.path, entry]));
+    const found = named.flatMap((name) => {
+      const entry = byPath.get(name);
+      return entry === undefined ? [] : [entry];
+    });
+    const details = new Map(
+      (yield* describe(found.map(selectedEntry))).map(
+        (detail, index) => [found[index], detail] as const,
+      ),
+    );
     const items: Array<(typeof DescribeResult.Type.items)[number]> = [];
     const namespaces = new Map<string, SearchNamespace>();
     const missing: Array<(typeof DescribeResult.Type.missing)[number]> = [];
@@ -696,10 +856,12 @@ const describeTools = <E>(described: Described<E>, paths: ReadonlyArray<string>)
         missing.push({ path, matches: closest.map((match) => CodeMode.toolExpression(match)) });
         continue;
       }
+      const detail = details.get(entry);
+      if (detail === undefined) return yield* Effect.die("Each found tool has a description");
       items.push({
         path: CodeMode.toolExpression(entry.path),
-        description: entry.tool.description,
-        signature: yield* signature(yield* renderSchemas(entry.tool)),
+        description: detail.tool.description,
+        signature: yield* signature(detail.schemas),
       });
       for (const space of namespacesOf(entry.target, routerOf(entry)))
         namespaces.set(space.path, space);
@@ -928,6 +1090,8 @@ function catalog(
       });
     /** Each loaded app's tools, for describe and for the program's catalog. */
     const listed = new Map<string, ReadonlyArray<Entry>>();
+    /** Live schemas of the tools this execution selects, each read at most once. */
+    const describe = describer(backend);
     /** Each searchable app's target. */
     const indexed = new Map<string, ReadonlyArray<SearchTarget>>();
     /**
@@ -943,8 +1107,8 @@ function catalog(
           Effect.flatMap((input) =>
             Effect.gen(function* () {
               if (Schema.is(JsonObject)(input) && Object.hasOwn(input, accountsKey)) {
-                const schemas = yield* renderSchemas(entry.tool);
-                if (schemas.input.properties?.[accountsKey] === undefined)
+                const [detail] = yield* describe([selectedEntry(entry)]);
+                if (detail?.schemas.input.properties?.[accountsKey] === undefined)
                   return yield* new AccountChoiceUnsupported({ app: entry.target.id });
               }
               const accounts = yield* resolveLinkedAccounts({
@@ -966,17 +1130,18 @@ function catalog(
             }).pipe(Effect.mapError((error) => toolError(diagnostic(error, entry.path)))),
           ),
         );
-    /** The program's own tool for an entry, built when the program's catalog takes its app. */
+    /**
+     * The program's own tool for an entry, built when the program's catalog takes its app. Its
+     * schemas are not read: the app validates every call's input against its live schema.
+     */
     const program = (entry: Entry) =>
-      renderSchemas(entry.tool).pipe(
-        Effect.map((schemas) =>
-          Tool.make({
-            description: entry.tool.description,
-            input: schemas.input,
-            output: schemas.output ?? Schema.Json,
-            execute: call(entry),
-          }),
-        ),
+      Effect.succeed(
+        Tool.make({
+          description: entry.tool.description,
+          input: {},
+          output: Schema.Json,
+          execute: call(entry),
+        }),
       );
 
     /** Each app's linked accounts, listed at most once per execution. A failure is recorded once. */
@@ -1071,7 +1236,7 @@ function catalog(
 
     const project = (
       app: ListedApp,
-      discovered: Discovered<Effect.Success<ReturnType<typeof listTools>>>,
+      discovered: Discovered<Effect.Success<ReturnType<typeof indexTools>>>,
     ) =>
       Effect.sync(() => {
         const failed: Array<typeof UnavailableApp.Type> = [];
@@ -1106,6 +1271,8 @@ function catalog(
           routers: new Map(catalog.routers.map((router) => [router.path, router])),
           deployment: catalog.deployment,
           linked,
+          listed: catalog.accounts,
+          size: catalog.tools.length,
         };
         listed.set(
           app.slug,
@@ -1139,6 +1306,8 @@ function catalog(
             ...placeOf(app, linked),
             listing: searchable.listing,
             listed: searchable.accounts,
+            deployment: searchable.deployment,
+            size: searchable.tools,
           });
         }
         const whole = failed[0];
@@ -1155,7 +1324,7 @@ function catalog(
     const discovered = yield* Effect.forEach(apps, (app) =>
       Effect.cached(
         discoverApp(app, "mcp.discovery.tools", (accounts) =>
-          listTools(backend, app.id, accounts, settled),
+          indexTools(backend, app.id, accounts, settled),
         ).pipe(
           Effect.flatMap((result) => project(app, result)),
           Effect.andThen(reported),
@@ -1167,8 +1336,8 @@ function catalog(
         discoverApp(app, "mcp.discovery.search", (accounts) =>
           backend.searchableTools(
             { app: app.id, accounts },
-            // Search reads every app's rows; refreshing aged ones would load each app's Worker.
-            { reportRunningAfterMillis: discoveryWaitMs, refreshStale: false },
+            // Search ranks the live index's rows; a slow index is reused for at most 30 seconds.
+            { reportRunningAfterMillis: discoveryWaitMs, refreshStale: false, live: liveCatalog },
           ),
         ).pipe(
           Effect.flatMap((result) => projectSearch(app, result)),
@@ -1361,6 +1530,7 @@ function catalog(
       reachable,
       call,
       described,
+      describe,
       searchable,
       lost,
       unavailableApps,
@@ -1618,14 +1788,23 @@ function runProgram(
         input: SearchInput,
         output: SearchResult,
         execute: (input) =>
-          real(searchPage(prepared.searchable, prepared.lost, tools.searchTools, limits, input)),
+          real(
+            searchPage(
+              prepared.searchable,
+              prepared.lost,
+              tools.searchTools,
+              prepared.describe,
+              limits,
+              input,
+            ),
+          ),
       });
       const describe = Tool.make({
         description:
           "Read the whole description and TypeScript signature, with input and output types, of tools at exact paths from tools.search.",
         input: DescribeInput,
         output: DescribeResult,
-        execute: ({ paths }) => real(describeTools(prepared.described, paths)),
+        execute: ({ paths }) => real(describeTools(prepared.described, prepared.describe, paths)),
       });
       const runtime = CodeMode.make({
         tools: {
@@ -1645,6 +1824,7 @@ function runProgram(
               prepared.searchable,
               prepared.lost,
               tools.searchTools,
+              prepared.describe,
               limits,
               input,
               () => {
@@ -1943,7 +2123,14 @@ export const searchCatalog = (
   input: typeof SearchInput.Type,
 ) =>
   readCatalog(backend, (discovered) =>
-    searchPage(discovered.searchable, discovered.lost, backend.searchTools, limits, input),
+    searchPage(
+      discovered.searchable,
+      discovered.lost,
+      backend.searchTools,
+      discovered.describe,
+      limits,
+      input,
+    ),
   ).pipe(
     Effect.map(({ value, discovered }) => ({
       ...value,
@@ -1953,6 +2140,6 @@ export const searchCatalog = (
 
 /** The describe tool: full signatures for exact paths, as tools.search.describe returns them. */
 export const describeCatalog = (backend: McpBackend<Error>, input: typeof DescribeInput.Type) =>
-  readCatalog(backend, (discovered) => describeTools(discovered.described, input.paths)).pipe(
-    Effect.map(({ value }) => value),
-  );
+  readCatalog(backend, (discovered) =>
+    describeTools(discovered.described, discovered.describe, input.paths),
+  ).pipe(Effect.map(({ value }) => value));

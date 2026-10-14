@@ -36,6 +36,11 @@ export interface ToolListing {
   readonly items: ReadonlyArray<Tool>;
   /** Every router in the catalog, on every page. */
   readonly routers: ReadonlyArray<ToolRouter>;
+  /**
+   * An index whose build answered with every tool's schemas, as a build does when its catalog is
+   * slow to evaluate. Other index listings have empty schemas.
+   */
+  readonly described?: true;
 }
 
 /** Failures of the evaluation itself. Credential and storage failures are never remembered. */
@@ -53,6 +58,16 @@ type Evaluate = (
   context: Effect.Success<ReturnType<typeof resolve>>,
 ) => Effect.Effect<ToolListing, AppEvaluationFailed | AppProviderFailed | ResolveError>;
 
+/** Live reads serve a slow evaluation's listing for at most this long after it finished. */
+const liveRetentionMillis = 30_000;
+
+/**
+ * What a listing evaluates: every tool with its schemas, or, for `index`, every tool without them.
+ * An index listing's tools have an empty `inputSchema` and no `outputSchema`; its readers describe
+ * the tools they select live. Each is kept under its own declaration key.
+ */
+type ListingKind = "tools.list" | "tools.index";
+
 /** How an in-process caller reads a listing. */
 interface ListingRead extends ToolListOptions {
   /**
@@ -65,11 +80,18 @@ interface ListingRead extends ToolListOptions {
   readonly retain?: boolean;
 }
 
-/** A kept listing. */
+/**
+ * A kept listing, with when its evaluation finished and how long it took. A listing recalled from
+ * another process took no known time, so live reads never take it for a slow one.
+ */
 class Listed {
   readonly listing: ToolListing;
-  constructor(listing: ToolListing) {
+  readonly completedAt: number;
+  readonly durationMs: number;
+  constructor(listing: ToolListing, completedAt: number, durationMs: number) {
     this.listing = listing;
+    this.completedAt = completedAt;
+    this.durationMs = durationMs;
   }
 }
 /**
@@ -82,8 +104,8 @@ class Evaluated {
   readonly bytes: number;
   readonly sizes: ReturnType<typeof shareListing>["sizes"];
   readonly json: ReturnType<typeof shareListing>["json"];
-  constructor(shared: ReturnType<typeof shareListing>) {
-    this.listed = new Listed(shared.listing);
+  constructor(shared: ReturnType<typeof shareListing>, completedAt: number, durationMs: number) {
+    this.listed = new Listed(shared.listing, completedAt, durationMs);
     this.bytes = shared.bytes;
     this.sizes = shared.sizes;
     this.json = shared.json;
@@ -155,7 +177,12 @@ export const makeListings = (options: {
     search
       .write(state, ToolSearchListing.make(id), listing, at)
       .pipe(Effect.catchCause(() => Effect.logWarning("Tool search rows were not saved")));
-  const readAt = (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead = {}) =>
+  const readAt = (
+    state: InvocationSnapshot,
+    evaluate: Evaluate,
+    read: ListingRead = {},
+    kind: ListingKind = "tools.list",
+  ) =>
     Effect.gen(function* () {
       const identity = { app: state.app.id, deployment: state.deployment.id };
       const evaluated = (
@@ -165,8 +192,18 @@ export const makeListings = (options: {
       ).pipe(Effect.flatMap(evaluate));
       const now = yield* Clock.currentTimeMillis;
       if (policy.maxStaleMillis <= 0) return { listing: yield* evaluated, at: now };
-      const id = yield* options.declarations.key("tools.list", state);
+      const id = yield* options.declarations.key(kind, state);
       const authorize = options.declarations.authorize(state);
+      const live = read.live !== undefined;
+      const retention = Math.min(policy.freshMillis, liveRetentionMillis);
+      /**
+       * A live read takes a kept listing only from an evaluation at least `slowMillis` long, for
+       * `retention` after it finished; a fast catalog is evaluated again on every live read.
+       */
+      const slowAndRecent = (listed: Listed, at: number) =>
+        read.live !== undefined &&
+        listed.durationMs >= read.live.slowMillis &&
+        at - listed.completedAt < retention;
       const timedOut = (elapsedMs: number, running: boolean) =>
         new ToolListingTimedOut({ ...identity, elapsedMs, running });
       const pendingLoad = (started: number): PendingLoad => ({
@@ -200,10 +237,14 @@ export const makeListings = (options: {
           )
             return;
           const current = yield* cache.get(id);
+          // A live read is never served a listing past its retention, so only one it may still be
+          // served hides the failure from it.
           if (
             current?.kind === "value" &&
             current.value instanceof Listed &&
-            outcome.at - current.at < policy.maxStaleMillis
+            (live
+              ? slowAndRecent(current.value, outcome.at)
+              : outcome.at - current.at < policy.maxStaleMillis)
           )
             return;
           // Stamped with its start, so an app cache change during the evaluation discards it.
@@ -220,7 +261,7 @@ export const makeListings = (options: {
        * readers have their outcome, and encodes with the write, so they never wait for it.
        */
       const store = (outcome: Outcome, load: PendingLoad) =>
-        outcome instanceof Evaluated
+        outcome instanceof Evaluated && kind === "tools.list"
           ? options.declarations
               .persist(
                 state.app.id,
@@ -256,7 +297,13 @@ export const makeListings = (options: {
       const run = (load: PendingLoad, owner: "host" | "reader") =>
         evaluated.pipe(
           // Before readers have it, so they share its definitions too.
-          Effect.map((listing): Outcome => new Evaluated(shareListing(listing))),
+          Effect.flatMap((listing) =>
+            Clock.currentTimeMillis.pipe(
+              Effect.map(
+                (at): Outcome => new Evaluated(shareListing(listing), at, at - load.started),
+              ),
+            ),
+          ),
           Effect.catch((error) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((at): Outcome =>
@@ -354,10 +401,12 @@ export const makeListings = (options: {
 
       // A reader that refreshes a stale listing needs background work to do so; without it the
       // listing is evaluated again first, like a missing one.
-      const refreshes = read.refreshStale !== false;
-      const servable = (at: number) =>
-        now - at < policy.freshMillis ||
-        (now - at < policy.maxStaleMillis && (background !== undefined || !refreshes));
+      const refreshes = read.refreshStale !== false && !live;
+      const servable = (at: number, listed?: Listed) =>
+        live
+          ? listed !== undefined && slowAndRecent(listed, now)
+          : now - at < policy.freshMillis ||
+            (now - at < policy.maxStaleMillis && (background !== undefined || !refreshes));
       /**
        * Serve a kept listing, refreshing it in the background once it is past `freshMillis`
        * unless the reader asked not to.
@@ -365,7 +414,7 @@ export const makeListings = (options: {
       const serve = (at: number, listed: Listed, source: "memory" | "durable") =>
         Effect.gen(function* () {
           yield* authorize;
-          const stale = now - at >= policy.freshMillis;
+          const stale = !live && now - at >= policy.freshMillis;
           yield* Effect.annotateCurrentSpan({
             "executor.declarations.cache": stale ? "stale" : "hit",
             "executor.declarations.source": source,
@@ -386,12 +435,14 @@ export const makeListings = (options: {
           ),
         );
       const early = yield* keptListing;
-      if (early?.value instanceof Listed && servable(early.at))
+      if (early?.value instanceof Listed && servable(early.at, early.value))
         return yield* serve(early.at, early.value, "memory");
       // Another isolate's listing, unless an invalidation seen here replaced it. It is kept
-      // here too when it fits. A remembered failure here does not hide it.
+      // here too when it fits. A remembered failure here does not hide it. A live read and an
+      // index listing, which is never stored, recall nothing.
+      const recalls = !live && kind === "tools.list";
       const recalling = yield* Effect.forkChild(
-        options.declarations.recall(state.app.id, id).pipe(
+        (recalls ? options.declarations.recall(state.app.id, id) : Effect.undefined).pipe(
           Effect.flatMap((recalled) =>
             Effect.gen(function* () {
               if (
@@ -402,7 +453,7 @@ export const makeListings = (options: {
                 return undefined;
               const decoded = yield* decodeListing(recalled.json).pipe(Effect.option);
               if (Option.isNone(decoded)) return undefined;
-              const listed = new Listed(decoded.value);
+              const listed = new Listed(decoded.value, recalled.at, 0);
               yield* cache.set(id, {
                 kind: "value",
                 app: state.app.id,
@@ -418,7 +469,9 @@ export const makeListings = (options: {
       // A reader that does not refresh waits for the whole durable read: an evaluation beside
       // it would load the app's Worker and replace the kept listing the read then serves.
       const recalled = yield* Fiber.join(recalling).pipe(
-        refreshes ? Effect.timeoutOption(durableHeadStartMillis) : Effect.map(Option.some),
+        refreshes && recalls
+          ? Effect.timeoutOption(durableHeadStartMillis)
+          : Effect.map(Option.some),
       );
       if (Option.isSome(recalled) && recalled.value !== undefined)
         return yield* serve(recalled.value.at, recalled.value.listed, "durable");
@@ -443,7 +496,7 @@ export const makeListings = (options: {
       // what is kept never misses both.
       const before = cache.pending(id);
       const kept = yield* keptListing;
-      if (kept?.value instanceof Listed && servable(kept.at))
+      if (kept?.value instanceof Listed && servable(kept.at, kept.value))
         return yield* serve(kept.at, kept.value, "memory");
       // A remembered failure spares a reader with a wait bound, such as MCP discovery, from
       // waiting on the evaluation again. A reader prepared to wait, such as the dashboard,
@@ -495,8 +548,35 @@ export const makeListings = (options: {
       }),
     );
   return {
-    read: (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead = {}) =>
-      readAt(state, evaluate, read).pipe(Effect.map(({ listing }) => listing)),
+    /**
+     * The listing a live read would be served from memory now, without evaluating: one a slow
+     * evaluation left within its retention. Access is checked as for any kept listing.
+     */
+    retained: (
+      state: InvocationSnapshot,
+      live: { readonly slowMillis: number },
+      kind: ListingKind,
+    ) =>
+      Effect.gen(function* () {
+        const id = yield* options.declarations.key(kind, state);
+        const entry = yield* cache.get(id);
+        if (entry?.kind !== "value" || !(entry.value instanceof Listed)) return undefined;
+        const listed = entry.value;
+        const now = yield* Clock.currentTimeMillis;
+        if (
+          listed.durationMs < live.slowMillis ||
+          now - listed.completedAt >= Math.min(policy.freshMillis, liveRetentionMillis)
+        )
+          return undefined;
+        yield* options.declarations.authorize(state);
+        return listed.listing;
+      }),
+    read: (
+      state: InvocationSnapshot,
+      evaluate: Evaluate,
+      read: ListingRead = {},
+      kind: ListingKind = "tools.list",
+    ) => readAt(state, evaluate, read, kind).pipe(Effect.map(({ listing }) => listing)),
     /**
      * Keep the listing `read` would serve as search rows, and name them. Rows are current when an
      * evaluation started within `maxStaleMillis`, as a kept listing a reader that does not refresh
@@ -506,10 +586,28 @@ export const makeListings = (options: {
      * its rows, at its evaluation's time or a later one. A write that fails is
      * `ToolSearchUnavailable`: the rows that are kept, if any, are not this listing's.
      */
-    searchable: (state: InvocationSnapshot, evaluate: Evaluate, read: ListingRead = {}) =>
+    searchable: (
+      state: InvocationSnapshot,
+      evaluate: Evaluate,
+      read: ListingRead = {},
+      kind: ListingKind = "tools.list",
+    ) =>
       Effect.gen(function* () {
-        const id = yield* options.declarations.key("tools.list", state);
+        const id = yield* options.declarations.key(kind, state);
         const listing = ToolSearchListing.make(id);
+        // A live search ranks the catalog as a live read finds it, so its rows are written from
+        // that read; an unchanged listing rewrites none of them.
+        if (read.live !== undefined) {
+          const found = yield* readAt(state, evaluate, read, kind);
+          yield* search
+            .write(state, listing, found.listing, found.at)
+            .pipe(
+              Effect.mapError(
+                () => new ToolSearchUnavailable({ app: state.app.id, reason: "unsaved" }),
+              ),
+            );
+          return { listing, routers: found.listing.routers, tools: found.listing.items.length };
+        }
         const now = yield* Clock.currentTimeMillis;
         const kept = policy.maxStaleMillis <= 0 ? undefined : yield* search.listing(state, listing);
         const memory = yield* cache.get(id);
@@ -561,7 +659,7 @@ export const makeListings = (options: {
               () => new ToolSearchUnavailable({ app: state.app.id, reason: "unsaved" }),
             ),
           );
-        return { listing, routers: found.listing.routers };
+        return { listing, routers: found.listing.routers, tools: found.listing.items.length };
       }).pipe(
         Effect.withSpan("sdk.tools.searchable", {
           attributes: { "executor.app.id": state.app.id },

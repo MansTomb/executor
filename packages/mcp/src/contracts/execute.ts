@@ -471,13 +471,13 @@ export const McpLimits = Schema.Struct({
 });
 export type McpLimits = typeof McpLimits.Type;
 /**
- * Default interpreter budgets; each product may supply different limits. The output budget is
- * about Claude Code's default 25,000-token MCP result limit.
+ * Default interpreter budgets; each product may supply different limits. This fork keeps the
+ * 65,536-byte output budget its truncation notice and agent harnesses are built around.
  */
 export const defaultMcpLimits: McpLimits = {
   timeoutMs: 5 * 60_000,
   maxToolCalls: 100,
-  maxOutputBytes: 100_000,
+  maxOutputBytes: 65_536,
 };
 /**
  * UTF-8 bytes of JSON one search page may hold: a quarter of the execute output budget, so a

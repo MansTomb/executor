@@ -113,13 +113,16 @@ export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =
     };
   });
 /** Names and descriptions for browsing; schemas are read per tool. */
-export const indexTools = (input: Parameters<Executor["tools"]["index"]>[0]) =>
+export const indexTools = (
+  input: Parameters<Executor["tools"]["index"]>[0],
+  options?: ToolListOptions,
+) =>
   Effect.gen(function* () {
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
     const { deployment, accounts } = yield* selectedActiveDeployment(executor, owner, input);
-    const index = yield* executor.tools.index({ ...input, deployment, accounts });
+    const index = yield* executor.tools.index({ ...input, deployment, accounts }, options);
     return {
       ...index,
       items: index.items.filter((tool) => discoversTool(policy, { app: input.app, tool })),

@@ -94,7 +94,7 @@ not cached across changes, so run `tools.search` again in a new `execute` after
 you add or reconfigure an app.
 
 Some limits are fixed by the server and a client cannot raise them: 65,536
-characters of program source, 100 tool calls, 5 minutes, and 100,000 bytes of
+characters of program source, 100 tool calls, 5 minutes, and 65,536 bytes of
 output. Time spent waiting for your approval or input does not count toward the
 5 minutes. Execute returns the result when the program ends, or sooner with a
 request for approval or input when the program pauses. An MCP client with a

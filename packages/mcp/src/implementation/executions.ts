@@ -529,6 +529,7 @@ export const makeExecutions = (
         readSkill: (input) => exchange((backend) => backend.readSkill(input)),
         listApps: (input) => exchange((backend) => backend.listApps(input)),
         listAccounts: (input) => exchange((backend) => backend.listAccounts(input)),
+        indexTools: (input, options) => exchange((backend) => backend.indexTools(input, options)),
         listTools: (input, options) => exchange((backend) => backend.listTools(input, options)),
         searchableTools: (input, options) =>
           exchange((backend) => backend.searchableTools(input, options)),

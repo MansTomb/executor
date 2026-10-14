@@ -24,6 +24,8 @@ import {
   type HostAccount,
   type HostAccounts,
   type HostAccountSlots,
+  type HostedTool,
+  type HostedToolSummary,
   scopedSlots,
 } from "apps/contracts";
 import {
@@ -740,6 +742,17 @@ const reportDefect = (cause: Cause.Cause<unknown>) =>
       });
   });
 
+/** Whether a catalog entry carries its schemas. */
+const withSchemas = (tool: HostedToolSummary | HostedTool): tool is HostedTool =>
+  "inputSchema" in tool;
+
+/** A catalog entry without the schemas a build may include. */
+const unlisted = (tool: HostedToolSummary | HostedTool): HostedToolSummary => {
+  if (!withSchemas(tool)) return tool;
+  const { inputSchema: _input, outputSchema: _output, _meta, ...summary } = tool;
+  return summary;
+};
+
 /** A listed tool without its schemas. */
 const summarizeTool = ({
   inputSchema: _input,
@@ -1190,6 +1203,41 @@ export const makeTools = (
       Effect.map(toListing(state)),
     );
   /**
+   * Evaluate every tool of the catalog without schemas, sorted by name, for live discovery. Builds
+   * with a tool index read only summaries; earlier builds evaluate the whole catalog. Each tool's
+   * `inputSchema` is empty and it has no `outputSchema`, as the listing store keeps an index.
+   */
+  const indexOf = (state: InvocationSnapshot) => (context: InvocationContext) =>
+    readCatalog(state, context, (options, toolIndex) =>
+      toolIndex ? runtime.index(options) : runtime.inspect(options),
+    ).pipe(
+      Effect.map(({ tools, routers }) => {
+        // A build answers with every schema when its catalog is slow to evaluate; describing a
+        // selected tool then reads the kept index instead of evaluating the catalog again.
+        const full = tools.filter(withSchemas);
+        const described = tools.length > 0 && full.length === tools.length;
+        const listing = toListing(state)({
+          routers,
+          tools: described ? full : tools.map((tool) => ({ ...unlisted(tool), inputSchema: {} })),
+        });
+        return described ? { ...listing, described: true as const } : listing;
+      }),
+    );
+  /**
+   * Describe the named tools from a live evaluation that is neither kept nor shared. Builds without
+   * a tool index evaluate the whole catalog.
+   */
+  const describedOf =
+    (state: InvocationSnapshot, names: ReadonlyArray<ToolName>) => (context: InvocationContext) =>
+      readCatalog(state, context, (options, toolIndex) =>
+        runtime.inspect(toolIndex ? { ...options, tools: names } : options),
+      ).pipe(
+        Effect.map(({ tools, routers }) => {
+          const named = new Set<string>(names);
+          return toListing(state)({ routers, tools: tools.filter((tool) => named.has(tool.name)) });
+        }),
+      );
+  /**
    * The listing a call that names no kind evaluates when none is kept. Evaluating the catalog runs
    * the app's code, which may write before it fails, and the call may write, so it is evaluated
    * once: a refused account is renewed, and the failure reports that renewal, as a call that may
@@ -1248,7 +1296,25 @@ export const makeTools = (
     list: (input: Parameters<Executor["tools"]["list"]>[0], options?: ToolListOptions) =>
       Effect.gen(function* () {
         const state = yield* listed(input);
-        const listing = yield* listings.read(state, listingOf(state), options);
+        const named = options?.tools;
+        // A live describe of tools a slow index described reads them from that index.
+        const retained =
+          named === undefined || options?.live === undefined
+            ? undefined
+            : yield* listings.retained(state, options.live, "tools.index");
+        const kept =
+          named === undefined || retained?.described !== true
+            ? undefined
+            : named.flatMap((name) => retained.items.filter((tool) => tool.name === name));
+        const listing =
+          named === undefined
+            ? yield* listings.read(state, listingOf(state), options)
+            : retained !== undefined && kept !== undefined && kept.length === named.length
+              ? { ...retained, items: kept }
+              : yield* resolve(state, resolveAccount).pipe(
+                  Effect.withSpan("sdk.accounts.resolve"),
+                  Effect.flatMap(describedOf(state, named)),
+                );
         // Pages share the listing's item objects, so a caller can recognise a kept listing.
         const cursor: string | undefined = input.cursor;
         const after =
@@ -1271,7 +1337,11 @@ export const makeTools = (
     ) =>
       Effect.gen(function* () {
         const state = yield* listed(input);
-        const found = yield* listings.searchable(state, listingOf(state), options);
+        // A live search ranks the live index, whose schemas are read for the tools it selects.
+        const found =
+          options?.live !== undefined
+            ? yield* listings.searchable(state, indexOf(state), options, "tools.index")
+            : yield* listings.searchable(state, listingOf(state), options);
         return {
           listing: found.listing,
           deployment: state.deployment.id,
@@ -1281,6 +1351,7 @@ export const makeTools = (
             state.scope,
           ),
           routers: found.routers.filter((router) => router.error !== undefined),
+          ...(found.tools === undefined ? {} : { tools: found.tools }),
         };
       }).pipe(Effect.withSpan("sdk.tools.searchable")),
     /**
@@ -1307,13 +1378,19 @@ export const makeTools = (
         };
       }).pipe(Effect.withSpan("sdk.tools.scheduled")),
     /**
-     * The catalog without schemas, read from the same kept listing as `list`, so browsing an app
-     * evaluates it no more often than MCP discovery does.
+     * The catalog without schemas, evaluated live: builds with a tool index read only summaries.
+     * A caller with its own wait bound, such as MCP discovery, passes `ToolListOptions.live` to
+     * share and briefly reuse slow evaluations; other reads evaluate every time.
      */
-    index: (input: Parameters<Executor["tools"]["index"]>[0]) =>
+    index: (input: Parameters<Executor["tools"]["index"]>[0], options?: ToolListOptions) =>
       Effect.gen(function* () {
         const state = yield* listed(input);
-        const listing = yield* listings.read(state, listingOf(state));
+        const listing = yield* listings.read(
+          state,
+          indexOf(state),
+          { ...options, live: options?.live ?? { slowMillis: Number.POSITIVE_INFINITY } },
+          "tools.index",
+        );
         return {
           ...listing.catalog,
           routers: listing.routers,
