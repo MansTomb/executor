@@ -201,17 +201,40 @@ try {
     label: "Retained credential",
     fields: { token: "synthetic-upgrade-token" },
   });
-  // The previous image selects accounts through the profile. The candidate has no profiles: its
-  // storage upgrade links the profile's account to the app for its member, and calls use that link.
+  // A second profile of the same member selects a different account. The candidate's storage
+  // upgrade keeps the app with the oldest profile's account set and makes the other set a copy of
+  // the app with an empty database, which it builds again from source.
+  const { data: secondProfile } = await request(`${prefix}/apps/${app.id}/profiles`, "POST", {
+    name: "Second set",
+    accounts: {},
+    idempotencyKey: crypto.randomUUID(),
+  });
+  const { data: secondConnection } = await request(`${prefix}/apps/${app.id}/connections`, "POST", {
+    requirement: "service",
+    profile: secondProfile.id,
+  });
+  const { data: secondAccount } = await request(
+    `${prefix}/connections/${secondConnection.id}/submit`,
+    "POST",
+    { method: "key", label: "Second account set", fields: { token: "synthetic-second-token" } },
+  );
+  // The previous image selects accounts through a profile. The candidate has no profiles: calls
+  // use the accounts the storage upgrade linked for the member.
   let selection = { profile: profile.id };
-  const call = async (tool) =>
+  const callApp = async (target, chosen, tool) =>
     (
-      await request(`${prefix}/apps/${app.id}/tools/call`, "POST", {
-        ...selection,
+      await request(`${prefix}/apps/${target}/tools/call`, "POST", {
+        ...chosen,
         tool,
         input: {},
       })
     ).data;
+  const call = (tool) => callApp(app.id, selection, tool);
+  const linked = async (target) =>
+    (await request(`${prefix}/apps/${target}/accounts/user`)).data.map((link) => [
+      link.requirement,
+      link.account.id,
+    ]);
   const from = Date.now() - 120_000;
   const analytics = async () =>
     (
@@ -220,6 +243,11 @@ try {
       )
     ).data;
   assert.deepEqual(await call("queries.check"), { retained: true });
+  assert.deepEqual(await callApp(app.id, { profile: secondProfile.id }, "queries.check"), {
+    retained: false,
+  });
+  assert.equal(await call("mutations.remember"), true);
+  assert.equal(await call("queries.kept"), "seeded-before-upgrade");
   const analyticsSeeded = (await call("queries.seed")) === true;
   if (previousApi === "legacy") assert(analyticsSeeded);
   const retainedAnalytics = async () => {
@@ -236,7 +264,7 @@ try {
   const withAnalytics = analyticsSeeded ? ", analytics" : "";
   const priorKeys = await keyDigests();
   report.checks.push(
-    `previous image built the app against the published framework${report.previousAppsVersion === undefined ? "" : ` apps ${report.previousAppsVersion}`} and seeded an encrypted account${withAnalytics} and keys`,
+    `previous image built the app against the published framework${report.previousAppsVersion === undefined ? "" : ` apps ${report.previousAppsVersion}`} and seeded two profiles with distinct encrypted accounts, app data${withAnalytics} and keys`,
   );
   if (!analyticsSeeded)
     report.checks.push(
@@ -254,10 +282,39 @@ try {
   });
 
   selection = {};
+  /** The copy the upgrade makes for the second account set, once its data step has run. */
+  const profileCopy = async () => {
+    for (let attempt = 0; attempt < 120; attempt++) {
+      const { data: listed } = await request(`${prefix}/apps`);
+      const copies = listed.filter((value) => value.name.startsWith(`${app.name} (`));
+      if (copies.length > 0) {
+        assert.equal(copies.length, 1);
+        return copies[0];
+      }
+      await sleep(1000);
+    }
+    throw new Error("The upgrade made no copy for the second account set");
+  };
+  let copyId;
   for (const iteration of [1, 2]) {
     await start(candidate, unreachableRegistry);
     assert.equal(await keyDigests(), priorKeys);
     assert.deepEqual(await call("queries.check"), { retained: true });
+    assert.equal(await call("queries.kept"), "seeded-before-upgrade");
+    assert.deepEqual(await linked(app.id), [["service", account.id]]);
+    const copy = await profileCopy();
+    if (copyId === undefined) copyId = copy.id;
+    assert.equal(copy.id, copyId);
+    assert.deepEqual(await linked(copy.id), [["service", secondAccount.id]]);
+    const copyDeployed = copy.activeDeployment !== null && copy.activeDeployment !== undefined;
+    if (copyDeployed) {
+      assert.deepEqual(await callApp(copy.id, {}, "queries.check"), { retained: false });
+      assert.equal((await callApp(copy.id, {}, "queries.kept")) ?? null, null);
+    }
+    report.profileCopy = { name: copy.name, deployed: copyDeployed };
+    report.checks.push(
+      `candidate start ${iteration}: the app kept the oldest profile's account and its data; the second account set became the copy "${copy.name}" linking only its account, ${copyDeployed ? "rebuilt from source with an empty database" : "not deployed: rebuilding its source needs the unreachable registry"}`,
+    );
     await retainedAnalytics();
     const { data: retainedAccount } = await request(`${prefix}/accounts/${account.id}`);
     assert.equal(retainedAccount.account.id, account.id);
@@ -310,6 +367,7 @@ try {
   await start(previous, unreachableRegistry);
   assert.equal(await keyDigests(), priorKeys);
   assert.deepEqual(await call("queries.check"), { retained: true });
+  assert.equal(await call("queries.kept"), "seeded-before-upgrade");
   await retainedAnalytics();
   report.checks.push(
     `previous image serves retained state${analyticsSeeded ? " and analytics" : ""} after stopped-volume restoration`,
