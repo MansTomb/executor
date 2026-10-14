@@ -1,6 +1,7 @@
 import { HostedAnalytics } from "./analytics.ts";
-import { HostedProfiles } from "./profiles.ts";
+import { HostedAppAccounts } from "./app-accounts.ts";
 import { HostedResourceAccess } from "./resource-access.ts";
+import { HostedOAuthClients } from "./oauth-clients.ts";
 import { HostedSchedules } from "./schedules.ts";
 import { HostedAppAccess, HostedAppManagementApi, HostedFrameworkApi } from "./app-management.ts";
 export { HostedAppManagementApi } from "./app-management.ts";
@@ -10,7 +11,13 @@ import { Context, Schema } from "effect";
 import { HostedGroups } from "./groups.ts";
 import { HostedMcpConnections } from "./mcp-connections.ts";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
-import { AuthenticationUnavailable, Principal, RequireUser, Unauthorized } from "./auth.ts";
+import {
+  AuthenticationUnavailable,
+  BrowserSessionOnly,
+  Principal,
+  RequireUser,
+  Unauthorized,
+} from "./auth.ts";
 import {
   HostedOrganization,
   OrganizationForbidden,
@@ -28,7 +35,7 @@ import { HostedTools } from "./tools.ts";
 import { HostedSkills } from "./skills.ts";
 import { HostedFeedback } from "./feedback.ts";
 
-/** Process liveness only; this does not probe integrations.sh or future storage. */
+/** Process liveness only; this does not probe the app catalog or future storage. */
 export const Health = Schema.Struct({ status: Schema.Literal("ok") });
 
 /** The Effect snapshot's OpenAPI types omit OAuth2; hosted documents retain that standard scheme explicitly. */
@@ -73,7 +80,8 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
       if (security.has(id)) throw new Error(`Duplicate product API operation: ${id}`);
       security.set(
         id,
-        [...middleware].some((service) => service.key === RequireUser.key)
+        [...middleware].some((service) => service.key === RequireUser.key) ||
+          Context.get(mergedAnnotations, BrowserSessionOnly)
           ? [{ browserSession: [] }]
           : [...middleware].some(
                 (service) =>
@@ -156,7 +164,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
 /** Common API contract; each host extends it with its own groups. */
 export const HostedApi = HttpApi.make("executor-hosted")
   .add(
-    HostedProfiles,
+    HostedAppAccounts,
     HostedWebhookSetup,
     HostedWebhooks,
     HostedWorkflows,
@@ -170,6 +178,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedOrganization,
     HostedGroups,
     HostedResourceAccess,
+    HostedOAuthClients,
     HostedAppData,
     HostedMcpConnections,
     HostedFeedback,
@@ -181,6 +190,11 @@ export const HostedApi = HttpApi.make("executor-hosted")
           organization: OrganizationId,
           slug: Schema.NonEmptyString,
           role: OrganizationRole,
+          /**
+           * Where this host serves app Git remotes, canonical first. They may be on other origins
+           * than this API; a client signed in here uses its session for remotes on each of them.
+           */
+          gitOrigins: Schema.NonEmptyArray(Schema.String),
         }),
         error: [Unauthorized, OrganizationForbidden, AuthenticationUnavailable],
       }).annotate(OpenApi.Override, { security: [{ oauth: ["executor"] }] }),

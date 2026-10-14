@@ -16,12 +16,14 @@ import { makeWorkflowContext, workflowSafe } from "./workflow-context.ts";
 /** Framework-owned dispatch. Each inspect/call binds accounts and evaluates afresh. */
 import { Cause, Clock, Effect, Match, Option, Redacted, Schema } from "effect";
 import { slowToolCatalogMillis } from "../contracts/host.ts";
-import { captureTelemetry, type InvocationTelemetry } from "@executor-js/telemetry";
+import { captureTelemetry, owned, type InvocationTelemetry } from "@executor-js/telemetry";
 import { appInvocationFetch } from "./network.ts";
-import type { AccountSlots, BoundContext } from "../contracts/app.ts";
+import type { AccountSlots, BoundAccounts, ScopedSlots } from "../contracts/app.ts";
+import type { AppIcons } from "../contracts/icons.ts";
 import {
   DeclaredProvider,
   DeclaredRequirements,
+  type DeclaredAccountSlots,
   InvocationDeadline,
   ToolResultObservation,
   HostAccountsInvalid,
@@ -42,6 +44,7 @@ import {
   HostedTool,
   HostedToolSummary,
   ResolvedAccounts,
+  type ResolvedAccountSlots,
   HostError,
   TrustedToolApproval,
   type AppHandler,
@@ -55,18 +58,23 @@ import {
   type Provider,
 } from "../contracts/provider.ts";
 import { JsonValue } from "../contracts/schema.ts";
+import { normalizePlacements, type Placement } from "../contracts/placement.ts";
+import { withPlacements } from "./placement.ts";
 import {
   approvalElicitation,
   ElicitationFailed,
   type ElicitationHandler,
 } from "../contracts/elicitation.ts";
 import { makeElicit } from "./elicitation.ts";
+import { timedInvocation, workflowControlSpan } from "./invocation-timing.ts";
 import { inputInvalid } from "./input-problems.ts";
 import { ApprovalDecision } from "../contracts/approval.ts";
 import { jsonSchemaDocument } from "./schema.ts";
 import { locate } from "./router.ts";
 import { readCatalog, routerSkills } from "./router-catalog.ts";
 import { dispatchWebhook } from "./webhooks.ts";
+import { declaredEvents, makeEmitter } from "./events.ts";
+import type { AppEvent, EmittedEvent } from "../contracts/events.ts";
 import { authorSql, hasMigrations, migrate, noDatabase, type StepReplay } from "./sql.ts";
 import { isApp, toEffectApp } from "./app.ts";
 import { authorCache, unavailableCache } from "./cache.ts";
@@ -150,6 +158,13 @@ function declaredExposure(exposure: Readonly<Record<string, FieldExposure>> | un
   return { ...(plain.length === 0 ? {} : { plain }), ...(raw.length === 0 ? {} : { raw }) };
 }
 
+/** Placements in a stable order; a method without them declares nothing, keeping its identity. */
+function declaredPlacements(request: readonly Placement[] | undefined) {
+  return request === undefined || request.length === 0
+    ? {}
+    : { request: normalizePlacements(request) };
+}
+
 function providerDeclaration(provider: Provider<AuthMethods>) {
   return declarationSafe(
     () =>
@@ -163,6 +178,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
                 label: method.label,
                 fields: yield* jsonSchemaDocument(method.fields),
                 ...declaredExposure(method.exposure),
+                ...declaredPlacements(method.request),
               });
               break;
             case "oauth2":
@@ -171,6 +187,7 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
                 ...method.config,
                 response: yield* jsonSchemaDocument(method.response),
                 ...declaredExposure(method.exposure),
+                ...declaredPlacements(method.request),
               });
               break;
           }
@@ -186,9 +203,9 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
   );
 }
 
-function requirements(slots: AccountSlots, sql: boolean) {
+function declaredSlots(slots: AccountSlots) {
   return Effect.gen(function* () {
-    const accounts = new Map<string, DeclaredRequirements["accounts"][string]>();
+    const accounts = new Map<string, DeclaredAccountSlots[string]>();
     for (const [slot, selection] of Object.entries(slots)) {
       const provider = selection instanceof ManyAccounts ? selection.provider : selection;
       accounts.set(slot, {
@@ -197,10 +214,30 @@ function requirements(slots: AccountSlots, sql: boolean) {
         ...(provider.health === undefined ? {} : { health: true }),
       });
     }
+    return Object.fromEntries(accounts);
+  });
+}
+
+function requirements(
+  slots: ScopedSlots,
+  sql: boolean,
+  events: Readonly<Record<string, AppEvent>> | undefined,
+  icons: AppIcons | undefined,
+) {
+  return Effect.gen(function* () {
     return yield* Schema.decodeUnknownEffect(DeclaredRequirements)({
-      accounts: Object.fromEntries(accounts),
+      accounts: { app: yield* declaredSlots(slots.app), user: yield* declaredSlots(slots.user) },
       capabilities: { skills: true, toolIndex: true, skillSources: true, scheduledTools: true },
       ...(sql ? { sql: true } : {}),
+      ...(events === undefined || Object.keys(events).length === 0
+        ? {}
+        : {
+            events: yield* declarationSafe(
+              () => declaredEvents(events),
+              "The app's event declarations are invalid",
+            ),
+          }),
+      ...(icons === undefined ? {} : { icons }),
     }).pipe(
       Effect.mapError((cause) =>
         declarationInvalid("The app's account declarations are invalid", cause),
@@ -222,15 +259,82 @@ function canonical(value: JsonValue): string {
 }
 
 /**
- * A provider without its hosts. The host sends each account's granted hosts, which can be narrower
- * than the app's declaration, so they are not part of matching an account to its slot.
+ * A provider without its hosts and placements. The host sends each account's granted hosts and
+ * placements, which can differ from the app's declaration, so they are not part of matching an
+ * account to its slot.
  */
-function withoutHosts({ hosts: _hosts, ...provider }: DeclaredProvider): JsonValue {
-  return provider;
+function withoutGrants({ hosts: _hosts, ...provider }: DeclaredProvider): JsonValue {
+  return {
+    ...provider,
+    auth: Object.fromEntries(
+      Object.entries(provider.auth).map(([name, { request: _request, ...method }]) => [
+        name,
+        method,
+      ]),
+    ),
+  };
 }
 
-function bindAccounts(
+type BoundSlots = BoundAccounts<AccountSlots>;
+
+/** Bind one scope's supplied accounts to its declared slots. Every slot must be supplied. */
+function bindScope(
   slots: AccountSlots,
+  declarations: DeclaredAccountSlots,
+  selected: ResolvedAccountSlots,
+) {
+  return Effect.gen(function* () {
+    if (Object.keys(selected).some((slot) => !Object.hasOwn(slots, slot))) {
+      return yield* Effect.fail(new HostAccountsInvalid());
+    }
+    const bound = new Map<string, BoundSlots[string]>();
+    for (const [slot, selection] of Object.entries(slots)) {
+      const requirement = Object.hasOwn(declarations, slot) ? declarations[slot] : undefined;
+      const supplied = Object.hasOwn(selected, slot) ? selected[slot] : undefined;
+      if (requirement === undefined || supplied === undefined)
+        return yield* Effect.fail(new HostAccountsInvalid());
+      const provider = selection instanceof ManyAccounts ? selection.provider : selection;
+      const many = selection instanceof ManyAccounts;
+      if (many !== Array.isArray(supplied)) return yield* Effect.fail(new HostAccountsInvalid());
+      const accounts = Array.isArray(supplied) ? supplied : [supplied];
+      const ids = new Set<string>();
+      const values = [];
+      for (const account of accounts) {
+        if (ids.has(account.id)) return yield* Effect.fail(new HostAccountsInvalid());
+        ids.add(account.id);
+        if (
+          canonical(withoutGrants(account.provider)) !==
+            canonical(withoutGrants(requirement.definition)) ||
+          !Object.hasOwn(provider.auth, account.method)
+        )
+          return yield* Effect.fail(new HostAccountsInvalid());
+        const method = provider.auth[account.method];
+        if (method === undefined) return yield* Effect.fail(new HostAccountsInvalid());
+        const fields = yield* Schema.decodeUnknownEffect(
+          method._tag === "secrets" ? method.fields : method.response,
+        )(account.fields);
+        const granted = Object.hasOwn(account.provider.auth, account.method)
+          ? account.provider.auth[account.method]?.request
+          : undefined;
+        values.push(withPlacements({ id: account.id, method: account.method, fields }, granted));
+      }
+      if (many) bound.set(slot, values);
+      else {
+        const account = values[0];
+        if (account === undefined) return yield* Effect.fail(new HostAccountsInvalid());
+        bound.set(slot, account);
+      }
+    }
+    return Object.fromEntries(bound);
+  });
+}
+
+/**
+ * Bind an invocation's accounts by scope: `ctx.app.accounts` always, and `ctx.user.accounts` when
+ * the invocation has a caller. Without `user` accounts the context has no `user`.
+ */
+function bindAccounts(
+  slots: ScopedSlots,
   declarations: DeclaredRequirements,
   context: HostContext,
 ) {
@@ -240,50 +344,22 @@ function bindAccounts(
         const selected = yield* Schema.decodeUnknownEffect(ResolvedAccounts)(
           Redacted.value(context.accounts),
         );
-        if (Object.keys(selected).some((slot) => !Object.hasOwn(slots, slot))) {
-          return yield* Effect.fail(new HostAccountsInvalid());
-        }
-        const bound = new Map<string, BoundContext<AccountSlots>["accounts"][string]>();
-        for (const [slot, selection] of Object.entries(slots)) {
-          const requirement = declarations.accounts[slot];
-          const supplied = Object.hasOwn(selected, slot) ? selected[slot] : undefined;
-          if (requirement === undefined || supplied === undefined)
-            return yield* Effect.fail(new HostAccountsInvalid());
-          const provider = selection instanceof ManyAccounts ? selection.provider : selection;
-          const many = selection instanceof ManyAccounts;
-          if (many !== Array.isArray(supplied))
-            return yield* Effect.fail(new HostAccountsInvalid());
-          const accounts = Array.isArray(supplied) ? supplied : [supplied];
-          const ids = new Set<string>();
-          const values = [];
-          for (const account of accounts) {
-            if (ids.has(account.id)) return yield* Effect.fail(new HostAccountsInvalid());
-            ids.add(account.id);
-            if (
-              canonical(withoutHosts(account.provider)) !==
-                canonical(withoutHosts(requirement.definition)) ||
-              !Object.hasOwn(provider.auth, account.method)
-            )
-              return yield* Effect.fail(new HostAccountsInvalid());
-            const method = provider.auth[account.method];
-            if (method === undefined) return yield* Effect.fail(new HostAccountsInvalid());
-            const fields = yield* Schema.decodeUnknownEffect(
-              method._tag === "secrets" ? method.fields : method.response,
-            )(account.fields);
-            values.push({ id: account.id, method: account.method, fields });
-          }
-          if (many) bound.set(slot, values);
-          else {
-            const account = values[0];
-            if (account === undefined) return yield* Effect.fail(new HostAccountsInvalid());
-            bound.set(slot, account);
-          }
-        }
-        return { accounts: Object.fromEntries(bound) };
+        const app = yield* bindScope(slots.app, declarations.accounts.app, selected.app);
+        if (selected.user === undefined) return { app: { accounts: app } };
+        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
+        return { app: { accounts: app }, user: { accounts: user } };
       }),
     new HostAccountsInvalid(),
   );
 }
+
+/** The bound accounts events may be attributed to by default: the caller's, never the app's. */
+const userAccountIds = (bound: { readonly user?: { readonly accounts: BoundSlots } }) =>
+  Object.values(bound.user?.accounts ?? {}).flatMap((selected) =>
+    (Array.isArray(selected) ? selected : [selected]).map(
+      (account: { readonly id: string }) => account.id,
+    ),
+  );
 
 /**
  * The lifetime of an invocation's `ctx.fetch`: the invocation, then every app cache refresh it
@@ -335,6 +411,8 @@ function dispatch(
   request: HostRequest,
   context: HostContext,
   signal: AbortSignal,
+  /** Events this invocation emits. The handler sends them only when it succeeds. */
+  emitted: EmittedEvent[],
 ): Effect.Effect<JsonValue, HostError> {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -346,7 +424,7 @@ function dispatch(
       const secrets = accountSecrets(context.accounts);
       // The build's migrations, not a flag, decide whether the app has a database.
       const ownsSql = hasMigrations(context.files ?? []);
-      const declared = yield* requirements(native.accounts, ownsSql);
+      const declared = yield* requirements(native.accounts, ownsSql, native.events, native.icons);
       if (request.operation === "requirements")
         return yield* safe(
           () => Schema.decodeUnknownEffect(JsonValue)(declared),
@@ -391,6 +469,7 @@ function dispatch(
                 Effect.sync(() =>
                   authorSql(storage, {
                     signal: invocationSignal,
+                    emitted,
                     ...(step === undefined ? {} : { step }),
                   }),
                 ),
@@ -435,44 +514,68 @@ function dispatch(
       const delivery: ElicitationHandler = (request, signal) =>
         Effect.suspend(() =>
           running !== undefined && context.elicitation !== undefined
-            ? context
-                .elicitation(request, signal)
-                .pipe(
-                  Effect.withSpan("app.tool.elicitation"),
-                  Effect.provideContext(running.context),
-                )
+            ? context.elicitation(request, signal).pipe(
+                // Delivering the question and waiting for its answer is the person's time.
+                owned("person", "app.tool.elicitation"),
+                Effect.provideContext(running.context),
+              )
             : Effect.fail(new ElicitationFailed({ reason: "unavailable" })),
         );
       const unavailableWorkflow = () =>
         Effect.fail(new WorkflowFailure({ reason: "unavailable", retryable: false }));
+      // Authored code calls these as Promises; they run in this invocation's telemetry, so their
+      // spans join its trace and its timing.
+      const telemetry = yield* captureTelemetry;
+      const control = <A, E>(operation: string, work: Effect.Effect<A, E>) =>
+        work.pipe(
+          owned("executor", workflowControlSpan, {
+            attributes: { "executor.workflow.operation": operation },
+          }),
+        );
       const workflowControls: WorkflowControls = {
         start: toPromise(
           (input) =>
-            context.workflowControls === undefined
-              ? unavailableWorkflow()
-              : context.workflowControls.start(input),
+            control(
+              "start",
+              context.workflowControls === undefined
+                ? unavailableWorkflow()
+                : context.workflowControls.start(input),
+            ),
           invocationSignal,
+          telemetry.context,
         ),
         get: toPromise(
           (input) =>
-            context.workflowControls === undefined
-              ? unavailableWorkflow()
-              : context.workflowControls.get(input),
+            control(
+              "get",
+              context.workflowControls === undefined
+                ? unavailableWorkflow()
+                : context.workflowControls.get(input),
+            ),
           invocationSignal,
+          telemetry.context,
         ),
         list: toPromise(
           (input) =>
-            context.workflowControls === undefined
-              ? unavailableWorkflow()
-              : context.workflowControls.list(input),
+            control(
+              "list",
+              context.workflowControls === undefined
+                ? unavailableWorkflow()
+                : context.workflowControls.list(input),
+            ),
           invocationSignal,
+          telemetry.context,
         ),
         terminate: toPromise(
           (input) =>
-            context.workflowControls === undefined
-              ? unavailableWorkflow()
-              : context.workflowControls.terminate(input),
+            control(
+              "terminate",
+              context.workflowControls === undefined
+                ? unavailableWorkflow()
+                : context.workflowControls.terminate(input),
+            ),
           invocationSignal,
+          telemetry.context,
         ),
       };
       const workflowReads: WorkflowReads = {
@@ -498,6 +601,7 @@ function dispatch(
           },
           Redacted.value(context.accounts),
           invocationSignal,
+          telemetry.context,
           deadline,
         ),
         files,
@@ -508,8 +612,26 @@ function dispatch(
         signal: invocationSignal,
         analytics: yield* analyticsEmitter,
         fetch: yield* appInvocationFetch(fetching.signal),
-        elicit: makeElicit(delivery, invocationSignal),
+        elicit: makeElicit(delivery, invocationSignal, telemetry.context),
       };
+      // Every bound account may be named; only the caller's count when an emit names none.
+      const attributable = userAccountIds(bound);
+      const accountIds = [
+        ...Object.values(bound.app.accounts).flatMap((selected) =>
+          (Array.isArray(selected) ? selected : [selected]).map(
+            (account: { readonly id: string }) => account.id,
+          ),
+        ),
+        ...attributable,
+      ];
+      const emitter = (sourceAccount?: string) =>
+        makeEmitter({
+          events: native.events ?? {},
+          accounts: accountIds,
+          attributable,
+          ...(sourceAccount === undefined ? {} : { sourceAccount }),
+          emitted,
+        });
       const evaluationStarted = yield* Clock.currentTimeMillis;
       const definition = yield* evaluationSafe(native.evaluate(bound), secrets).pipe(
         Effect.withSpan("app.evaluate"),
@@ -600,6 +722,7 @@ function dispatch(
                     context.cache ?? unavailableCache,
                     Redacted.value(current.accounts),
                     signal,
+                    (yield* captureTelemetry).context,
                   ),
                   files,
                   analytics: yield* analyticsEmitter,
@@ -680,14 +803,16 @@ function dispatch(
           {
             files,
             cache: bound.cache,
-            accounts: bound.accounts,
+            app: bound.app,
+            ...(bound.user === undefined ? {} : { user: bound.user }),
             workflows: workflowControls,
             signal: bound.signal,
             fetch: bound.fetch,
             analytics: bound.analytics,
             sql: session.writer,
+            events: emitter("sourceAccount" in request ? request.sourceAccount : undefined),
           },
-          Redacted.value(context.accounts),
+          native.accounts,
         );
       }
       const toolName = request.operation === "call" ? request.tool : request.name;
@@ -697,7 +822,9 @@ function dispatch(
           ? undefined
           : location.kind === "operation"
             ? location.operation
-            : yield* evaluationSafe(location.source.resolve(location.name), secrets);
+            : yield* evaluationSafe(location.source.resolve(location.name), secrets).pipe(
+                Effect.withSpan("app.tool.resolve"),
+              );
       if (tool === undefined)
         return yield* request.operation === "call"
           ? new HostToolNotFound()
@@ -788,6 +915,7 @@ function dispatch(
                 fetch,
                 workflows: kind === "mutate" ? workflowControls : workflowReads,
                 sql: kind === "mutate" ? session.writer : session.reader,
+                ...(kind === "mutate" ? { events: emitter() } : {}),
               },
               input,
             );
@@ -806,23 +934,31 @@ function dispatch(
               // An MCP server's failure is not the app's own error; keep its server's answer.
               const mcp = parseMcpError(error, privateValues);
               const failure = Schema.decodeUnknownOption(ElicitationFailed)(error);
+              // A router found, while running it, that its source no longer has the tool.
+              const removed = Schema.is(HostToolNotFound)(error)
+                ? request.operation === "call"
+                  ? new HostToolNotFound()
+                  : new HostOperationNotFound()
+                : undefined;
               return Effect.fail(
-                Option.isSome(provider)
-                  ? leavingProviderError(provider.value, privateValues, "call")
-                  : Option.isSome(response)
-                    ? new OpenapiResponseError({
-                        code: response.value.code,
-                        status: response.value.status,
-                        message: response.value.message,
-                        ...(response.value.recovery === undefined
-                          ? {}
-                          : { recovery: response.value.recovery }),
-                      })
-                    : Option.isSome(mcp)
-                      ? mcp.value
-                      : Option.isSome(failure)
-                        ? failure.value
-                        : new HostOperationFailed(failureDetail(error, privateValues)),
+                removed !== undefined
+                  ? removed
+                  : Option.isSome(provider)
+                    ? leavingProviderError(provider.value, privateValues, "call")
+                    : Option.isSome(response)
+                      ? new OpenapiResponseError({
+                          code: response.value.code,
+                          status: response.value.status,
+                          message: response.value.message,
+                          ...(response.value.recovery === undefined
+                            ? {}
+                            : { recovery: response.value.recovery }),
+                        })
+                      : Option.isSome(mcp)
+                        ? mcp.value
+                        : Option.isSome(failure)
+                          ? failure.value
+                          : new HostOperationFailed(failureDetail(error, privateValues)),
               );
             }),
             Effect.withSpan("app.operation.execute", {
@@ -863,7 +999,7 @@ function dispatch(
  * The check receives the invocation's deadline, after which the host stops waiting for it.
  */
 function checkAccount(
-  slots: AccountSlots,
+  slots: ScopedSlots,
   declared: DeclaredRequirements,
   requirement: string,
   context: HostContext,
@@ -871,18 +1007,36 @@ function checkAccount(
   deadline: number | undefined,
 ) {
   return Effect.gen(function* () {
-    const selection = Object.hasOwn(slots, requirement) ? slots[requirement] : undefined;
-    const slot = Object.hasOwn(declared.accounts, requirement)
-      ? declared.accounts[requirement]
+    // A requirement name is unique across scopes; the host supplies the account in its scope.
+    const scope = Object.hasOwn(slots.app, requirement)
+      ? "app"
+      : Object.hasOwn(slots.user, requirement)
+        ? "user"
+        : undefined;
+    if (scope === undefined) return yield* new HostAccountsInvalid();
+    const selection = slots[scope][requirement];
+    const slot = Object.hasOwn(declared.accounts[scope], requirement)
+      ? declared.accounts[scope][requirement]
       : undefined;
     if (selection === undefined || slot === undefined) return yield* new HostAccountsInvalid();
     const provider = selection instanceof ManyAccounts ? selection.provider : selection;
     const health = provider.health;
     if (health === undefined) return yield* new HostOperationNotFound();
-    const { accounts } = yield* bindAccounts(
-      { [requirement]: provider },
-      { accounts: { [requirement]: { ...slot, cardinality: "one" } } },
-      context,
+    const accounts = yield* safe(
+      () =>
+        Effect.gen(function* () {
+          const selected = yield* Schema.decodeUnknownEffect(ResolvedAccounts)(
+            Redacted.value(context.accounts),
+          );
+          const supplied = selected[scope];
+          if (supplied === undefined) return yield* new HostAccountsInvalid();
+          return yield* bindScope(
+            { [requirement]: provider },
+            { [requirement]: { ...slot, cardinality: "one" } },
+            supplied,
+          );
+        }),
+      new HostAccountsInvalid(),
     ).pipe(Effect.withSpan("app.accounts.bind"));
     const account = accounts[requirement];
     if (account === undefined || !("id" in account)) return yield* new HostAccountsInvalid();
@@ -955,6 +1109,7 @@ export const createAppHandler =
   (request, context) =>
     Effect.gen(function* () {
       if (request.method !== "POST") return yield* Effect.fail(new HostRequestInvalid());
+      // oxlint-disable-next-line executor/authored-code-through-adapter -- the host's Request
       const input = yield* Effect.tryPromise({
         try: () => request.json(),
         catch: () => new HostRequestInvalid(),
@@ -967,7 +1122,8 @@ export const createAppHandler =
         ...(command.operation === "call" ? { "executor.tool.name": command.tool } : {}),
       });
       let toolError = false;
-      const value = yield* dispatch(app, command, context, request.signal).pipe(
+      const emitted: EmittedEvent[] = [];
+      const value = yield* dispatch(app, command, context, request.signal, emitted).pipe(
         Effect.provideService(ToolResultObservation, {
           failed: () => {
             toolError = true;
@@ -987,14 +1143,25 @@ export const createAppHandler =
               })
             : Effect.void,
         ),
-        Effect.withSpan(`app.${command.operation}`),
+        // Tool operations time themselves, dividing their time by who owned the work in progress.
+        // Other operations do not.
+        command.operation === "call" ||
+          command.operation === "query" ||
+          command.operation === "mutate"
+          ? timedInvocation(command.operation)
+          : Effect.withSpan(`app.${command.operation}`),
       );
       if (toolError)
         yield* Effect.annotateCurrentSpan({
           "executor.outcome": "failed",
           "error.type": "McpToolError",
         });
-      return Response.json({ ok: true, value, ...(toolError ? { toolError: true } : {}) });
+      return Response.json({
+        ok: true,
+        value,
+        ...(toolError ? { toolError: true } : {}),
+        ...(emitted.length === 0 ? {} : { events: emitted }),
+      });
     }).pipe(
       Effect.catch((error) =>
         Schema.encodeEffect(HostError)(error).pipe(

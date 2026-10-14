@@ -1,5 +1,9 @@
 /** The executor and the services every cloud Worker shares, including app pages. */
-import { HostedExecutor, withExecutorAnalytics } from "@executor-js/hosted-server";
+import {
+  HostedExecutor,
+  withDeploySetupWake,
+  withExecutorAnalytics,
+} from "@executor-js/hosted-server";
 import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
 import { BlobStore } from "@executor-js/sdk/core";
@@ -28,8 +32,10 @@ export const cloudProductServices = Effect.fn(function* (
   const blobs = yield* cloudBlobs;
   const { executor, database } = yield* cloudExecutor(databases, sources);
   const assets = yield* makeExecutionMemo(
-    cachedBuildAssets(origin, (build, path) =>
-      cloudBuildAsset(build, path).pipe(Effect.provideService(BlobStore, blobs)),
+    cachedBuildAssets(
+      origin,
+      (build, path) => cloudBuildAsset(build, path).pipe(Effect.provideService(BlobStore, blobs)),
+      (key, range) => blobs.stream(key, range),
     ),
   );
   // Alchemy's runtime requirement marks event-only operations; it is not a
@@ -46,7 +52,10 @@ export const cloudProductServices = Effect.fn(function* (
       Effect.provide(RuntimeContext.phantom),
     );
   const services = Layer.mergeAll(
-    Layer.succeed(HostedExecutor, sdk.pipe(Effect.map(withExecutorAnalytics))),
+    Layer.succeed(
+      HostedExecutor,
+      sdk.pipe(Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor)))),
+    ),
     Layer.succeed(GroupDatabase, sql.pipe(Effect.mapError(() => new GroupsUnavailable()))),
     Layer.succeed(HostedAppRuntime, {
       asset: ({ build, path }) =>

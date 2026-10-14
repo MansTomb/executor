@@ -50,7 +50,7 @@ const probe = query({ input: object({ nonce: string(), wait: boolean() }) }, asy
   }
   return result;
 });
-export default defineApp({ accounts: {} }, { tools: router({ queries: router({ probe }) }) });`,
+export default defineApp({}, { tools: router({ queries: router({ probe }) }) });`,
               },
             ],
           });

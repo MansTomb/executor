@@ -1,7 +1,9 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import type { ApiKeyId } from "./api-keys.ts";
+import type { ResourceOrigins } from "@executor-js/mcp-auth";
 import type { AuthorizationPolicy } from "@executor-js/authorization";
 import type { OrganizationAccess, OrganizationReference } from "./organization.ts";
+import { CurrentActor } from "@executor-js/sdk/core";
 import { Context, Effect, Schema } from "effect";
 import { HttpApiMiddleware } from "effect/http-api";
 import type { OrganizationId, OrganizationRole, OrganizationForbidden } from "./organization.ts";
@@ -43,6 +45,13 @@ export const Forbidden = UserFacingError.define({
 });
 /** Parsed Forbidden failure. */
 export type Forbidden = typeof Forbidden.Type;
+/**
+ * An operation that refuses every Authorization header. Its handler enforces that; this annotation
+ * makes the OpenAPI document list only the browser session for it.
+ */
+export const BrowserSessionOnly = Context.Reference<boolean>("hosted/BrowserSessionOnly", {
+  defaultValue: () => false,
+});
 /** The session store is unavailable; this must not be treated as signed out. */
 export const AuthenticationUnavailable = UserFacingError.define({
   tag: "AuthenticationUnavailable",
@@ -75,7 +84,12 @@ export interface ApiAccess {
 export class ApiAuthentication extends Context.Service<
   ApiAuthentication,
   {
+    /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
+    /** The origins of MCP and API OAuth resources; the first is canonical. They may differ from the browser origin. */
+    readonly resourceOrigins: ResourceOrigins;
+    /** The authorization server's exact issuer identifier, which discovery names. */
+    readonly issuer: string;
     readonly authenticate: (
       headers: Headers,
       organization?: OrganizationReference,
@@ -87,7 +101,10 @@ export class ApiAuthentication extends Context.Service<
 export class Authentication extends Context.Service<
   Authentication,
   {
+    /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
+    /** The origins of MCP and API OAuth resources; the first is canonical. They may differ from the browser origin. */
+    readonly resourceOrigins: ResourceOrigins;
     /** Optional provider callback relay; the browser still returns to the canonical dashboard origin. */
     readonly oauthRedirectUri?: string | undefined;
     readonly current: (
@@ -121,10 +138,12 @@ export class Authentication extends Context.Service<
   }
 >()("hosted/Authentication") {}
 
-/** Verified actor for both browser sessions and bearer grants; absent for background setup. */
-export const CurrentUserId = Context.Reference<string | undefined>("hosted/CurrentUserId", {
-  defaultValue: () => undefined,
-});
+/**
+ * Verified actor for browser sessions and bearer grants; absent for background setup. It is the
+ * SDK's `CurrentActor`: providing the caller here is what scopes SDK operations to them, and the
+ * SDK provides the saved actor here around schedules, webhook callbacks and workflow steps.
+ */
+export const CurrentUserId = CurrentActor;
 
 /** Request-local identity supplied only after successful authentication. */
 export class CurrentPrincipal extends Context.Service<CurrentPrincipal, Principal>()(

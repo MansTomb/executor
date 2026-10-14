@@ -5,10 +5,15 @@ import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 import { acceptedToken, accountCheckUpstream } from "../support/account-check-upstream.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
+
+/** The synthetic photo the identity check reports; the browser request is answered locally. */
+const avatar = "https://avatars.example.test/u/4242.png";
+const pixel =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 const Health = Schema.Struct({
   account: Schema.String,
@@ -62,7 +67,7 @@ const source = (health: string) => `import {
 } from "apps";
 const User = object({ id: string(), name: string(), login: string(), avatar: string() });
 ${provider(health)}
-export default defineApp({ accounts: { service } }, {
+export default defineApp({ user: { accounts: { service } } }, {
   tools: router({ ping: query({ input: object({}) }, async () => ({ ok: true })) }),
 });`;
 
@@ -113,18 +118,10 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         const [identityPath, plainPath, uncheckedPath] = paths;
         if (identityPath === undefined || plainPath === undefined || uncheckedPath === undefined)
           return yield* Effect.die("Missing app paths");
-        const profiles = yield* Effect.forEach(paths, (path) => createProfile(actors.owner, path));
-        const [identityProfile] = profiles;
-        if (identityProfile === undefined) return yield* Effect.die("Missing profile");
         let account: string | undefined;
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            for (const [index, path] of paths.entries()) {
-              const profile = profiles[index];
-              if (profile !== undefined)
-                yield* api.request(actors.owner, "DELETE", `${path}/profiles/${profile.id}`);
-              yield* api.request(actors.owner, "DELETE", path);
-            }
+            for (const path of paths) yield* api.request(actors.owner, "DELETE", path);
             if (account !== undefined)
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
           }).pipe(Effect.orDie),
@@ -138,10 +135,12 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
 
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${identityPath}/connections`, {
-            requirement: "service",
-            profile: identityProfile.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(identityPath, "user", "service"),
+            {},
+          ),
         );
         const saved = yield* api.request(
           actors.owner,
@@ -152,14 +151,9 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
         const accountId = (yield* body(Resource, saved)).id;
         account = accountId;
-        for (const [index, path] of paths.entries()) {
-          const profile = profiles[index];
-          if (index === 0 || profile === undefined) continue;
-          const selected = yield* selectProfileAccounts(actors.owner, path, profile.id, {
-            service: accountId,
-          });
-          expect(selected.status, JSON.stringify(selected.body)).toBe(200);
-        }
+        // Connecting from the identity app linked the account to it; link it to the other two.
+        for (const path of [plainPath, uncheckedPath])
+          yield* linkAccount(actors.owner, path, "service", accountId);
 
         const accountPath = `${prefix}/accounts/${accountId}`;
         const read = () =>
@@ -196,7 +190,7 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
           externalId: "user-4242",
           displayName: "Synthetic Person",
           username: "synthetic-person",
-          avatarUrl: "https://avatars.example.test/u/4242.png",
+          avatarUrl: avatar,
         });
         const reportedAt = healthy.infoCheckedAt;
         expect(reportedAt).not.toBeNull();
@@ -240,6 +234,13 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
 
         // The account's health shows why the last check failed.
         yield* browser.login(actors.owner);
+        yield* browser.use("Serve the reported photo from its external origin", (page) =>
+          page
+            .context()
+            .route(avatar, (route) =>
+              route.fulfill({ contentType: "image/png", body: Buffer.from(pixel, "base64") }),
+            ),
+        );
         yield* browser.use("Open the accounts with a failed check", (page) =>
           page
             .goto(`/org/${actors.organization.slug}/accounts`)
@@ -265,7 +266,14 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         yield* upstream.answer({ kind: "user" });
         const reconnect = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${accountPath}/connections`),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(identityPath, "user", "service"),
+            {
+              account: accountId,
+            },
+          ),
         );
         const replaced = yield* api.request(
           actors.owner,
@@ -288,7 +296,14 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         // Recovery replaces the failure, and a redeploy makes the result outdated again.
         const restore = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${accountPath}/connections`),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(identityPath, "user", "service"),
+            {
+              account: accountId,
+            },
+          ),
         );
         expect(
           (yield* api.request(actors.owner, "POST", `${prefix}/connections/${restore.id}/submit`, {
@@ -352,7 +367,54 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
         yield* browser.use("The list shows the new result", (page) =>
           page.locator('[data-check-status="healthy"][data-check-current="true"]').nth(1).waitFor(),
         );
+        // The reported photo stands beside the identity in the list.
+        expect(
+          yield* browser.use("The list shows the reported photo", (page) => {
+            const photo = page.locator(".account-identity [data-slot='avatar-image']").first();
+            return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
+          }),
+        ).toBe(avatar);
         yield* browser.checkpoint("Account list with check results");
+
+        // Another redeploy makes the result outdated; viewing the app's accounts shows it at once
+        // and checks it again in the background, without any action.
+        const again = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
+          files: [
+            {
+              path: "index.ts",
+              content: `${source(identityCheck(upstream.origin))}\n// redeployed again`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(again.status, JSON.stringify(again.body)).toBe(200);
+        expect(entry(yield* read(), identity)?.check).toMatchObject({ current: false });
+
+        // The app's accounts show each account with its reported photo.
+        yield* browser.use("Open the app's accounts", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${identity.id}?view=accounts`),
+        );
+        expect(
+          yield* browser.use("The account row shows the reported photo", (page) => {
+            const photo = page
+              .locator(".accounts-section li")
+              .filter({ hasText: "Default" })
+              .locator("[data-slot='account-avatar'] [data-slot='avatar-image']");
+            return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
+          }),
+        ).toBe(avatar);
+        yield* browser.use("The outdated result is checked again on view", (page) =>
+          page
+            .locator(".accounts-section li")
+            .filter({ hasText: "Default" })
+            .locator('[data-check-status="healthy"][data-check-current="true"]')
+            .waitFor(),
+        );
+        expect(entry(yield* read(), identity)?.check).toMatchObject({
+          status: "healthy",
+          current: true,
+        });
+        yield* browser.checkpoint("App accounts with the reported photo");
         expect(entry(yield* read(), identity)?.check).toMatchObject({
           status: "healthy",
           current: true,

@@ -8,7 +8,7 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { accountLinks, connectionsPath } from "../support/app-accounts.ts";
 import { clickupUpstream } from "../support/clickup-upstream.ts";
 import { scenarios } from "../test-plan.ts";
 import { managementApp } from "../support/management-app.ts";
@@ -59,13 +59,9 @@ layer(HostedLive, { excludeTestServices: true })("ClickUp integration", (it) => 
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
           }).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(actors.owner, path);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         const started = yield* api.request(
           actors.owner,
@@ -95,10 +91,7 @@ layer(HostedLive, { excludeTestServices: true })("ClickUp integration", (it) => 
         ids.push(mcp.id);
         const restConnection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "rest",
-            profile: profile.id,
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "rest"), {}),
         );
         const rest = yield* body(
           Resource,
@@ -114,14 +107,13 @@ layer(HostedLive, { excludeTestServices: true })("ClickUp integration", (it) => 
           ),
         );
         ids.push(rest.id);
-        yield* selectProfileAccounts(actors.owner, path, profile.id, {
-          service: [mcp.id],
-          rest: [rest.id],
-        });
+        expect([...(yield* accountLinks(actors.owner, path))].sort()).toEqual([
+          ["rest", rest.id],
+          ["service", mcp.id],
+        ]);
         const from = Date.now();
         const call = (include: readonly string[] = ["attachments"]) =>
           api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profile.id,
             tool: "clickup_get_task",
             input: {
               accountId: mcp.id,
@@ -223,7 +215,7 @@ layer(HostedLive, { excludeTestServices: true })("ClickUp integration", (it) => 
         const described = yield* api.request(
           actors.owner,
           "GET",
-          `${prefix}/apps/${management.app.id}/tools/analytics.summary?profile=${management.profile.id}`,
+          `${prefix}/apps/${management.app.id}/tools/analytics.summary`,
         );
         expect(described.status, JSON.stringify(described.body)).toBe(200);
         expect(described.body).toMatchObject({ name: "analytics.summary" });
@@ -232,7 +224,6 @@ layer(HostedLive, { excludeTestServices: true })("ClickUp integration", (it) => 
           "POST",
           `${prefix}/apps/${management.app.id}/tools/call`,
           {
-            profile: management.profile.id,
             tool: "analytics.summary",
             input: {
               path: { app: app.id },

@@ -28,7 +28,7 @@ const source = (version: number, origin?: string) => [
   {
     path: "index.ts",
     content: `import { defineApp, query, object, number, router } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   ${origin === undefined ? "" : `const response = await fetch(${JSON.stringify(origin)}); if (!response.ok) throw new Error("Fixture unavailable");`}
   return { tools: router({ queries: router({ version: query({ input: object({}), output: number() }, async () => ${version}) }) }) };
 });`,

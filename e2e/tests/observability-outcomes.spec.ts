@@ -13,7 +13,7 @@ import { mcpOutcomeFixture } from "../support/mcp-outcome-fixture.ts";
 import { WorkflowRun } from "../support/workflow-app.ts";
 import { Target } from "../support/platform.ts";
 import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
-import { withApps } from "../support/apps-release.ts";
+import { withApps, mcpSdkVersion } from "../support/apps-release.ts";
 
 const Analytics = Schema.fromJsonString(
   Schema.Struct({
@@ -55,7 +55,7 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
             {
               path: "package.json",
               content: JSON.stringify({
-                dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }),
+                dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
               }),
             },
             {
@@ -63,7 +63,7 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
               content: `import { defineApp, query, mutation, workflow, object, router, withApprovals } from "apps";
 import { mcpRouter } from "apps/mcp";
 import { always } from "apps/operations/approval";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   const remote = await mcpRouter({ url: ${JSON.stringify(`${upstream}/mcp`)} });
   return { tools: router({
     remote: withApprovals(remote, (_, name) => name === "approvedFailure" ? always() : undefined),

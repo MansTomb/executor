@@ -1,18 +1,13 @@
 ---
 title: Apps and deployments
-description: "An app owns its source, account selections and data. A deployment is an immutable, retained version of its code."
+description: "An app owns its source and data. A deployment is an immutable, retained version of its code."
 ---
 
 ## App
 
-An **app** has a name, an owner, Git source, and its selected accounts. It can
-have source before it is deployed. Once deployed, it also points to the version
-it currently runs.
-
-You can make independent copies for different accounts:
-
-- "Work Vercel", selecting your work Vercel account.
-- "Personal Vercel", selecting your personal one.
+An **app** has a name, an owner, Git source and its stored data. It can have
+source before it is deployed. Once deployed, it also points to the version it
+currently runs.
 
 **Make a copy** creates a new app with its own source and fresh Git history.
 It does not copy connected accounts or app data. A running app is copied from
@@ -26,6 +21,18 @@ not change the copy.
 
 Each app has a slug. That slug is the namespace an agent uses:
 `tools.<app-slug>.<name>`.
+
+## Accounts
+
+Each person links their own accounts to an app, and every call runs with the
+accounts that person linked: one for each single-account requirement, and all of
+them for a `.many()` requirement. Calls never choose accounts. To use your work
+and personal Vercel accounts side by side, copy the app and link one to each.
+An app can also require accounts of its own, which people who can edit it link
+for everyone. See [Providers and accounts](/concepts/providers-and-accounts).
+
+Managing an app does not grant use of somebody else's accounts. Every caller
+runs the app's active deployment and shares the app's stored data.
 
 ## Deployment
 
@@ -53,17 +60,15 @@ Republishing or unpublishing the original does not update or revoke your copy.
 
 ## Getting an app
 
-- **From a public listing.** Make your own copy, then select its accounts.
+- **From a public listing.** Make your own copy, then link its accounts.
 - **From the catalog.** Add an MCP server that needs no sign-in or supports OAuth.
   For any other service, copy the setup prompt and your agent writes the app.
 - **From a URL.** Add an MCP server by URL, with the same check.
 - **From source.** Write TypeScript and deploy it. See [Author an app](/author-an-app).
 
-After deploying or changing account selections, discover tools again in a new
+After deploying or changing account links, discover tools again in a new
 `execute` call.
 
 ## What is coming later
 
 - Automatic updates from another app or public package.
-- Imports between Executor app packages.
-- Stored-data schema migration between deployments.

@@ -10,7 +10,7 @@ import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Cause, Effect, Layer, Schema } from "effect";
 import { FetchHttpClient, HttpServerRequest } from "effect/http";
 import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
-import { autumnLive } from "./autumn-client.ts";
+import { autumnLive, autumnReads } from "./autumn-client.ts";
 import {
   recordSeatPlan,
   recordSeats,
@@ -65,7 +65,7 @@ export const billingLive = Effect.gen(function* () {
       const server = yield* settings.serverUrl;
       const catalog = yield* settings.catalog;
       const autumn = yield* AutumnClient.pipe(
-        Effect.provide(autumnLive({ secretKey: secret, serverUrl: server })),
+        Effect.provide(autumnLive({ secretKey: secret, serverUrl: server }, autumnReads.once)),
       );
       return { autumn, catalog };
     }).pipe(Effect.provide(FetchHttpClient.layer)),
@@ -84,15 +84,16 @@ export const billingLive = Effect.gen(function* () {
         recordSeatPlan(organization, active(customer, [catalog.team, catalog.enterprise])),
       );
       const plans = yield* use(autumn.listPlans({ customerId }));
+      // The billing provider lists plans in its own order; the page shows the smallest first.
+      const offered = [catalog.free, catalog.team, catalog.enterprise];
       return yield* Schema.decodeUnknownEffect(BillingOverview)({
         enterprise: active(customer, [catalog.enterprise]),
         plans: plans.list
-          .filter(
-            (plan) =>
-              !plan.archived && [catalog.free, catalog.team, catalog.enterprise].includes(plan.id),
-          )
+          .filter((plan) => !plan.archived && offered.includes(plan.id))
+          .toSorted((a, b) => offered.indexOf(a.id) - offered.indexOf(b.id))
           .map((plan) => {
-            const seats = plan.items.find((item) => item.featureId === catalog.members)?.price;
+            const memberItem = plan.items.find((item) => item.featureId === catalog.members);
+            const seats = memberItem?.price;
             const price = plan.price ?? seats;
             return {
               id: plan.id,
@@ -106,12 +107,26 @@ export const billingLive = Effect.gen(function* () {
               price: price
                 ? { amount: price.amount, interval: price.interval, unit: seats ? "member" : null }
                 : null,
+              // A per-member price or an unlimited balance has no cap on members.
+              members:
+                memberItem === undefined || memberItem.unlimited || seats
+                  ? null
+                  : memberItem.included,
+              domainVerification: plan.items.some(
+                (item) => item.featureId === catalog.domainVerification,
+              ),
+              // The catalog declares trials in days; another unit is not one this page can state.
+              trial:
+                plan.freeTrial?.durationType === "day"
+                  ? {
+                      days: plan.freeTrial.durationLength,
+                      cardRequired: plan.freeTrial.cardRequired,
+                    }
+                  : null,
             };
           }),
         subscriptions: customer.subscriptions
-          .filter((subscription) =>
-            [catalog.free, catalog.team, catalog.enterprise].includes(subscription.planId),
-          )
+          .filter((subscription) => offered.includes(subscription.planId))
           .map((subscription) => ({
             planId: subscription.planId,
             status: subscription.status,

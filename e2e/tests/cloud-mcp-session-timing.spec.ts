@@ -25,7 +25,7 @@ type Span = (typeof SpanQuery.Type)["data"][number]["span"];
 const delayMs = 3000;
 
 const timingAppSource = `import { defineApp, query, object, string, number, boolean, router } from "apps";
-export default defineApp({ accounts: {} }, async () => ({ tools: router({
+export default defineApp({}, async () => ({ tools: router({
   echo: query({ input: object({ text: string() }), description: "Echo text" },
     async (_ctx, { text }) => ({ text })),
   wait: query({ input: object({ ms: number() }), output: object({ done: boolean() }), description: "Answer after a delay" },
@@ -273,10 +273,65 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
           // A call alone on its object.
           const beforeAlone = (yield* evidence.requests).length;
           yield* echo(first, "Call alone", "alone");
-          const [alone] = yield* found(since(beforeAlone), 1);
+          const [aloneCall] = yield* located(since(beforeAlone), 1);
+          const alone = aloneCall === undefined ? undefined : timing(aloneCall);
           yield* evidence.json("alone.json", alone);
           accounted(alone);
           expect(alone?.object, "Nothing else was being answered on the object").toBe(0);
+
+          // The call's spans name its organization by opaque ID, so their latency can be split by
+          // organization. Each authentication says whether it opened a database connection. The
+          // call is inside a session, so the gateway routes it by its session id and neither
+          // authenticates nor connects; the object authenticates it.
+          const attributed = yield* telemetry.query(aloneCall?.trace ?? "").pipe(
+            Effect.map((result) => result.data.map(({ span }) => span)),
+            Effect.flatMap((spans) =>
+              spans.some((span) => span.operationName === "mcp.tool.call")
+                ? Effect.succeed(spans)
+                : Effect.fail(new Error("The call's tool span has not reached Motel")),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+          );
+          const spansNamed = (name: string) =>
+            attributed.filter((span) => span.operationName === name);
+          for (const name of [
+            "mcp.session.forward",
+            "mcp.session.request",
+            "mcp.tool.call",
+            "auth.authenticate",
+          ]) {
+            const spans = spansNamed(name);
+            expect(spans.length, `The call recorded ${name}`).toBeGreaterThan(0);
+            expect(
+              spans.map((span) => span.tags["executor.organization.id"]),
+              `${name} names the call's organization`,
+            ).toEqual(spans.map(() => actors.organization.id));
+          }
+          const authentications = spansNamed("auth.authenticate");
+          expect(
+            authentications.map((span) => span.tags["db.connect.opened"]),
+            "Each authentication says whether it opened a connection",
+          ).toEqual(authentications.map(() => expect.stringMatching(/^(true|false)$/)));
+          const gateway = spansNamed("mcp.session.forward")[0];
+          expect(gateway?.tags["executor.mcp.route"]).toBe("session");
+          expect(
+            authentications.filter((span) => span.parentSpanId === gateway?.parentSpanId),
+            "The gateway authenticates no request inside a session",
+          ).toEqual([]);
+          expect(
+            spansNamed("sql.connect").filter((span) => span.parentSpanId === gateway?.parentSpanId),
+            "The gateway opens no database connection for it",
+          ).toEqual([]);
+          // The call's tool rechecks its grant on the session object, which the warm-up above and
+          // this call's own request have already connected. Nothing else runs on the object, so
+          // no other call's connection is counted either.
+          const toolSpan = spansNamed("mcp.tool.call")[0];
+          expect(
+            authentications
+              .filter((span) => span.parentSpanId === toolSpan?.spanId)
+              .map((span) => span.tags["db.connect.opened"]),
+            "The warm session's recheck opens no connection",
+          ).toEqual(["false"]);
 
           // A call waiting on its app holds a request open on its object. Another call on the same
           // object starts during it, and then a call on another object. Local Cloud runs every
@@ -348,7 +403,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
           expect(malformed.text, "The object rejects a malformed request").toContain(
             '"Parse error"',
           );
-          // An MCP client cancels its call, which interrupts the request on the object.
+          // An MCP client cancels its call, which interrupts the call on the object.
           const beforeCancelled = (yield* evidence.requests).length;
           const cancelled = yield* wait(first, "A call the client cancels").pipe(
             Effect.timeout("500 millis"),
@@ -393,13 +448,18 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
           yield* echo(first, "Call after those requests", "after");
           const [after] = yield* found(since(beforeAfter), 1);
           // A span leaves its isolate with the first flush after it ends, which may be a later
-          // request's (packages/telemetry/src/isolate.ts). The interrupted call's spans are read
+          // request's (packages/telemetry/src/isolate.ts). The cancelled call's spans are read
           // once the requests above have flushed both isolates.
           const [interrupted] = yield* located(Effect.succeed(cancelledTraces), 1);
+          // MCP withholds a cancelled request's response, so the object ends its POST with an empty
+          // stream when the cancellation arrives, and records the time it observed until then.
+          const cancelledCall = interrupted === undefined ? undefined : timing(interrupted);
+          accounted(cancelledCall);
+          expect(cancelledCall?.status, "The object answers the cancelled call's POST").toBe("200");
           expect(
-            interrupted?.forward.tags["executor.mcp.session.handled_ms"],
-            "A request the object never answered records no timing",
-          ).toBeUndefined();
+            cancelledCall?.handledMs,
+            "The object answered at the cancellation, not when the tool finished",
+          ).toBeLessThan(delayMs);
           yield* evidence.json("recovered.json", {
             failed,
             after,

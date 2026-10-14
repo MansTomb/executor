@@ -5,7 +5,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -29,6 +31,22 @@ import (
 	"syscall"
 	"time"
 )
+
+// memoryPressureMiB is where workerd starts collecting garbage in every isolate: 60% of the
+// container's cgroup v2 memory limit, leaving room below the limit for a collection to take
+// effect before the kernel reclaims or kills. Zero, which turns the check off, when the limit
+// file is missing or says "max".
+func memoryPressureMiB(limitFile string) uint64 {
+	limit, err := os.ReadFile(limitFile)
+	if err != nil {
+		return 0
+	}
+	limitBytes, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return limitBytes / 1024 / 1024 * 60 / 100
+}
 
 func setting(name, fallback string) string {
 	if value := os.Getenv(name); value != "" {
@@ -300,13 +318,9 @@ func (b *bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 		defer cancel()
 		command := exec.CommandContext(ctx, "git", append([]string{"-c", "core.hooksPath=/dev/null"}, input.Args...)...)
-		command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + b.temporary, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
-		for name, value := range input.Environment {
-			if !strings.HasPrefix(name, "GIT_") && !strings.HasPrefix(name, "CONTENT_") && !strings.HasPrefix(name, "REQUEST_") && name != "PATH_INFO" && name != "QUERY_STRING" && name != "REMOTE_USER" && name != "SERVER_PROTOCOL" {
-				http.Error(w, "Invalid Git environment", 400)
-				return
-			}
-			command.Env = append(command.Env, name+"="+value)
+		if !b.gitEnvironment(command, input.Environment) {
+			http.Error(w, "Invalid Git environment", 400)
+			return
 		}
 		command.Stdin = bytes.NewReader(input.Input)
 		command.Stderr = io.Discard
@@ -331,6 +345,51 @@ func (b *bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Code   int    `json:"code"`
 			Output []byte `json:"output"`
 		}{code, output.Bytes()})
+	case "/git/http-backend":
+		// One Git HTTP request, streamed both ways so neither the pack nor a clone is held
+		// in memory. The request's own context ends the process when the client goes away.
+		var environment map[string]string
+		if err := json.Unmarshal([]byte(r.Header.Get("executor-git-environment")), &environment); err != nil {
+			http.Error(w, "Invalid host request", 400)
+			return
+		}
+		command := exec.CommandContext(r.Context(), "git", "-c", "core.hooksPath=/dev/null", "http-backend")
+		if !b.gitEnvironment(command, environment) {
+			http.Error(w, "Invalid Git environment", 400)
+			return
+		}
+		command.Stdin = r.Body
+		command.Stderr = io.Discard
+		output, err := command.StdoutPipe()
+		if err != nil {
+			http.Error(w, "Git process failed", 503)
+			return
+		}
+		// Git may write progress before it has read the whole push.
+		controller := http.NewResponseController(w)
+		if err := controller.EnableFullDuplex(); err != nil {
+			http.Error(w, "Git process failed", 503)
+			return
+		}
+		if err := command.Start(); err != nil {
+			http.Error(w, "Git process failed", 503)
+			return
+		}
+		w.Header().Set("content-type", "application/octet-stream")
+		buffer := make([]byte, 64<<10)
+		for {
+			read, err := output.Read(buffer)
+			if read > 0 {
+				if _, err := w.Write(buffer[:read]); err != nil {
+					break
+				}
+				controller.Flush()
+			}
+			if err != nil {
+				break
+			}
+		}
+		command.Wait()
 	case "/git/directory":
 		var input struct {
 			Path string `json:"path"`
@@ -380,6 +439,18 @@ func (b *bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// Git runs with a fixed environment plus the CGI and Git variables a request names.
+func (b *bridge) gitEnvironment(command *exec.Cmd, environment map[string]string) bool {
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + b.temporary, "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null"}
+	for name, value := range environment {
+		if !strings.HasPrefix(name, "GIT_") && !strings.HasPrefix(name, "CONTENT_") && !strings.HasPrefix(name, "REQUEST_") && name != "PATH_INFO" && name != "QUERY_STRING" && name != "REMOTE_USER" && name != "SERVER_PROTOCOL" && name != "HTTP_CONTENT_ENCODING" {
+			return false
+		}
+		command.Env = append(command.Env, name+"="+value)
+	}
+	return true
 }
 
 type limitedOutput struct {
@@ -457,7 +528,7 @@ func serve(mode string) error {
 	if os.SameFile(productInfo, motelInfo) {
 		return errors.New("Motel and product data cannot share a datastore")
 	}
-	paths := map[string]string{"product-data": filepath.Join(directory, "product"), "legacy-data": filepath.Join(directory, "hosted.pglite"), "app-data": filepath.Join(directory, "workerd"), "workflow-data": filepath.Join(directory, "workerd", "workflows"), "builds": filepath.Join(directory, "builds"), "motel-data": motel}
+	paths := map[string]string{"product-data": filepath.Join(directory, "product"), "legacy-data": filepath.Join(directory, "hosted.pglite"), "app-data": filepath.Join(directory, "workerd"), "workflow-data": filepath.Join(directory, "workerd", "workflows"), "builds": filepath.Join(directory, "builds")}
 	if mode == "export" {
 		// Export must not wake retained workflow alarms while their product callbacks
 		// are offline. Only the product actor opens its live durable store.
@@ -514,6 +585,17 @@ func serve(mode string) error {
 		appWorkers = strconv.Itoa(number)
 	}
 	config = bytes.ReplaceAll(config, []byte("@@APP_WORKERS@@"), []byte(appWorkers))
+	// Seconds an idle app Worker stays loaded; zero turns idle unloading off, null keeps the default.
+	appWorkerIdle := "null"
+	if value := values["EXECUTOR_APP_WORKER_IDLE_SECONDS"]; value != "" {
+		number, err := strconv.Atoi(value)
+		if err != nil || number < 0 {
+			return errors.New("EXECUTOR_APP_WORKER_IDLE_SECONDS must be a non-negative integer")
+		}
+		appWorkerIdle = strconv.Itoa(number)
+	}
+	config = bytes.ReplaceAll(config, []byte("@@APP_WORKER_IDLE_SECONDS@@"), []byte(appWorkerIdle))
+	config = bytes.ReplaceAll(config, []byte("@@MEMORY_PRESSURE_MB@@"), []byte(strconv.FormatUint(memoryPressureMiB("/sys/fs/cgroup/memory.max"), 10)))
 	config = bytes.ReplaceAll(config, []byte("@@SELF_ORIGIN@@"), []byte(strconv.Quote(values["BETTER_AUTH_URL"])))
 	// App builds install packages from this registry; empty selects the public registry.
 	registry := values["EXECUTOR_NPM_REGISTRY"]
@@ -558,18 +640,27 @@ func serve(mode string) error {
 	if err != nil || number < 1 || number > 65535 {
 		return errors.New("PORT must be between 1 and 65535")
 	}
-	args := []string{"serve", configPath, "-I/", "--experimental", "--external-addr=native=unix:" + socket, "--socket-addr=http=unix:" + filepath.Join(temporary, "product.sock")}
+	// The collector listens only on a private Unix socket. The product reaches it through its MOTEL
+	// binding and operators through `executor-host telemetry`; no address an app can fetch reaches it.
+	// The socket lives in this host's own temporary directory, so containers that share TMPDIR and
+	// mount their product volumes at the same path never share or remove each other's collector.
+	collector := filepath.Join(temporary, "motel.sock")
+	args := []string{"serve", configPath, "-I/", "--experimental", "--external-addr=native=unix:" + socket, "--external-addr=motel=unix:" + collector, "--socket-addr=http=unix:" + filepath.Join(temporary, "product.sock")}
 	for name, path := range paths {
 		args = append(args, "--directory-path="+name+"="+path)
 	}
 	if mode == "export" {
-		args = append(args, "--socket-addr=http=unix:"+filepath.Join(temporary, "export.sock"), "--socket-addr=motel=unix:"+filepath.Join(temporary, "motel.sock"))
+		args = append(args, "--socket-addr=http=unix:"+filepath.Join(temporary, "export.sock"))
 	}
 	command := exec.Command(filepath.Join(runtime, "workerd"), args...)
 	configureChild(command)
 	command.Stdout = os.Stderr
 	command.Stderr = os.Stderr
-	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temporary}
+	// The apps Worker seals credential handles with a secret derived from the encryption key, so
+	// handles survive a restart and no one else knows it. It reaches workerd only in its
+	// environment, never in the configuration file. Handles sealed under the constant earlier
+	// images used are refused after the upgrade; apps get new ones on their next invocation.
+	command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temporary, "EXECUTOR_CREDENTIAL_HANDLE_SECRET=" + credentialHandleSecret(values["EXECUTOR_ENCRYPTION_KEY"])}
 	for _, name := range []string{"SSL_CERT_FILE", "SSL_CERT_DIR"} {
 		if value := os.Getenv(name); value != "" {
 			command.Env = append(command.Env, name+"="+value)
@@ -596,6 +687,37 @@ func serve(mode string) error {
 		}
 		return exportDatabase(filepath.Join(temporary, "export.sock"), os.Args[2])
 	}
+	motelConfig, err := os.ReadFile(filepath.Join(runtime, "motel.capnp"))
+	if err != nil {
+		command.Process.Kill()
+		<-stopped
+		return err
+	}
+	motelConfigPath := filepath.Join(temporary, "motel.capnp")
+	if err = os.WriteFile(motelConfigPath, bytes.ReplaceAll(motelConfig, []byte("@@RUNTIME@@"), []byte(strings.Trim(strconv.Quote(runtime), "\""))), 0600); err != nil {
+		command.Process.Kill()
+		<-stopped
+		return err
+	}
+	forget, err := recordTelemetrySocket(directory, collector)
+	if err != nil {
+		command.Process.Kill()
+		<-stopped
+		return err
+	}
+	defer forget()
+	stopMotel := supervise(func() *exec.Cmd {
+		// A collector that exited leaves its socket file behind; the next one binds the same path.
+		os.Remove(collector)
+		command := exec.Command(filepath.Join(runtime, "workerd"), "serve", motelConfigPath, "-I/", "--experimental", "--directory-path=motel-data="+motel, "--socket-addr=motel=unix:"+collector)
+		configureChild(command)
+		command.Stdout = os.Stderr
+		command.Stderr = os.Stderr
+		command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temporary}
+		command.Dir = runtime
+		return command
+	}, time.Second, 30*time.Second, time.After)
+	defer stopMotel()
 
 	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout)
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(setting("HOST", "0.0.0.0"), port))
@@ -604,7 +726,7 @@ func serve(mode string) error {
 		<-stopped
 		return err
 	}
-	public := &http.Server{Handler: proxy, ReadHeaderTimeout: 10 * time.Second}
+	public := &http.Server{Handler: publicHandler(proxy), ReadHeaderTimeout: 10 * time.Second}
 	defer public.Close()
 	go func() { serverError <- public.Serve(publicListener) }()
 	signals := make(chan os.Signal, 1)
@@ -633,6 +755,30 @@ func serve(mode string) error {
 		command.Process.Kill()
 		return <-stopped
 	}
+}
+
+// publicHandler serves the public listener. fullDuplex sits outside the compressor so it reaches
+// the connection's own writer; Git's streamed requests and responses pass through unencoded.
+func publicHandler(proxy http.Handler) http.Handler {
+	return fullDuplex(compressedHandler(proxy))
+}
+
+// fullDuplex lets a response start before its request body is read. A Git push streams its
+// pack through to git http-backend, which answers with headers first; without this, Go stops
+// reading an HTTP/1 request body once the response starts and the push is cut short.
+func fullDuplex(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NewResponseController(w).EnableFullDuplex()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// credentialHandleSecret derives the apps Worker's credential handle secret from the instance's
+// encryption key, as the Node host does: HMAC-SHA256 of a fixed label, in hex.
+func credentialHandleSecret(encryptionKey string) string {
+	mac := hmac.New(sha256.New, []byte(encryptionKey))
+	mac.Write([]byte("executor credential handles"))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // workerd serves HTTP with kj's default HttpServerSettings; its pipelineTimeout
@@ -675,6 +821,56 @@ func productProxy(socket string, upstreamIdleTimeout time.Duration) *httputil.Re
 	}
 }
 
+// supervise keeps an auxiliary process running beside the product: it restarts the process
+// after an exit, waiting from minDelay up to maxDelay between attempts, and the product never
+// waits for it. A process that ran longer than maxDelay restarts after minDelay again. after
+// starts each wait. The returned function stops the process and waits for it to exit.
+func supervise(newCommand func() *exec.Cmd, minDelay, maxDelay time.Duration, after func(time.Duration) <-chan time.Time) func() {
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		delay := minDelay
+		for {
+			command := newCommand()
+			started := time.Now()
+			if err := command.Start(); err != nil {
+				fmt.Fprintln(os.Stderr, "Telemetry collector could not start:", err)
+			} else {
+				exited := make(chan struct{})
+				go func() { command.Wait(); close(exited) }()
+				select {
+				case <-exited:
+					fmt.Fprintln(os.Stderr, "Telemetry collector stopped; restarting")
+				case <-done:
+					command.Process.Signal(syscall.SIGTERM)
+					select {
+					case <-exited:
+					case <-time.After(15 * time.Second):
+						command.Process.Kill()
+						<-exited
+					}
+					return
+				}
+			}
+			if time.Since(started) > maxDelay {
+				delay = minDelay
+			}
+			select {
+			case <-after(delay):
+			case <-done:
+				return
+			}
+			delay = min(delay*2, maxDelay)
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(done) })
+		<-finished
+	}
+}
+
 func main() {
 	mode := "serve"
 	if len(os.Args) > 1 {
@@ -684,6 +880,8 @@ func main() {
 	switch mode {
 	case "serve", "export":
 		err = serve(mode)
+	case "telemetry":
+		err = queryTelemetry(os.Args[2:], os.Stdout)
 	case "health":
 		client := http.Client{Timeout: 4 * time.Second}
 		var response *http.Response
@@ -695,12 +893,74 @@ func main() {
 			}
 		}
 	default:
-		err = errors.New("expected serve, export, or health")
+		err = errors.New("expected serve, export, health, or telemetry")
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Executor:", err)
 		os.Exit(1)
 	}
+}
+
+// telemetryRecord names the file in the product volume that holds the serving host's collector
+// socket path. Only the host holding the volume lock writes or removes it.
+func telemetryRecord(directory string) string {
+	return filepath.Join(directory, ".executor-telemetry")
+}
+
+// recordTelemetrySocket publishes the collector's socket path for `executor-host telemetry` in the
+// same container. The returned function removes the record when the host stops.
+func recordTelemetrySocket(directory, socket string) (func(), error) {
+	record := telemetryRecord(directory)
+	pending := record + ".tmp"
+	if err := os.WriteFile(pending, []byte(socket), 0600); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(pending, record); err != nil {
+		os.Remove(pending)
+		return nil, err
+	}
+	return func() { os.Remove(record) }, nil
+}
+
+// queryTelemetry reads the bundled collector's API for an operator in the container, for example
+// `executor-host telemetry '/api/traces?limit=20'`. It writes the response body to output.
+func queryTelemetry(args []string, output io.Writer) error {
+	if len(args) != 1 || !strings.HasPrefix(args[0], "/") {
+		return errors.New("usage: executor-host telemetry '/api/traces?limit=20'")
+	}
+	directory, err := filepath.Abs(setting("EXECUTOR_DATA_DIR", "/app/data"))
+	if err != nil {
+		return err
+	}
+	// A host stopped without cleanup leaves a record of a socket nothing serves; dialing it fails.
+	recorded, err := os.ReadFile(telemetryRecord(directory))
+	if errors.Is(err, os.ErrNotExist) {
+		return errors.New("the telemetry collector is not running")
+	}
+	if err != nil {
+		return err
+	}
+	socket := string(recorded)
+	if !filepath.IsAbs(socket) {
+		return errors.New(telemetryRecord(directory) + " does not name a socket")
+	}
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+	}}
+	defer transport.CloseIdleConnections()
+	client := http.Client{Transport: transport, Timeout: 30 * time.Second}
+	response, err := client.Get("http://motel.internal" + args[0])
+	if err != nil {
+		return errors.New("the telemetry collector is not running")
+	}
+	defer response.Body.Close()
+	if _, err = io.Copy(output, response.Body); err != nil {
+		return err
+	}
+	if response.StatusCode != 200 {
+		return fmt.Errorf("the telemetry collector answered %d", response.StatusCode)
+	}
+	return nil
 }
 
 // Publish a completed PostgreSQL archive without replacing an existing backup.

@@ -4,6 +4,7 @@ import { OrganizationEntry } from "@executor-js/hosted-web/organization";
 import { SetupPageFrame } from "@executor-js/hosted-web/pages/agent-setup";
 import { organizationsAtom } from "@executor-js/hosted-web/contracts/organization";
 import { HostedEntry, HostedEntryLoading } from "@executor-js/hosted-web/entry";
+import { UnknownPagePending } from "@executor-js/hosted-web/page-pending";
 import { McpConsentLoading } from "@executor-js/ui/dashboard/mcp-consent";
 import { IconPicker } from "@executor-js/hosted-web/icon-picker";
 import {
@@ -19,6 +20,7 @@ import {
   type SelectedOrganizationIcon,
 } from "@executor-js/hosted-web/contracts/organization-icon";
 import { Button } from "@executor-js/ui/components/button";
+// oxlint-disable-next-line no-restricted-imports -- OrganizationEntryGate renders it only at /, which its navigation leaves; TeamEntry reads atoms, not the location
 import { Link, Navigate, useLocation } from "@tanstack/react-router";
 import { Cause, Exit, Option, Schema } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -27,29 +29,39 @@ import { reportBrowserUsage } from "@executor-js/hosted-web/contracts/product-an
 import {
   OnboardingDraft,
   OnboardingInvitation,
+  OnboardingV1Workspace,
   type TeamDetails,
 } from "../../../../src/contracts/onboarding.ts";
 import { prepareTeamAtom, createTeamAtom } from "../../contracts/onboarding.ts";
+import { useCanImportFromV1 } from "./v1-import-links.tsx";
 
 /** Confirm first-team details at entry; exact invitation and organization links remain intact. */
 export function TeamSetupBoundary({ children }: { readonly children: ReactNode }) {
   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
   const { pathname } = useLocation();
-  if (
-    session === undefined ||
-    session === null ||
-    (pathname !== "/" && pathname !== "/mcp/authorize")
-  )
-    return children;
+  // Approving a client, by consent or by a device's code, can create the first team on the way.
+  const approval = pathname === "/mcp/authorize" || pathname === "/device";
+  if (session === undefined || session === null || (pathname !== "/" && !approval)) return children;
   return (
     <OrganizationEntryGate
       key={session.user.id}
       userId={session.user.id}
-      destination={pathname === "/mcp/authorize" ? "mcp" : "entry"}
+      destination={approval ? "mcp" : "entry"}
     >
       {children}
     </OrganizationEntryGate>
   );
+}
+
+/**
+ * What the entry gate shows while it reads memberships. On the server that read suspends the root,
+ * so the root shows this too; no other page waits there, so any other page stays blank.
+ */
+export function TeamSetupPending() {
+  const { pathname } = useLocation();
+  if (pathname === "/mcp/authorize") return <McpConsentLoading />;
+  if (pathname === "/") return <HostedEntryLoading />;
+  return <UnknownPagePending fullScreen />;
 }
 
 /** The dedicated setup route owns its membership check, form, and completion navigation. */
@@ -77,7 +89,7 @@ function OrganizationEntryGate({
   const organizations = useAtomValue(organizationsAtom);
   const refresh = useAtomRefresh(organizationsAtom);
   return AsyncResult.builder(organizations)
-    .onInitial(() => (destination === "mcp" ? <McpConsentLoading /> : <HostedEntryLoading />))
+    .onInitial(() => <TeamSetupPending />)
     .onFailure(() => (
       <HostedEntry title="Unable to load your organizations" description="Try again to continue.">
         <Button onClick={refresh}>Try again</Button>
@@ -118,7 +130,9 @@ function TeamEntry({
         ? "invitation"
         : Schema.is(OnboardingDraft)(prepared.value)
           ? "team_details"
-          : "ready";
+          : Schema.is(OnboardingV1Workspace)(prepared.value)
+            ? "v1_workspace"
+            : "ready";
   useEffect(() => {
     reportBrowserUsage({ area: "onboarding", action: step, outcome: "viewed" });
   }, [step]);
@@ -145,6 +159,7 @@ function TeamEntry({
       </SetupPageFrame>
     );
   const entry = AsyncResult.isSuccess(created) ? created.value : prepared.value;
+  if (Schema.is(OnboardingV1Workspace)(entry)) return <V1Workspace />;
   if (Schema.is(OnboardingInvitation)(entry)) {
     if (mcp)
       return (
@@ -170,6 +185,31 @@ function TeamEntry({
   if (!mcp && (created.waiting || AsyncResult.isSuccess(created)))
     return <Navigate to="/create/agent" replace />;
   return children;
+}
+
+/**
+ * People in an Executor v1 organization keep using v1; v2 creates no team for them. A
+ * single-member workspace can be imported instead, so only its member is offered the import.
+ */
+function V1Workspace() {
+  const canImport = useCanImportFromV1();
+  return (
+    <HostedEntry
+      title="Your workspace is on Executor v1"
+      description="We're getting Executor v2 ready for you. Only new users can use it for now. Use the button below to sign in to Executor v1 and keep using it."
+    >
+      <div className="flex flex-wrap gap-3">
+        <Button asChild>
+          <a href="https://executor.sh/login">Sign in to Executor v1</a>
+        </Button>
+        {canImport && (
+          <Button asChild variant="outline">
+            <Link to="/v1-import">Import from v1</Link>
+          </Button>
+        )}
+      </div>
+    </HostedEntry>
+  );
 }
 
 function TeamForm({

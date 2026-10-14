@@ -1,13 +1,16 @@
 import { useId, type ReactNode } from "react";
-import type { AccountId, App, Profile } from "@executor-js/sdk";
-import { providerDisplayUrl, selectedIds, type AccountSummary } from "../../contracts/dashboard.ts";
+import type { AccountId, App, ProviderId } from "@executor-js/sdk";
+import type { AccountSummary } from "../../contracts/dashboard.ts";
 import {
   connectionTargetKey,
   connectionTargetLabel,
+  connectionEventsLabel,
   type ConnectionApp,
+  type ConnectionEvents,
   type ConnectionTarget,
   type ConnectionTools,
 } from "../../contracts/scoped-connections.ts";
+import type { AppAccountLink } from "../../contracts/app-accounts.ts";
 import { Checkbox } from "../components/checkbox.tsx";
 import { Button } from "../components/button.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
@@ -20,74 +23,60 @@ import {
 } from "../components/select.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
-import { ProviderIcon } from "./common.tsx";
-import { accountContexts } from "./account-group.tsx";
+import { AppIcon } from "./common.tsx";
 import type { ConnectionToolPickerProps } from "./scoped-connections.tsx";
 
-/** One way an app can run: a saved profile, or an account with the app's default setup. */
+/** One way an app can run: as one account the user can use with it. */
 export interface Choice {
   readonly target: ConnectionTarget;
   readonly description: string;
   /** Underlying accounts, used to apply one account across many apps at once. */
   readonly accounts: readonly AccountId[];
+  readonly provider: ProviderId;
 }
 
 /** Everything an app offers a connection, computed once per inventory rather than per render. */
 export interface AppChoices {
   readonly app: App;
-  /** Profiles first, then accounts that no single-account profile already covers. */
+  /** Linked accounts first, then other usable accounts of a required provider. */
   readonly options: readonly Choice[];
   readonly needsAccount: boolean;
-  readonly catalogProfiles: readonly Profile[];
 }
 
+/**
+ * Saving a connection links any chosen account that is not linked to the app yet. Only user
+ * requirements are chosen for: the app's own requirements use the accounts linked for everyone, which app
+ * access authorizes, so an app with only those runs as the app.
+ */
 export function appChoices(
   app: App,
-  profiles: readonly Profile[],
+  links: readonly AppAccountLink[],
   accounts: readonly AccountSummary[],
 ): AppChoices {
-  const contexts = accountContexts(app, profiles);
-  const requirements = Object.values(app.requirements.accounts);
-  const accountLabel = (id: AccountId) => {
-    const account = accounts.find((account) => account.id === id);
-    return account === undefined ? "Account unavailable" : account.label || "Unnamed account";
-  };
-  const profileChoices: readonly Choice[] = contexts.flatMap((context) => {
-    if (context.profile === undefined) return [];
-    const ids = selectedIds(context.accounts);
-    const names = ids.map(accountLabel).join(", ") || "No accounts";
-    return [
-      {
-        target: { kind: "profile", id: context.profile.id, label: `${context.label} · ${names}` },
-        description: "Saved profile",
-        accounts: ids,
-      },
-    ];
-  });
-  // A profile that uses exactly one account already stands for that account.
-  const covered = new Set(
-    profileChoices.flatMap((choice) => (choice.accounts.length === 1 ? choice.accounts : [])),
+  const requirements = Object.values(app.requirements.accounts).filter(
+    (requirement) => requirement.scope === "user",
   );
-  const accountChoices: readonly Choice[] = accounts
-    .filter(
-      (account) =>
-        !covered.has(account.id) &&
-        requirements.some((requirement) => requirement.provider === account.provider),
+  const linked = new Set(links.flatMap((link) => (link.app === app.id ? [link.account] : [])));
+  const options = accounts
+    .filter((account) =>
+      requirements.some((requirement) => requirement.provider === account.provider),
     )
-    .map((account) => ({
+    .toSorted((a, b) => Number(linked.has(b.id)) - Number(linked.has(a.id)))
+    .map((account): Choice => ({
       target: { kind: "account", id: account.id, label: account.label || "Unnamed account" },
-      description: "Default setup",
+      description: linked.has(account.id) ? "Linked to this app" : "Links when saved",
       accounts: [account.id],
+      provider: account.provider,
     }));
-  return {
-    app,
-    options: [...profileChoices, ...accountChoices],
-    needsAccount: requirements.length > 0,
-    catalogProfiles: contexts.flatMap((context) =>
-      context.profile === undefined ? [] : [context.profile],
-    ),
-  };
+  return { app, options, needsAccount: requirements.length > 0 };
 }
+
+/** The events an app's active deployment declares, by name. */
+export const declaredEventNames = (app: App | undefined): readonly string[] =>
+  Object.keys(app?.requirements.events ?? {}).toSorted();
+
+/** Whether an app declares any event a connection could include. */
+export const declaresEvents = (app: App | undefined) => declaredEventNames(app).length > 0;
 
 /** A newly included app is ready immediately when there is exactly one way to run it. */
 export function initialSelection(choices: AppChoices): ConnectionApp {
@@ -100,7 +89,7 @@ export function initialSelection(choices: AppChoices): ConnectionApp {
   };
 }
 
-/** The way to run an app as one account alone; a saved profile wins over the default setup. */
+/** The way to run an app as one account alone. */
 export const accountOption = (choices: AppChoices, account: AccountId): Choice | undefined =>
   choices.options.find((choice) => choice.accounts.length === 1 && choice.accounts[0] === account);
 
@@ -121,17 +110,6 @@ export function selectionIssue(choices: AppChoices, selection: ConnectionApp): s
   return undefined;
 }
 
-/** Prefer a selected profile's catalog, then any saved profile, then the app's own catalog. */
-function catalogProfile(choices: AppChoices, selection: ConnectionApp): Profile | undefined {
-  const selected = selection.targets.flatMap((target) =>
-    target.kind === "profile" ? [target.id] : [],
-  );
-  return (
-    choices.catalogProfiles.find((profile) => selected.includes(profile.id)) ??
-    choices.catalogProfiles[0]
-  );
-}
-
 /** One dense row per app. Controls appear only once the app is included. */
 export function ConnectionAppRow({
   choices,
@@ -150,11 +128,13 @@ export function ConnectionAppRow({
 }) {
   const id = useId();
   const { app } = choices;
-  const provider = Object.values(app.requirements.accounts)[0]?.definition;
   const issue = selection === undefined ? undefined : selectionIssue(choices, selection);
   const only = choices.options.length === 1 ? choices.options[0] : undefined;
   const setTools = (tools: ConnectionTools) => {
     if (selection !== undefined) onChange({ ...selection, tools });
+  };
+  const setEvents = (events: ConnectionEvents) => {
+    if (selection !== undefined) onChange({ ...selection, events });
   };
   return (
     <div className={selection === undefined ? "" : "bg-muted/20"}>
@@ -171,7 +151,7 @@ export function ConnectionAppRow({
               if (checked !== true) onExpandedChange(false);
             }}
           />
-          <ProviderIcon name={provider?.name ?? app.name} url={providerDisplayUrl(provider)} />
+          <AppIcon app={app} />
           <span className="min-w-0">
             <span className="block truncate text-[13px] font-medium" title={app.name}>
               {app.name}
@@ -225,6 +205,14 @@ export function ConnectionAppRow({
                 <SelectItem value="selected">Specific tools</SelectItem>
               </SelectContent>
             </Select>
+            {declaresEvents(app) && (
+              <EventsPicker
+                appName={app.name}
+                names={declaredEventNames(app)}
+                events={selection.events}
+                onChange={setEvents}
+              />
+            )}
             <Button
               type="button"
               variant="ghost"
@@ -263,7 +251,6 @@ export function ConnectionAppRow({
           ) : (
             renderTools({
               app,
-              profile: catalogProfile(choices, selection),
               names: selection.tools.names,
               onChange: (names) => setTools({ kind: "selected", names }),
             })
@@ -271,6 +258,76 @@ export function ConnectionAppRow({
         </div>
       )}
     </div>
+  );
+}
+
+/** All of an app's events, including later ones, or exact names; none selected means none. */
+function EventsPicker({
+  appName,
+  names,
+  events,
+  onChange,
+}: {
+  readonly appName: string;
+  readonly names: readonly string[];
+  readonly events: ConnectionEvents | undefined;
+  readonly onChange: (events: ConnectionEvents) => void;
+}) {
+  const all = events === undefined || events.kind === "all";
+  const selected = new Set(all ? names : events.names);
+  const toggle = (name: string, checked: boolean) =>
+    onChange({
+      kind: "selected",
+      names: checked
+        ? [...selected, name].toSorted()
+        : [...selected].filter((item) => item !== name),
+    });
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-label={`Events for ${appName}`}
+          className="min-w-0 flex-1 justify-between text-xs font-normal sm:w-32 sm:flex-none"
+        >
+          <span className="truncate">{connectionEventsLabel(events)}</span>
+          <HugeiconsIcon icon={ArrowDown01Icon} size={14} className="shrink-0 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-72 p-1.5" align="end">
+        <h3 className="px-2 pt-2 pb-1 text-[11px] font-medium text-muted-foreground">Events</h3>
+        <label className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-muted/60">
+          <Checkbox
+            checked={all}
+            onCheckedChange={(checked) =>
+              onChange(checked === true ? { kind: "all" } : { kind: "selected", names: [...names] })
+            }
+          />
+          <span className="min-w-0">
+            <span className="block truncate text-[13px]">All events</span>
+            <span className="block truncate text-[11px] text-muted-foreground">
+              Including events the app adds later
+            </span>
+          </span>
+        </label>
+        <div className="my-1 border-t" />
+        {names.map((name) => (
+          <label
+            key={name}
+            className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-muted/60"
+          >
+            <Checkbox
+              checked={selected.has(name)}
+              disabled={all}
+              onCheckedChange={(checked) => toggle(name, checked === true)}
+            />
+            <span className="truncate font-mono text-[12px]">{name}</span>
+          </label>
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -299,7 +356,7 @@ function AccountsPicker({
       ? "Runs as…"
       : selection.targets.length === 1 && selection.targets[0] !== undefined
         ? connectionTargetLabel(selection.targets[0])
-        : `${selection.targets.length} setups`;
+        : `${selection.targets.length} accounts`;
   const toggle = (target: ConnectionTarget, checked: boolean) => {
     const key = connectionTargetKey(target);
     onChange(

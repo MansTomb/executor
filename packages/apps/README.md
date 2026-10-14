@@ -4,16 +4,20 @@ Author apps with ordinary TypeScript and Promises. Framework operations use
 Effect v4 internally. The root export contains declarations and schemas;
 protocol helpers have separate entry points.
 
-The Executor package starts at `0.0.1-beta.0`. The first npm beta is being
-prepared; `latest` belongs to the earlier package and is not this framework.
-Once the beta is published, install it with `npm install --save-exact apps@beta`.
-For local testing, install the tarball made by `bun run pack` in this directory.
+Install the exact version your Executor host runs: agents read it with the
+Executor app's `framework.release`, and `executor apps framework` prints it. Run
+`npm install --save-exact apps@<version>` and declare the same version in the
+app's `package.json`. Do not install `apps@latest`; that tag is an unrelated,
+earlier package. The package includes `framework-reference.json`, generated from
+these declarations. The Executor app's `app-authoring` skill is the authoring
+guide; [Author an app](https://v2.executor.sh/docs/author-an-app) summarizes
+it. In this repository, `bun run pack` builds a local tarball.
 
 ```ts
 import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
 
-export default defineApp({ accounts: {} }, async ({ signal }) => ({
+export default defineApp({}, async ({ signal }) => ({
   tools: await mcpRouter({
     url: "https://mcp.deepwiki.com/mcp",
     ...(signal === undefined ? {} : { signal }),
@@ -21,17 +25,15 @@ export default defineApp({ accounts: {} }, async ({ signal }) => ({
 }));
 ```
 
-| Import           | Helper                   | App dependency              |
-| ---------------- | ------------------------ | --------------------------- |
-| `apps/mcp`       | `mcpRouter`, `mcpHealth` | `@modelcontextprotocol/sdk` |
-| `apps/mcp/stdio` | `stdioRouter`            | `@modelcontextprotocol/sdk` |
-| `apps/graphql`   | `graphqlRouter`          | `graphql`                   |
-| `apps/openapi`   | `openapiRouter`          | None                        |
+| Import         | Helper                   | App dependency              |
+| -------------- | ------------------------ | --------------------------- |
+| `apps/mcp`     | `mcpRouter`, `mcpHealth` | `@modelcontextprotocol/sdk` |
+| `apps/graphql` | `graphqlRouter`          | `graphql`                   |
+| `apps/openapi` | `liveOpenapiRouter`      | None                        |
 
 MCP and GraphQL are optional peers. Subpath imports isolate their module graphs;
-optional peers keep unused libraries out of the dependency installation. The
-MCP HTTP entry point does not import the stdio process adapter. Stdio requires
-a host with process support.
+optional peers keep unused libraries out of the dependency installation. Apps
+reach MCP servers over HTTP; they cannot start local processes.
 
 `defineApp` declares behavior, not a name. Package identity lives in
 `package.json.name`; the host separately names each installed copy.
@@ -39,7 +41,7 @@ a host with process support.
 Declare the needed peer in the deployed app's `package.json`, for example:
 
 ```json
-{ "name": "deepwiki", "dependencies": { "@modelcontextprotocol/sdk": "1.30.0" } }
+{ "name": "deepwiki", "dependencies": { "@modelcontextprotocol/sdk": "1.32.1" } }
 ```
 
 Product runtimes compile authored source and declared dependencies inside workerd,
@@ -57,7 +59,7 @@ operation and shared schema before publishing the current revision. A warm call
 reads that revision and the requested operation's schema dependencies. It does
 not download, parse, or read the full catalog. `openapiRouter` remains the
 lower-level helper for already normalized metadata.
-`parameterDefaults` binds path, query or header values to the selected account.
+`parameterDefaults` binds path, query or header values to the account.
 Those parameters become optional and publish their value as the schema `default`;
 an explicit value still wins.
 
@@ -69,14 +71,31 @@ Accounts bind at execution time. Live documents cannot change credential
 placement or send credentials to another origin. Editing generated source and
 redeploying is required to change those static choices.
 
-Authenticated templates use `provider.many()` and `accountRouter` from `apps`:
+Requirements are declared by scope. `user: { accounts }` holds each caller's
+own accounts, read as `ctx.user.accounts`; `app: { accounts }` holds the app's
+own accounts, which people who can edit the app link for everyone, read as
+`ctx.app.accounts`. A requirement name is used once across both. Contexts of the
+`"app"` scope, such as `MutationContext<typeof requirements, "app">`, have no
+`user`: app schedules (`appCron`, `appInterval`), webhooks whose `account` is
+`{ app: "..." }` and the workflows they start run without a caller. App
+schedules also accept a mutation whose handler declares no parameters, unless
+the call passes explicit type arguments: their third, the context, defaults to
+the caller's. A
+handler that declares its context without a type gets the caller's, with
+`ctx.user`, as a tool's does; app schedules reject it. User
+schedules (`userCron`, `userInterval`) run once for each member who enables them,
+as them. `{ accounts }` requirements and `ctx.accounts` are removed.
+
+Authenticated templates use a `provider.many()` user requirement and
+`accountRouter` from `apps`. A factory also runs without a caller for app-scope
+work, so `ctx.user` may be undefined there:
 
 ```ts
 export default defineApp(
-  { accounts: { service: provider.many() } },
-  async ({ accounts, signal }) => ({
+  { user: { accounts: { service: provider.many() } } },
+  async ({ user, signal }) => ({
     tools: await accountRouter(
-      accounts.service,
+      user?.accounts.service ?? [],
       (account) =>
         mcpRouter({
           url: "https://example.com/mcp",
@@ -134,16 +153,16 @@ account and workspace access. The SDK does not establish permission equivalence
 between upstream systems or cache interceptor results.
 
 Each combined tool takes `{ accountId, input }`. `input` keeps the upstream shape;
-`accountId` must identify a selected account that exposes that tool. Discovery
+`accountId` must identify one of the caller's accounts that exposes that tool. Discovery
 and validation remain specific to each account. An empty selection returns no
-tools. This helper also works with OpenAPI, GraphQL and stdio operations.
+tools. This helper also works with OpenAPI and GraphQL operations.
 
 Contracts live in `src/contracts/`; native operations live in `src/implementation/`.
 Promise conversion happens at the public entry points. `apps/mcp/effect` exposes
 the native HTTP discovery operation for host-side import probing.
 
 Helpers are ordinary app libraries. The SDK still builds and invokes one app
-model with the configured account selections; there is no protocol dispatcher.
+model with the accounts each operation runs with; there is no protocol dispatcher.
 Existing retained builds keep their bundled code until a new deployment.
 
 The packaged runtime uses host protocol 1. A package missing that runtime or using
@@ -158,7 +177,8 @@ returns `approved`, `denied`, or `user-approval`. It receives `toolName`, decode
 `toolInput`, and `signal`. Reuse a policy function across tools or attach it when
 composing generated tools. There is no app-level policy.
 The framework enforces the decision before the selected tool body.
-Human approval delivery is separate; Executor SDK call/resume persists the pending invocation. See [tool approvals](../../notes/app-policies.md).
+Human approval delivery is separate; Executor SDK call/resume persists the pending invocation.
+See [Tools and approvals](https://v2.executor.sh/docs/concepts/tools-and-approvals).
 
 ## Browser UI
 
@@ -208,8 +228,7 @@ Use the Promise client methods for one-time reads and explicit writes.
 
 The product host supplies authentication and binds the browser to one configured
 app. No app ID, account token or Executor API key belongs in UI code. New
-activations reload open app pages. See [the full example](../../playground/demo-apps/live-inbox/ui/main.tsx)
-and [hosting notes](../../notes/app-ui.md).
+activations reload open app pages. The `live-inbox` example in `framework-reference.json` is a complete app with a UI.
 
 ## Webhooks
 
@@ -222,14 +241,13 @@ The SDK creates durable subscriptions with `executor.webhooks.create`. A
 subscription pins its deployment and saved account IDs while resolving fresh
 credentials on each invocation. `.many()` sources use one subscription per
 selected source account. Local, self-host and cloud use the same author API.
-See [the lifecycle and management API](../../notes/webhooks.md) and
-[the GitHub/Gmail example](../../playground/demo-apps/issue-mail/webhooks.ts).
+The app-authoring skill's `webhooks.md` covers the lifecycle and examples.
 
 Providers without a webhook API can use
 `setup: { instructions: "...", signingSecret: "executor" }`
 instead of `register` and `unregister`. The private setup page collects the
 `state` schema and the signing secret. Agents get a setup link and safe status
-through the normal management API. See [manual setup](../../notes/webhooks.md#manual-registration).
+through the normal management API.
 
 ## Workflows
 
@@ -243,9 +261,7 @@ Start and inspect runs through `executor.apps.workflowRuns`. Inside an app,
 queries can inspect `ctx.workflows`; mutations and webhooks can also start and
 terminate runs. Workflow execution has no live `elicit` capability.
 
-See [workflow semantics](../../notes/app-workflows.md) for replay, idempotency,
-self-host recovery and v1 limits, and the
-[repository report example](../../playground/demo-apps/workflow-report/) for a full app.
+The app-authoring skill's `workflows.md` covers replay, idempotency and limits.
 
 Local and self-host products run authored apps in Alchemy/workerd, using the
 same Worker build format and app-data facets as Cloud. Host filesystem and
@@ -260,7 +276,7 @@ private data; it also includes the current credential fingerprint. Use the
 shared cache for public metadata that is identical across accounts.
 
 ```ts
-const projects = await ctx.cache.forAccount(ctx.accounts.service).get({
+const projects = await ctx.cache.forAccount(ctx.user.accounts.service).get({
   key: ["projects", region],
   schema: array(object({ id: string(), name: string() })),
   freshFor: "1 minute",
@@ -301,8 +317,8 @@ mutation can be mounted at only one path.
 
 Protocol helpers return routers, so an app mounts several sources under keys.
 `mcpRouter` takes its title, description, icons and instructions from the
-server, and `liveOpenapiRouter` from the document's `info` and tags. `stdioRouter`,
-`openapiRouter` and `graphqlRouter` carry no source metadata. A nested router that fails to load is reported on its own catalog entry;
+server, and `liveOpenapiRouter` from the document's `info` and tags. `openapiRouter`
+and `graphqlRouter` carry no source metadata. A nested router that fails to load is reported on its own catalog entry;
 the app's other tools still load. The root failing fails discovery.
 
 `dynamicRouter({ list, resolve })` separates descriptions from executable
@@ -315,7 +331,7 @@ duplicate names.
 
 ```ts
 export default defineApp(
-  { accounts: {} },
+  {},
   {
     tools: dynamicRouter({
       list: async () => [

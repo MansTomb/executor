@@ -2,6 +2,7 @@
 export { requestServices } from "./implementation/request-services.ts";
 export * from "./contracts/product-analytics.ts";
 export { withExecutorAnalytics } from "./implementation/product-analytics.ts";
+export { withDeploySetupWake } from "./implementation/deploy-setup.ts";
 export { HostedApi } from "./contracts/api.ts";
 export { HostedCatalog } from "./contracts/catalog.ts";
 export { hostedHandlers } from "./implementation/api.ts";
@@ -21,10 +22,24 @@ export {
 } from "./contracts/auth.ts";
 export { authOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
 export * from "./contracts/organization.ts";
-export { HostedExecutor } from "./contracts/executor.ts";
+export {
+  CallStateCache,
+  ConcurrentStatements,
+  HostedExecutor,
+  StatementBatch,
+  type CallState,
+  type StatementGroups,
+} from "./contracts/executor.ts";
 export { OrganizationDefaults } from "./contracts/organization-defaults.ts";
 export { organizationDefaults } from "./implementation/organization-defaults.ts";
-export { lookupMembership, lookupOrganizationSlug } from "./implementation/organization.ts";
+export { executorDefaultRedeployed } from "./implementation/executor-app-upgrades.ts";
+export { hostedAppCopies } from "./implementation/profile-app-copies.ts";
+export { linkUserAccount } from "./implementation/app-accounts.ts";
+export {
+  lookupMembership,
+  lookupOrganizationSlug,
+  noOrganizationRemovals,
+} from "./implementation/organization.ts";
 export { requireOrganizationAdmin, requireOrganizationOwner } from "./implementation/access.ts";
 export { hostedMiddlewareLive } from "./implementation/middleware.ts";
 export * from "./contracts/organization-removal.ts";
@@ -39,6 +54,12 @@ export { migrateOrganizationRemovals } from "./implementation/organization-remov
 
 export { hostedOAuthCallback } from "./implementation/accounts.ts";
 export * from "./contracts/oauth-client-metadata.ts";
+export {
+  FirstPartyOAuthClientDefinition,
+  firstPartyOAuthClientDefinitions,
+  firstPartyOAuthClients,
+  firstPartyOAuthCredentialSettings,
+} from "./implementation/first-party-oauth.ts";
 export {
   clientMetadataDocument,
   clientMetadataSetting,
@@ -56,14 +77,21 @@ export * from "./contracts/mcp.ts";
 export {
   mcpBrowserGrantError,
   mcpConnectionStore,
+  provisionHostedConnectionResources,
   provisionHostedOAuthResources,
+  type HostedOAuthOrigins,
+  type RefreshRejection,
 } from "./implementation/mcp-oauth.ts";
+export { authEndpointTemplates, grantExpiry, type GrantExpiry } from "@executor-js/mcp-auth/oauth";
+export type { OriginList, ResourceOrigins } from "@executor-js/mcp-auth";
+export { ConnectionId, mcpOAuthResources, singleResourceOrigin } from "@executor-js/mcp-auth";
 export { apiBearerAccess, mcpBearerAccess } from "./implementation/bearer-access.ts";
 export {
   makeHostedMcp,
   mcpSessionKey,
   dispatchHostedMcp,
   authenticatedMcp,
+  mcpChallenge,
   mcpProtectedResource,
   mcpAuthorizationServer,
 } from "./implementation/mcp-http.ts";

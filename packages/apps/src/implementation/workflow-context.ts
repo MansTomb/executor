@@ -1,6 +1,7 @@
 /** Author-facing step methods delegate persistence to the host's durable engine. */
 import { Cause, Effect, Schema } from "effect";
-import type { AppDefinition } from "../contracts/app.ts";
+import type { AccountScope, AppDefinition } from "../contracts/app.ts";
+import type { AppRequirements } from "../contracts/context.ts";
 import {
   NonRetryableError,
   WorkflowFailure,
@@ -11,13 +12,17 @@ import {
   workflowDurationMillis,
   type WorkflowContext,
   type WorkflowExecution,
-  type WorkflowStepContext,
+  type WorkflowStepContext as AuthorStepContext,
 } from "../contracts/workflows.ts";
 import { JsonValue } from "../contracts/schema.ts";
 import { nativeOperation } from "./operations.ts";
 import { declaredOperations } from "./router.ts";
-import { toPromise } from "./authoring.ts";
+import { fromPromise, toPromise } from "./authoring.ts";
 import { failureDetail } from "./failure-detail.ts";
+
+/** A step's context as the host builds it: a run without a caller has no `user`. */
+type WorkflowStepContext = AuthorStepContext<AppRequirements, AccountScope> &
+  Partial<Pick<AuthorStepContext, "user">>;
 
 /**
  * Preserve typed failures and cancellation. Other errors keep their name and bounded message,
@@ -83,6 +88,7 @@ export const makeWorkflowContext = (
         const key = JSON.stringify([kind, name]);
         const count = (counts.get(key) ?? 0) + 1;
         counts.set(key, count);
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- Web Crypto
         const digest = yield* Effect.tryPromise({
           try: () =>
             crypto.subtle.digest(
@@ -131,10 +137,7 @@ export const makeWorkflowContext = (
                   );
                   const step = yield* fresh(stepId, AbortSignal.any([signal, controller.signal]));
                   const result = yield* workflowSafe(
-                    Effect.tryPromise({
-                      try: () => callback(step.context),
-                      catch: (error) => error,
-                    }),
+                    fromPromise(callback, "step")(step.context),
                     step.secrets,
                   );
                   return yield* Schema.decodeUnknownEffect(WorkflowValue)(result).pipe(

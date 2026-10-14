@@ -1,7 +1,7 @@
 import { sso } from "@better-auth/sso";
 import type { AuthContext, BetterAuthPlugin, GenericEndpointContext } from "better-auth";
 import { getCurrentAdapter } from "better-auth";
-import { APIError, createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
 import { Option, Schema } from "effect";
 import type { CloudBillingHooks } from "./auth-options.ts";
@@ -23,6 +23,8 @@ const Registration = Schema.Struct({
 });
 
 const invalid = () => new APIError("BAD_REQUEST", { message: "Invalid SSO configuration." });
+const invalidEmail = () =>
+  new APIError("BAD_REQUEST", { code: "INVALID_EMAIL", message: "Invalid email" });
 const parse = <A>(schema: Schema.Decoder<A>, value: unknown): A =>
   Option.getOrThrowWith(Schema.decodeUnknownOption(schema)(value), invalid);
 
@@ -231,6 +233,23 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
       before: [
         ...(lifecycle.hooks?.before ?? []),
         {
+          // The identity provider owns an SSO user's address, and SSO refuses a linked user
+          // whose email has left the connection's domain.
+          matcher: (context: { path?: string }) =>
+            context.path === "/email-otp/request-email-change" ||
+            context.path === "/email-otp/change-email",
+          handler: createAuthMiddleware(async (context) => {
+            const session = await getSessionFromCtx(context);
+            if (session === null) return;
+            const accounts = await context.context.internalAdapter.findAccounts(session.user.id);
+            if (accounts.some((account) => Schema.is(ProviderId)(account.providerId)))
+              throw new APIError("FORBIDDEN", {
+                code: "SSO_MANAGED_EMAIL",
+                message: "Your organization's SSO connection manages your email.",
+              });
+          }),
+        },
+        {
           matcher: (context: { path?: string }) => context.path === "/sign-in/sso",
           handler: createAuthMiddleware(async (context) => {
             const input = parse(
@@ -241,11 +260,17 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
               context.body,
             );
             if (input.providerId !== undefined || input.email === undefined) return;
-            const email = parse(
-              Schema.String.check(Schema.isPattern(/^[^\s@]+@[^\s@]+$/u)),
-              input.email.trim().toLowerCase(),
+            // The same check runs before an email code is sent, so name the bad address.
+            const email = Option.getOrThrowWith(
+              Schema.decodeUnknownOption(
+                Schema.String.check(Schema.isPattern(/^[^\s@]+@[^\s@]+$/u)),
+              )(input.email.trim().toLowerCase()),
+              invalidEmail,
             );
-            const domain = parse(Domain, email.split("@")[1]);
+            const domain = Option.getOrThrowWith(
+              Schema.decodeUnknownOption(Domain)(email.split("@")[1]),
+              invalidEmail,
+            );
             // Native discovery chooses the first matching row, including pending
             // connections. Only one verified exact-domain match is unambiguous.
             const providers = parse(

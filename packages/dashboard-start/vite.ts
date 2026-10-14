@@ -8,19 +8,27 @@ type StartOptions = NonNullable<Parameters<typeof tanstackStart>[0]>;
 type RouterOptions = NonNullable<StartOptions["router"]>;
 
 /**
- * Build metadata is public page configuration. It is compiled into both bundles so the server
- * document and the browser agree without reading a template at request time.
+ * Build metadata is public page configuration. The environment name is compiled into both bundles.
+ * The build id is compiled into the server bundle only: a browser file naming it would change with
+ * every deploy, and so would every file importing it, so deploys would remove files that pages
+ * still running the previous build need. The browser reads it from the document instead.
  */
 const buildMetadata = (): PluginOption => ({
   name: "executor-build-metadata",
   config: () => ({
     define: {
-      "import.meta.env.VITE_EXECUTOR_BUILD": JSON.stringify(
-        process.env.EXECUTOR_BUILD_VERSION ?? "development",
-      ),
       "import.meta.env.VITE_EXECUTOR_ENVIRONMENT_NAME": JSON.stringify(
         process.env.EXECUTOR_ENVIRONMENT ?? "development",
       ),
+    },
+    environments: {
+      ssr: {
+        define: {
+          "import.meta.env.VITE_EXECUTOR_BUILD": JSON.stringify(
+            process.env.EXECUTOR_BUILD_VERSION ?? "development",
+          ),
+        },
+      },
     },
   }),
 });
@@ -60,6 +68,18 @@ const relativeRouteFiles = (): PluginOption => {
   };
 };
 
+/**
+ * E2E builds write source maps beside the bundles without referencing them, so the suite can map
+ * the browser's coverage of each bundle back to its sources. See `e2e/coverage.ts`.
+ */
+const e2eSourceMaps = (): PluginOption => ({
+  name: "executor-e2e-source-maps",
+  config: () =>
+    process.env.EXECUTOR_DASHBOARD_SOURCEMAP === "hidden"
+      ? { build: { sourcemap: "hidden" } }
+      : undefined,
+});
+
 /** Start owns routing, code splitting, the browser entry and the server document handler. */
 export const dashboardStartPlugins = ({
   runtime,
@@ -71,6 +91,7 @@ export const dashboardStartPlugins = ({
   readonly tailwind?: ReturnType<typeof tailwindcss>;
 }): Array<PluginOption> => [
   buildMetadata(),
+  e2eSourceMaps(),
   serverBundle(runtime),
   tanstackStart({
     srcDirectory: "src",

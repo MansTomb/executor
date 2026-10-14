@@ -201,10 +201,13 @@ try {
     label: "Retained credential",
     fields: { token: "synthetic-upgrade-token" },
   });
+  // The previous image selects accounts through the profile. The candidate has no profiles: its
+  // storage upgrade links the profile's account to the app for its member, and calls use that link.
+  let selection = { profile: profile.id };
   const call = async (tool) =>
     (
       await request(`${prefix}/apps/${app.id}/tools/call`, "POST", {
-        profile: profile.id,
+        ...selection,
         tool,
         input: {},
       })
@@ -250,6 +253,7 @@ try {
     }
   });
 
+  selection = {};
   for (const iteration of [1, 2]) {
     await start(candidate, unreachableRegistry);
     assert.equal(await keyDigests(), priorKeys);
@@ -265,7 +269,7 @@ try {
     assert.equal(state.RestartCount, 0);
     assert.equal(state.State.OOMKilled, false);
     report.checks.push(
-      `candidate start ${iteration}: ran the stored previous build with no reachable registry; session, encrypted account${withAnalytics}, deployment and keys retained`,
+      `candidate start ${iteration}: ran the stored previous build with no reachable registry and the profile's account as a linked account; session, encrypted account${withAnalytics}, deployment and keys retained`,
     );
     if (iteration === 1) {
       const began = Date.now();
@@ -302,6 +306,7 @@ try {
       fs.closeSync(descriptor);
     }
   });
+  selection = { profile: profile.id };
   await start(previous, unreachableRegistry);
   assert.equal(await keyDigests(), priorKeys);
   assert.deepEqual(await call("queries.check"), { retained: true });

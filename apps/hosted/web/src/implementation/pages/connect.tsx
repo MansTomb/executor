@@ -1,30 +1,39 @@
-import { usePageUrl } from "@executor-js/dashboard-start/page";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@executor-js/ui/components/button";
 import { Code } from "@executor-js/ui/dashboard/code";
 import { McpInstallInstructions } from "@executor-js/ui/dashboard/connect";
 import { ScopedConnectionsPage } from "@executor-js/ui/dashboard/scoped-connections";
+import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
 import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
 import { connectionToolListAtom } from "../../contracts/apps.ts";
 import {
+  mcpAgentsAtom,
   mcpConnectionsAtom,
+  revokeMcpAgentAtom,
   revokeMcpConnectionAtom,
   saveMcpConnectionAtom,
 } from "../../contracts/mcp-connections.ts";
-import { documentationUrl } from "../../contracts/documentation.ts";
+import { useDocumentationUrl } from "../documentation.ts";
+import { useResourceOrigins } from "../resource-origin.ts";
 
 /** Headless setup: a personal access token against this organization's own addresses. */
-function PersonalTokenSetup({ origin }: { readonly origin: string }) {
+function PersonalTokenSetup({
+  apiOrigin,
+  mcpOrigin,
+}: {
+  readonly apiOrigin: string;
+  readonly mcpOrigin: string;
+}) {
   const { organization, slug, id } = useOrganizationRoute();
   const mcp = JSON.stringify(
     {
       mcpServers: {
         executor: {
           type: "http",
-          url: `${origin}/org/${encodeURIComponent(slug)}/mcp`,
+          url: `${mcpOrigin}/org/${encodeURIComponent(slug)}/mcp`,
           headers: { Authorization: "Bearer <YOUR_PAT>" },
         },
       },
@@ -32,7 +41,7 @@ function PersonalTokenSetup({ origin }: { readonly origin: string }) {
     null,
     2,
   );
-  const http = `curl '${origin}/api/organizations/${encodeURIComponent(id ?? organization)}/inventory' \\\n  --header 'Authorization: Bearer <YOUR_PAT>'`;
+  const http = `curl '${apiOrigin}/api/organizations/${encodeURIComponent(id ?? organization)}/inventory' \\\n  --header 'Authorization: Bearer <YOUR_PAT>'`;
   return (
     <>
       <p className="text-[13px] leading-5 text-muted-foreground">
@@ -56,11 +65,12 @@ function PersonalTokenSetup({ origin }: { readonly origin: string }) {
   );
 }
 
-/** The member's full-access URL and scoped connections for this organization. */
+/** The member's full-access URL, scoped connections and connected agents for this organization. */
 export function ConnectPage() {
-  const page = usePageUrl();
+  const origins = useResourceOrigins();
+  const mcpOrigin = origins.mcp[0];
   const { organization } = useOrganizationRoute();
-  const docs = new URL(documentationUrl(), page.origin).href;
+  const docs = useDocumentationUrl();
   return (
     <ScopedConnectionsPage
       key={organization}
@@ -70,20 +80,25 @@ export function ConnectPage() {
       revoke={revokeMcpConnectionAtom(organization)}
       Failure={HostedFailure}
       docs={docs}
-      installation={
-        <McpInstallInstructions
-          endpoint={`${page.origin}/mcp`}
-          docs={docs}
-          token={<PersonalTokenSetup origin={page.origin} />}
+      agents={
+        <ConnectedAgents
+          query={mcpAgentsAtom(organization)}
+          revoke={revokeMcpAgentAtom(organization)}
+          Failure={HostedFailure}
         />
       }
-      renderTools={({ app, profile, names, onChange }) => (
+      installation={
+        <McpInstallInstructions
+          endpoint={`${mcpOrigin}/mcp`}
+          docs={docs}
+          token={<PersonalTokenSetup apiOrigin={origins.api[0]} mcpOrigin={mcpOrigin} />}
+        />
+      }
+      renderTools={({ app, names, onChange }) => (
         <ConnectionToolPicker
           query={connectionToolListAtom({
             organization,
             app: app.id,
-            profile: profile?.id,
-            expectedProfileRevision: profile?.revision,
             deployment: app.activeDeployment ?? undefined,
           })}
           Failure={HostedFailure}

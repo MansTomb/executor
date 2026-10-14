@@ -9,8 +9,25 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";
 import { retain } from "alchemy/RemovalPolicy";
-import { Config, Effect, Layer } from "effect";
+import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { stackState } from "./src/infrastructure/state.ts";
+import { productionSocialCallbackOrigin } from "./src/infrastructure/deploy-settings.ts";
+import { BrowserOrigin, browserOriginSetting } from "./src/infrastructure/stage.ts";
+import {
+  CheckSince,
+  missingV1PlanetscaleDatabase,
+  missingV1MembershipCheckSince,
+  missingV1WorkosKey,
+} from "./src/infrastructure/v1-membership-settings.ts";
+import { type V1ImportSwitch, v1ImportSetting } from "./src/infrastructure/v1-import-settings.ts";
+import {
+  firstPartyGitHubSettings,
+  firstPartyGoogleSettings,
+  firstPartySlackSettings,
+  missingFirstPartyGitHubClient,
+  partialFirstPartyGoogleClient,
+  partialFirstPartySlackClient,
+} from "./src/infrastructure/first-party-oauth-settings.ts";
 
 /**
  * Secrets seeded from the environment. `op run --env-file=.env.ci.op` resolves the 1Password
@@ -26,6 +43,8 @@ const productionSecrets = [
   "AUTUMN_SECRET_KEY",
   "AXIOM_TOKEN",
   "BETTER_AUTH_SECRET",
+  "CHATGPT_CLIENT_ID",
+  "CHATGPT_CLIENT_SECRET",
   "CONTEXT_DEV_API_KEY",
   "EXECUTOR_ENCRYPTION_KEY",
   "GOOGLE_CLIENT_ID",
@@ -37,6 +56,13 @@ const productionSecrets = [
   "SENTRY_AUTH_TOKEN",
 ] as const;
 
+/** A secret from `.env.ci.op`; unset and empty are both absent. */
+const nonEmptySecret = (name: string) =>
+  Config.Redacted(name).pipe(
+    Config.option,
+    Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
+  );
+
 /** Non-sensitive deployment settings. They are readable in logs and pull requests. */
 const productionVariables = [
   "AUTH_EMAIL_DOMAIN",
@@ -46,9 +72,9 @@ const productionVariables = [
   "AXIOM_ORG_ID",
   "BETTER_AUTH_URL",
   "CLOUDFLARE_ZONE_ID",
+  "CLOUD_DATABASE_CONNECTION_LIMIT",
   "CLOUD_PLACEMENT_REGION",
   "EXECUTOR_APP_UI_BASE_URL",
-  "OAUTH_PROXY_PRODUCTION_URL",
   "PLANETSCALE_CLUSTER_SIZE",
   "PLANETSCALE_DATABASE_NAME",
   "PLANETSCALE_ORGANIZATION",
@@ -66,17 +92,13 @@ const productionVariables = [
 
 /**
  * Required status checks on `main`. These are the contexts reported by `ci.yml` calling
- * `checks.yml` (PR #246). `CI_RULESET_ENFORCEMENT` defaults to `active`, so an apply that
+ * `checks.yml` (PR #246). The E2E jobs run as matrix runners whose names change with the
+ * selection, so `checks / e2e` stands for all of them. `CI_RULESET_ENFORCEMENT` defaults to `active`, so an apply that
  * cannot create the ruleset fails loudly rather than leaving `main` silently unprotected.
  * Rulesets need GitHub Pro on a private repository, which is the blocker today; `.env.ci.op`
  * sets `disabled` until the plan allows them. `evaluate` is log only and blocks nothing.
  */
-const requiredStatusChecks = [
-  "checks / check",
-  "checks / e2e-local",
-  "checks / e2e-self-host",
-  "checks / e2e-cloud",
-] as const;
+const requiredStatusChecks = ["checks / check", "checks / e2e"] as const;
 
 export default Alchemy.Stack(
   "executor-next-ci",
@@ -151,13 +173,11 @@ export default Alchemy.Stack(
             // Request timing provisions a private native trace export destination.
             "Workers Observability Write",
             "Workers R2 Storage Write",
-            // Workers connect to Postgres directly. Deleting the retired Hyperdrive
-            // configurations still needs this; drop it once no stage has one.
             "Hyperdrive Write",
             "Account Settings Read",
             // The shared state store keeps its bearer token in the account Secrets Store.
             "Secrets Store Write",
-            // The retired Hyperdrive CA upload is retained, not managed; drop with Hyperdrive Write.
+            // Hyperdrive's PlanetScale CA certificate is an account-level certificate upload.
             "Account: SSL and Certificates Write",
           ],
           resources: { [`com.cloudflare.api.account.${accountId}`]: "*" },
@@ -239,6 +259,128 @@ export default Alchemy.Stack(
       ),
     );
 
+    /**
+     * Where production's social sign-ins return, and so the OAuth proxy's production URL: the
+     * edge on `executor.sh`, whichever host serves sign-in. It is fixed by the code, not by
+     * `.env.ci.op`; the deploy refuses any other value (`deploy-settings.ts`).
+     */
+    yield* GitHub.Variable("production-OAUTH_PROXY_PRODUCTION_URL", {
+      ...target,
+      name: "OAUTH_PROXY_PRODUCTION_URL",
+      value: productionSocialCallbackOrigin,
+      environment: production,
+    }).pipe(retain());
+
+    /**
+     * The rollback switch (`notes/cloud-domains.md`): `deployment` serves the dashboard and
+     * sign-in on `v2.executor.sh` again. `.env.ci.op` sets it; unset is `app`, the cutover.
+     */
+    const browserOrigin: BrowserOrigin = yield* browserOriginSetting;
+    yield* GitHub.Variable("production-CLOUD_BROWSER_ORIGIN", {
+      ...target,
+      name: "CLOUD_BROWSER_ORIGIN",
+      value: browserOrigin,
+      environment: production,
+    }).pipe(retain());
+
+    /**
+     * The v1 import's switch (`v1-import-settings.ts`): `on` lets production import v1
+     * workspaces. `.env.ci.op` sets it; unset is `off`.
+     */
+    const v1Import: V1ImportSwitch = yield* v1ImportSetting;
+    yield* GitHub.Variable("production-CLOUD_V1_IMPORT", {
+      ...target,
+      name: "CLOUD_V1_IMPORT",
+      value: v1Import,
+      environment: production,
+    }).pipe(retain());
+
+    /**
+     * The v1 sign-in check: v1's WorkOS API key, the name of v1's PlanetScale database (the
+     * deploy creates a read-only role on it), and the instant the check shipped. Accounts created
+     * before that instant skip it. Production requires all three, so this stack refuses to apply
+     * without them and says what to set: the key's Agents vault reference, the database name,
+     * and the cutoff, set in `.env.ci.op` at the merge that ships the check.
+     */
+    const v1Key = yield* Config.Redacted("V1_WORKOS_API_KEY").pipe(
+      Config.option,
+      Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
+    );
+    if (Option.isNone(v1Key)) return yield* Effect.die(new Error(missingV1WorkosKey));
+    const v1Since = yield* Config.String("V1_MEMBERSHIP_CHECK_SINCE").pipe(
+      Config.option,
+      Effect.map(
+        Option.filter((value) => Option.isSome(Schema.decodeUnknownOption(CheckSince)(value))),
+      ),
+    );
+    if (Option.isNone(v1Since)) return yield* Effect.die(new Error(missingV1MembershipCheckSince));
+    const v1Database = yield* Config.String("V1_PLANETSCALE_DATABASE_NAME").pipe(
+      Config.option,
+      Effect.map(Option.filter((value) => value !== "")),
+    );
+    if (Option.isNone(v1Database))
+      return yield* Effect.die(new Error(missingV1PlanetscaleDatabase));
+    yield* GitHub.Secret("production-V1_WORKOS_API_KEY", {
+      ...target,
+      name: "V1_WORKOS_API_KEY",
+      value: v1Key.value,
+      environment: production,
+    }).pipe(retain());
+    yield* GitHub.Variable("production-V1_MEMBERSHIP_CHECK_SINCE", {
+      ...target,
+      name: "V1_MEMBERSHIP_CHECK_SINCE",
+      value: v1Since.value,
+      environment: production,
+    }).pipe(retain());
+    yield* GitHub.Variable("production-V1_PLANETSCALE_DATABASE_NAME", {
+      ...target,
+      name: "V1_PLANETSCALE_DATABASE_NAME",
+      value: v1Database.value,
+      environment: production,
+    }).pipe(retain());
+
+    /**
+     * The operator's OAuth clients' credentials (`first-party-oauth-settings.ts`). Production
+     * offers v1's Executor.sh GitHub App, so this stack refuses to apply without its client ID and
+     * secret and says which Agents vault item to reference. Executor for Google and Executor for
+     * Slack are each turned on once both of their values are set; one without the other is refused.
+     */
+    const credentials = (names: { readonly clientId: string; readonly clientSecret: string }) =>
+      Effect.all([nonEmptySecret(names.clientId), nonEmptySecret(names.clientSecret)]);
+    const [githubId, githubSecret] = yield* credentials(firstPartyGitHubSettings);
+    if (Option.isNone(githubId) || Option.isNone(githubSecret))
+      return yield* Effect.die(new Error(missingFirstPartyGitHubClient));
+    const [googleId, googleSecret] = yield* credentials(firstPartyGoogleSettings);
+    if (Option.isSome(googleId) !== Option.isSome(googleSecret))
+      return yield* Effect.die(new Error(partialFirstPartyGoogleClient));
+    const [slackId, slackSecret] = yield* credentials(firstPartySlackSettings);
+    if (Option.isSome(slackId) !== Option.isSome(slackSecret))
+      return yield* Effect.die(new Error(partialFirstPartySlackClient));
+    const firstPartySecrets = [
+      [firstPartyGitHubSettings.clientId, githubId.value],
+      [firstPartyGitHubSettings.clientSecret, githubSecret.value],
+      ...(Option.isSome(googleId) && Option.isSome(googleSecret)
+        ? ([
+            [firstPartyGoogleSettings.clientId, googleId.value],
+            [firstPartyGoogleSettings.clientSecret, googleSecret.value],
+          ] as const)
+        : []),
+      ...(Option.isSome(slackId) && Option.isSome(slackSecret)
+        ? ([
+            [firstPartySlackSettings.clientId, slackId.value],
+            [firstPartySlackSettings.clientSecret, slackSecret.value],
+          ] as const)
+        : []),
+    ] as const;
+    yield* Effect.forEach(firstPartySecrets, ([secret, value]) =>
+      GitHub.Secret(`production-${secret}`, {
+        ...target,
+        name: secret,
+        value,
+        environment: production,
+      }).pipe(retain()),
+    );
+
     // Rulesets are unavailable on private repositories under the GitHub Free plan, so
     // `CI_RULESET_ENFORCEMENT=disabled` skips the resource instead of asking GitHub for it.
     const ruleset =
@@ -267,9 +409,11 @@ export default Alchemy.Stack(
           }).pipe(retain());
 
     /**
-     * The export branch on the public repository only ever receives fast-forward snapshot
-     * commits from the export workflow. Block deletion and force pushes; no pull request
-     * or status check rules, because nothing merges there.
+     * The export branch on the public repository receives fast-forward snapshot commits from
+     * the export workflow. An export commit can have more parents: the heads of public pull
+     * requests that main ports (see notes/ci.md), which GitHub then shows as merged. So the
+     * ruleset must not require linear history. Block deletion and force pushes; no pull request
+     * or status check rules, because nothing merges through GitHub's merge button there.
      */
     const publicRuleset = yield* GitHub.Ruleset("PublicExport", {
       owner,

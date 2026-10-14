@@ -1,4 +1,3 @@
-import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -11,8 +10,11 @@ import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";
 import { oauthRecoveryIssuer, recoveryClients } from "../support/oauth-recovery-issuer.ts";
 import { nameConnectedAccount } from "../support/name-account.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
+import { linkedChoice } from "../support/account-choices.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { enterClientDetails } from "../support/oauth-client-entry.ts";
 
 const App = Schema.Struct({
   id: Schema.String,
@@ -20,7 +22,11 @@ const App = Schema.Struct({
     accounts: Schema.Struct({ service: Schema.Struct({ provider: Schema.String }) }),
   }),
 });
-const Setup = Schema.Struct({ mode: Schema.Literals(["automatic", "saved", "client-required"]) });
+const Setup = Schema.Struct({
+  mode: Schema.Literals(["automatic", "client-required"]),
+  clients: Schema.Array(Schema.Struct({ id: Schema.String })),
+});
+const Registered = Schema.Struct({ client: Schema.Struct({ id: Schema.String }) });
 const Redirect = Schema.Struct({
   status: Schema.Literal("redirect"),
   authorizationUrl: Schema.String,
@@ -55,7 +61,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth client recovery", (it) =
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Recoverable OAuth",auth:{oauth:oauth2({authorizationUrl:${JSON.stringify(issuer.origin + "/authorize")},tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:["read"],tokenEndpointAuthMethod:"client_secret_basic"})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
             },
             appsManifest,
           ],
@@ -78,13 +84,14 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
               `${prefix}/providers/${app.requirements.accounts.service.provider}/oauth/oauth/setup`,
             )
             .pipe(Effect.flatMap((response) => body(Setup, response)));
-        let profile = (yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`)).id;
         const connection = () =>
           api
-            .request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile,
-            })
+            .request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {},
+            )
             .pipe(Effect.flatMap((response) => body(Resource, response)));
         const started = yield* connection();
         const bad = yield* api.request(
@@ -99,7 +106,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         );
         expect(bad.status).toBe(200);
         yield* issuer.registerCallback((yield* body(Redirect, bad)).redirectUri);
-        expect((yield* setup()).mode).toBe("client-required");
+        expect(yield* setup()).toEqual({ mode: "client-required", clients: [] });
         yield* browser.omitNetworkTrace;
         yield* browser.login(actors.owner);
         yield* browser.use("Observe credential replacement without recording values", (page) =>
@@ -129,7 +136,10 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=accounts`),
         );
         yield* browser.use("Choose an account for the app", (page) =>
-          page.getByRole("button", { name: "Connect new account", exact: true }).click(),
+          page
+            .getByRole("button", { name: "Connect new account", exact: true })
+            .click()
+            .then(() => enterClientDetails(page)),
         );
         yield* issuer.configure({ tokenFails: true });
         yield* browser.use("Enter a valid client while the service is unavailable", (page) =>
@@ -184,7 +194,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             .getByRole("link", { name: "Update client details", exact: true })
             .waitFor({ state: "visible" }),
         );
-        expect((yield* setup()).mode).toBe("client-required");
+        expect(yield* setup()).toEqual({ mode: "client-required", clients: [] });
         yield* browser.use("Reopen the client fields", (page) =>
           page.getByRole("link", { name: "Update client details", exact: true }).click(),
         );
@@ -203,42 +213,121 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             )
             .then(() => nameConnectedAccount(page, "Recovery account"))
             .then(() =>
-              page
-                .getByRole("radio", { name: "Recovery account", exact: true, checked: true })
-                .waitFor({ state: "visible" }),
+              linkedChoice(page, "Recoverable OAuth", "Recovery account").waitFor({
+                state: "visible",
+              }),
             ),
         );
-        profile = yield* Schema.decodeUnknownEffect(Schema.String)(
-          yield* browser.use("Read the selected account setup", (page) =>
-            page.evaluate(() => new URL(location.href).searchParams.get("profile")),
-          ),
-        );
-        const bindings = Schema.Struct({ accounts: Schema.Struct({ service: Schema.String }) });
-        savedAccount = (yield* body(
-          bindings,
-          yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile}`),
-        )).accounts.service;
+        // Connecting from the app linked the new account to it.
+        const linked = yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`);
+        expect(linked).toHaveLength(1);
+        savedAccount = linked[0];
         expect(savedAccount).toBeDefined();
-        expect((yield* setup()).mode).toBe("saved");
+        // A client entered for one account signs in that account only; nobody else is offered it.
+        expect(yield* setup()).toEqual({ mode: "client-required", clients: [] });
+        // A reconnect without a client choice keeps the client the account's grant holds.
+        const reconnectStart = () =>
+          Effect.gen(function* () {
+            const started = yield* body(
+              Resource,
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {
+                  account: savedAccount,
+                },
+              ),
+            );
+            const signIn = yield* body(
+              Redirect,
+              yield* api.request(
+                actors.owner,
+                "POST",
+                `${prefix}/connections/${started.id}/oauth/start`,
+                { method: "oauth" },
+              ),
+            );
+            return new URL(signIn.authorizationUrl).searchParams.get("client_id");
+          });
         const reconnect = yield* body(
           Resource,
           yield* api.request(
             actors.owner,
             "POST",
-            `${prefix}/accounts/${savedAccount}/connections`,
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {
+              account: savedAccount,
+            },
           ),
         );
+        // A client registered for the service is another one to sign in with, but a reconnect still
+        // keeps the account's own. The service publishes no metadata, so its token endpoint names it.
+        const registered = yield* body(
+          Registered,
+          yield* api.request(actors.owner, "POST", `${prefix}/oauth-clients`, {
+            issuer: issuer.origin + "/token",
+            clientId: "synthetic-registered-client",
+            clientSecret: "synthetic-registered-secret",
+          }),
+        );
+        expect(yield* setup()).toEqual({
+          mode: "client-required",
+          clients: [{ id: registered.client.id }],
+        });
         yield* browser.use("Open the existing account for reconnection", (page) =>
           page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
         );
-        yield* browser.use("Open advanced connection options", (page) =>
-          page.getByText("Advanced", { exact: true }).click(),
+        // A reconnect uses the account's own client without asking; replacing it, with a
+        // registered client or entered details, stays under Advanced.
+        expect(
+          yield* browser.use("A reconnect offers no client choice up front", (page) =>
+            page
+              .getByRole("button", { name: "Reconnect Recoverable OAuth", exact: true })
+              .waitFor({ state: "visible" })
+              .then(() => page.getByRole("combobox", { name: "OAuth client" }).count()),
+          ),
+        ).toBe(0);
+        yield* browser.checkpoint("Reconnect with another client available");
+        yield* browser.use("A reconnect keeps its account's client by default", (page) =>
+          page
+            .getByText("Advanced", { exact: true })
+            .click()
+            .then(() =>
+              page
+                .getByRole("combobox", { name: "OAuth client" })
+                .filter({ hasText: "Current client" })
+                .waitFor({ state: "visible" }),
+            ),
         );
-        yield* browser.checkpoint("Advanced OAuth client options");
-        yield* browser.use("Saved clients can be changed", (page) =>
-          page.getByRole("button", { name: "Change OAuth client", exact: true }).click(),
+        expect(
+          (yield* api.request(
+            actors.owner,
+            "DELETE",
+            `${prefix}/oauth-clients/${registered.client.id}`,
+          )).status,
+        ).toBe(200);
+        yield* browser.use("Reopen the reconnect without the registered client", (page) =>
+          page
+            .reload()
+            .then(() => page.getByText("Advanced", { exact: true }).click())
+            .then(() =>
+              page
+                .getByRole("combobox", { name: "OAuth client" })
+                .filter({ hasText: "Current client" })
+                .waitFor({ state: "visible" }),
+            ),
         );
-        yield* browser.checkpoint("Saved OAuth client can be replaced");
+        yield* browser.checkpoint("Reconnect OAuth client options");
+        yield* browser.use("The account's client can be replaced", (page) =>
+          page
+            .getByRole("combobox", { name: "OAuth client" })
+            .click()
+            .then(() =>
+              page.getByRole("option", { name: "Enter client details", exact: true }).click(),
+            ),
+        );
+        yield* browser.checkpoint("Account client can be replaced");
         yield* browser.use("Try an invalid replacement", (page) =>
           page
             .getByLabel("Client ID", { exact: true })
@@ -255,19 +344,8 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
                 .waitFor({ state: "visible" }),
             ),
         );
-        const retained = yield* connection();
-        const retainedStart = yield* body(
-          Redirect,
-          yield* api.request(
-            actors.owner,
-            "POST",
-            `${prefix}/connections/${retained.id}/oauth/start`,
-            { method: "oauth", label: "Inspect retained client" },
-          ),
-        );
-        expect(new URL(retainedStart.authorizationUrl).searchParams.get("client_id")).toBe(
-          recoveryClients.original.clientId,
-        );
+        // The rejected replacement never reached the account's grant.
+        expect(yield* reconnectStart()).toBe(recoveryClients.original.clientId);
         yield* browser.use("Correct the replacement client", (page) =>
           page
             .getByRole("link", { name: "Update client details", exact: true })
@@ -289,7 +367,12 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
             )
             .then(() =>
               page
-                .waitForURL((url) => url.searchParams.get("account") === savedAccount)
+                // A reconnect through the app returns to that app's accounts.
+                .waitForURL(
+                  (url) =>
+                    url.pathname === `/org/${actors.organization.slug}/apps/${app.id}` &&
+                    url.searchParams.get("view") === "accounts",
+                )
                 .then(() =>
                   page
                     .getByRole("button", { name: /^Manage Recovery account/ })
@@ -297,25 +380,11 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
                 ),
             ),
         );
-        expect(
-          (yield* body(
-            bindings,
-            yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/profiles/${profile}`),
-          )).accounts.service,
-        ).toBe(savedAccount);
-        const replacement = yield* connection();
-        const replacementStart = yield* body(
-          Redirect,
-          yield* api.request(
-            actors.owner,
-            "POST",
-            `${prefix}/connections/${replacement.id}/oauth/start`,
-            { method: "oauth", label: "Inspect replacement client" },
-          ),
-        );
-        expect(new URL(replacementStart.authorizationUrl).searchParams.get("client_id")).toBe(
-          recoveryClients.replacement.clientId,
-        );
+        // Reconnecting with a replacement client keeps the same account linked.
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toEqual([
+          savedAccount,
+        ]);
+        expect(yield* reconnectStart()).toBe(recoveryClients.replacement.clientId);
         yield* browser.checkpoint("Replacement succeeded without changing the account");
       }),
     ),

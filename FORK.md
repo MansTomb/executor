@@ -11,9 +11,15 @@ The maintained branch is `selfhost`. Local patches:
   upstream capacity eviction is retained, with the fork limit and idle expiry.
   Evict idle workers under capacity pressure, preserve active calls, and dispose
   forwarded RPC results. Named dynamic workers in workerd 1.20260901.1 otherwise
-  survive indefinitely. Declaration checks use uncached workers.
+  survive indefinitely. Declaration checks use uncached workers. Since the
+  2026-10-14 merge upstream unloads idle Workers itself after
+  `EXECUTOR_APP_WORKER_IDLE_SECONDS` (300 by default), so the fork's own expiry
+  timer is gone; the fork keeps `defaultAppWorkerLimit` at 16, which now also
+  counts data Workers.
 - `37facaf6c`: discover only statically referenced app namespaces. Dynamic
   programs and unscoped tool searches retain full discovery and live authorization.
+  Superseded on 2026-10-14 by upstream's on-demand discovery (`programReach`);
+  see that integration below.
 - `6565a3749`: drain admitted HTTP requests before stopping workerd. Close the
   listener during shutdown and allow 40 seconds for a 35-second drain deadline.
 - `e23b30dfd`: use `--gc-global` in the packaged self-host runtime. Default GC
@@ -28,6 +34,7 @@ The maintained branch is `selfhost`. Local patches:
   fallback. Warm ten-result search improved from 3.067/3.737 to 0.955/1.030 seconds
   p50/p95 with 4,090 synthetic tools. Full export is slower because it also reads
   summaries. The discovery and grant-restriction E2Es cover freshness and access.
+  Superseded on 2026-10-14 by upstream's stored search rows; see below.
 - `5e21403ca`: describe native MCP result envelopes instead of advertising their
   inner structured payload as the whole return value. Preserve upstream output
   validation and returned values. Ordinary references and statically bound
@@ -49,6 +56,8 @@ The maintained branch is `selfhost`. Local patches:
   form. A scoped production search after five idle minutes fell from 27.5 to
   1.1 seconds end to end, and its warm repeat from 10.0 to 0.6 seconds. Selection, schema and grant-restriction E2Es
   cover scoped, unscoped, dynamic, repeated, mixed-app and narrowed searches.
+  The discovery half is superseded on 2026-10-14 by upstream's backend-ranked
+  search; the scoped-search guidance in the execute descriptions is kept.
 - `163e32725`: report truncated execute output before the cut value. Agent
   harnesses keep only a prefix of a tool result (Pi and OptChat clip at 30,000
   characters), and CodeMode appends its notice after the value while
@@ -181,6 +190,65 @@ Immediate remote-catalog freshness assertions remain unchanged. The inherited
 `mcpListingInputs` scenario expects fast completed factories to be reused, which
 conflicts with the live-index behavior already on `selfhost`; it fails the same
 evaluation-ID assertion with the original SDK and is not added to the gate.
+
+## Upstream integration on 2026-10-14
+
+Upstream `v2` at `2868b6e5b` adds 241 exported commits to `8853b9db4`. The merge
+keeps Effect 4.0.1 and adopts upstream's structure where it overlaps fork patches.
+
+Upstream changes that matter here:
+
+- Profiles are removed. Members link accounts to app requirements, and calls use
+  the caller's links. App authoring moves to `user: { accounts }` and
+  `app: { accounts }` (apps protocol 13). Bundles built for earlier protocols keep
+  running; their requirements become user requirements.
+- Storage runs 4.0.7 through 4.0.15: app events, targeted connections (4.0.8
+  deletes connections without a target), tool search rows, stored OAuth clients,
+  the profile conversion (4.0.13: a member's profile accounts become links, and a
+  member whose profiles used different accounts for one plain requirement gets an
+  "App (Profile)" copy with an empty database), app-scope schedules and webhook
+  retry counts.
+- MCP discovery loads apps on demand from the program's static reach, `tools.search`
+  ranks stored search rows in the backend (a literal namespace reads only that
+  app's rows), and listings are kept across executions. New `call`, `search` and
+  `describe` MCP tools sit beside `execute`.
+- Read-only grants force calls to run as queries and refuse a call that names a
+  mutation, including resumed approvals.
+- Self-host unloads idle app Workers after five minutes, collects each isolate's
+  garbage after a call and keeps WebAssembly Liftoff code.
+- Removed: stdio MCP connections.
+
+Fork patches after this merge:
+
+- Retained unchanged in policy: `6565a3749` drain, `e23b30dfd` `--gc-global`
+  (now beside upstream's `--expose-gc` and `--no-flush-liftoff-code`), `5e21403ca`
+  result envelopes, `d616eaf1b` semantic failures (also for upstream's direct `call`
+  tool), `163e32725` truncation notice with the 65,536-byte limit, the error
+  boundary (operation attribution now precedes upstream's `Retryable (unchanged
+call)` suffix; reconnect errors name the account's label and ID, and add the
+  agent reconnect step only for an account the caller linked), interceptors and
+  analytics, the worker limit of 16 and `outputRecovery`. The app framework keeps
+  its slow-catalog schema inclusion, and the host still accepts a full catalog in
+  reply to a summary read, so bundles built by the fork framework keep working.
+- MCP interceptors run as the app's code in upstream's tool-call timing.
+- Superseded by upstream and removed: the fork's summary-index discovery
+  (`tools.index` live reads and the `live` option, the `tools.list` name filter,
+  `McpBackend.indexTools`, the 30-second index retention and
+  `DeclarationCache.delete`), the static and scoped discovery of `37facaf6c`,
+  `69a64ab74` and `613ce0b00`, the schema batching of `f70d35bcc`, and the
+  read-only kind binding of the October integration. Their scenarios stay in the
+  focused gate and must pass on upstream's implementation.
+- `scopedConnectionProfiles` became upstream's `scopedConnectionAccounts`, and the
+  output-truncation scenario joined the focused gate.
+
+Storage keeps the shipped fork 4.0.2 to 4.0.6 steps byte for byte. Every later
+layout carries the analytics table through `version406Tables`, and a fresh
+database also builds the analytics indexes. Generated migration operations from
+4.0.6 to 4.0.15 never touch `executor_analytics_events`. The previous server
+refuses a database at 4.0.15, and 4.0.8 and 4.0.13 change data, so rollback is a
+stopped-volume restore plus the previous image. The upgrade check seeds the
+previous image through a profile and calls the candidate without one, so it
+proves that the profile's account became a link.
 
 ## Merging upstream
 

@@ -16,12 +16,12 @@ import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Evidence } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 import { awaitSentryEvents, sentryEvents, traceExceptionTypes } from "../support/sentry-events.ts";
-import { freePort } from "../support/ports.ts";
-import { appsManifest, withApps } from "../support/apps-release.ts";
+import { refusingPort } from "../support/ports.ts";
+import { appsManifest, withApps, mcpSdkVersion } from "../support/apps-release.ts";
 
 const JsonRpcRequest = Schema.Struct({
   id: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
@@ -88,7 +88,9 @@ const failingMcpServer = Effect.gen(function* () {
 /** The manifest of an app that uses `apps/mcp`. */
 const mcpManifest = {
   path: "package.json",
-  content: JSON.stringify({ dependencies: withApps({ "@modelcontextprotocol/sdk": "1.30.0" }) }),
+  content: JSON.stringify({
+    dependencies: withApps({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
+  }),
 };
 
 /** An app whose tools come from the MCP server at `url`, waiting `timeoutMs` for it if given. */
@@ -98,7 +100,7 @@ const mcpAppFiles = (url: string, timeoutMs?: number) => [
     path: "index.ts",
     content: `import { defineApp } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(url)}${timeoutMs === undefined ? "" : `, timeoutMs: ${timeoutMs}`} }) }));`,
+export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON.stringify(url)}${timeoutMs === undefined ? "" : `, timeoutMs: ${timeoutMs}`} }) }));`,
   },
 ];
 
@@ -111,7 +113,7 @@ const githubSkillsApp = (
   options = "",
 ) => `import { defineApp, dynamicSkills, query, object, router } from "apps";
 import { githubSkills } from "apps/skills";
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({ ping: query({ input: object({}) }, async () => "pong") }),
   dynamicSkills: dynamicSkills({ list: () => githubSkills({
     repo: "synthetic/missing-skills",
@@ -135,7 +137,7 @@ const wellKnownSkillsApp = (
   fetch = "",
 ) => `import { defineApp, dynamicSkills, query, object, router } from "apps";
 import { wellKnownSkills } from "apps/skills";
-export default defineApp({ accounts: {} }, async (ctx) => ({
+export default defineApp({}, async (ctx) => ({
   tools: router({ ping: query({ input: object({}) }, async () => "pong") }),
   dynamicSkills: dynamicSkills({ list: () => wellKnownSkills({ url: ${JSON.stringify(url)}, signal: ctx.signal${fetch} }) }),
 }));`;
@@ -150,6 +152,11 @@ const Failure = Schema.Struct({
 const Unavailable = Schema.Struct({
   unavailableApps: Schema.Array(Schema.Struct({ app: Schema.String, reason: Schema.String })),
 });
+const Pending = Schema.Struct({
+  status: Schema.Literal("approval-required"),
+  requestId: Schema.String,
+});
+const Resumed = Schema.Struct({ status: Schema.Literal("completed"), ...Unavailable.fields });
 
 layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it) => {
   it.effect(scenarios.appEvaluationReporting.title, (context) =>
@@ -161,7 +168,6 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
           browser = yield* Browser,
           evidence = yield* Evidence,
           mcp = yield* McpClient,
-          telemetry = yield* Telemetry,
           target = yield* Target;
         const cloud = target.metadata.target === "cloud";
         const prefix = `/api/organizations/${actors.organization.id}`;
@@ -206,7 +212,7 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
         // failure a fault in Executor's own network would cause. The app's fetch rejects.
         const unanswered = yield* deploy(
           "Unanswered MCP",
-          mcpAppFiles(`http://127.0.0.1:${yield* freePort}/mcp`),
+          mcpAppFiles(`http://127.0.0.1:${yield* refusingPort}/mcp`),
         );
         // A credential handle not sealed for this app: Executor's network refuses the request.
         const egress = yield* deploy(
@@ -234,7 +240,7 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
             path: "index.ts",
             content: githubSkillsApp(`(input, init) => {
       const missing = () => new Response(null, { status: 404 });
-      return ctx.fetch("http://127.0.0.1:${yield* freePort}/", init).then(
+      return ctx.fetch("http://127.0.0.1:${yield* refusingPort}/", init).then(
         (response) => (response.ok ? response : missing()),
         missing,
       );
@@ -266,7 +272,7 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
           {
             path: "index.ts",
             content: wellKnownSkillsApp(
-              `http://127.0.0.1:${yield* freePort}/index.json`,
+              `http://127.0.0.1:${yield* refusingPort}/index.json`,
               ", fetch: ctx.fetch",
             ),
           },
@@ -288,18 +294,32 @@ layer(HostedLive, { excludeTestServices: true })("App evaluation reporting", (it
             path: "index.ts",
             content: `import { defineApp } from "apps";
 import { McpError } from "apps/mcp";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   throw new McpError({ phase: "discover", reason: "request", status: 404, session: true });
 });`,
           },
         ]);
-        const throwing = yield* deploy("Throwing factory", [
+        const throwingFactory = [
           {
             path: "index.ts",
             content: `import { defineApp } from "apps";
-export default defineApp({ accounts: {} }, async () => {
+export default defineApp({}, async () => {
   throw new TypeError("Synthetic failure in the factory");
 });`,
+          },
+          appsManifest,
+        ];
+        const throwing = yield* deploy("Throwing factory", throwingFactory);
+        // An execution that waits for approval and then searches an app that fails to load.
+        const searchedLater = yield* deploy("Factory searched after approval", throwingFactory);
+        const approval = yield* deploy("Approval before search", [
+          {
+            path: "index.ts",
+            content: `import { defineApp, mutation, object, router } from "apps";
+import { always } from "apps/operations/approval";
+export default defineApp({}, async () => ({ tools: router({
+  approved: mutation({ input: object({}), approval: always() }, async () => "approved"),
+}) }));`,
           },
           appsManifest,
         ]);
@@ -401,6 +421,38 @@ export default defineApp({ accounts: {} }, async () => {
         expect(skills.isError).toBe(true);
         expect(agentSkills).toContain("it may not exist, or it may be private");
         expect(agentSkills).toContain("Check the repository the app’s skill source names");
+        // The program parks for approval, so the request that started it ends. Only the search
+        // after the resume discovers the failing app: the resume request reports it.
+        const parked = yield* client.use(
+          "Start an execution that waits for approval",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "execute",
+                arguments: {
+                  code: `await tools[${JSON.stringify(approval.slug)}].approved({});
+return await tools.search({ query: "anything", namespace: ${JSON.stringify(searchedLater.slug)} });`,
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        const parkedTrace = yield* latestTrace;
+        const pending = yield* Schema.decodeUnknownEffect(Pending)(parked.structuredContent);
+        const resumed = yield* client.use("Approve and search the failing app", (client, signal) =>
+          client.callTool(
+            {
+              name: "resume",
+              arguments: { requestId: pending.requestId, response: { action: "accept" } },
+            },
+            undefined,
+            { signal },
+          ),
+        );
+        const resumedTrace = yield* latestTrace;
+        const resumedResult = yield* Schema.decodeUnknownEffect(Resumed)(resumed.structuredContent);
+        expect(resumedResult.unavailableApps.map((entry) => entry.app)).toEqual([searchedLater.id]);
 
         // The Tools page offers a retry, which opens a new session with the server.
         yield* browser.login(actors.owner);
@@ -431,31 +483,12 @@ export default defineApp({ accounts: {} }, async () => {
         ).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }));
         yield* browser.use("Read the error after the retry", (page) => retry(page).waitFor());
 
-        // Known pre-existing reporting gap, not changed here: the MCP `execute` tool catches an app
-        // that fails to load into its response data, and the `skills` tool replaces the failure
-        // with its own answer, so neither request reports. Each request has finished: its server
-        // span is exported in the same request finalizer, after Sentry's flush.
-        const unreported = [
-          { label: "known gap: lost MCP session over MCP execute", trace: mcpTrace },
-          { label: "known gap: missing skill repository over MCP skills", trace: skillsTrace },
-        ];
-        if (cloud)
-          yield* Effect.forEach(unreported, ({ label, trace }) =>
-            telemetry.query(trace).pipe(
-              Effect.flatMap((result) =>
-                result.data.some(({ span }) => span.operationName.startsWith("http.server"))
-                  ? Effect.void
-                  : Effect.fail(new Error(`No server span for ${label}`)),
-              ),
-              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-            ),
-          );
-
-        // Every REST failure reports, whatever its copy says: every MCP server and skill source
+        // Every failure reports, whatever its copy says: every MCP server and skill source
         // answer, refusal and timeout, invalid settings, an unread git response, an MCP client
         // failure without the server's answer, an MCP or skill request no server answered,
         // Executor's network refusing an MCP or skill request, a skill answer the app's own fetch
-        // made up or put in place of a failed request, and the error an app's code threw.
+        // made up or put in place of a failed request, and the error an app's code threw. An agent's
+        // MCP `execute` or `skills` call answers with the failure and reports it like REST does.
         const garbled = yield* failing(`${prefix}/apps/${unreadable.id}/skill-bundle`);
         expect(garbled.error.message).toBe(
           "GitHub returned a git response Executor could not read.",
@@ -507,11 +540,25 @@ export default defineApp({ accounts: {} }, async () => {
             unsent: true,
           },
           { label: "MCP error the app threw", trace: thrownMcp.trace },
+          { label: "lost MCP session over MCP execute", trace: mcpTrace },
+          { label: "missing skill repository over MCP skills", trace: skillsTrace },
+          { label: "app searched after an MCP execute resumed", trace: resumedTrace },
+          { label: "MCP execute parked before the search", trace: parkedTrace, none: true },
         ];
         // Cloud also reports a request Executor's network could not send as its own egress failure,
         // on the same trace and before the app hears back.
-        const expectedTypes = ({ unsent }: { readonly unsent?: boolean }) =>
-          unsent === true ? ["AppEgressFailed", "AppEvaluationFailed"] : ["AppEvaluationFailed"];
+        const expectedTypes = ({
+          unsent,
+          none,
+        }: {
+          readonly unsent?: boolean;
+          readonly none?: boolean;
+        }) =>
+          none === true
+            ? []
+            : unsent === true
+              ? ["AppEgressFailed", "AppEvaluationFailed"]
+              : ["AppEvaluationFailed"];
         // These reports arrive after every checked request finished. A missing one fails below,
         // naming the request.
         const events = cloud
@@ -538,14 +585,11 @@ export default defineApp({ accounts: {} }, async () => {
           madeUp: madeUpAnswer.error,
           replaced: replacedFailure.error,
           thrownMcp: thrownMcp.error,
-          agent: { execute: agentReason, skills: agentSkills },
+          agent: { execute: agentReason, skills: agentSkills, resumed: resumedResult },
           ...(cloud
             ? {
                 reported: Object.fromEntries(
-                  [...reported, ...unreported].map(({ label, trace }) => [
-                    label,
-                    traceExceptionTypes(events, trace),
-                  ]),
+                  reported.map(({ label, trace }) => [label, traceExceptionTypes(events, trace)]),
                 ),
               }
             : {}),
@@ -555,10 +599,6 @@ export default defineApp({ accounts: {} }, async () => {
           expect(traceExceptionTypes(events, entry.trace), entry.label).toEqual(
             expectedTypes(entry),
           );
-        // The MCP traces completed above and carry no report: the known gap, asserted so a change
-        // to it is noticed. Closing it is separate work.
-        for (const { label, trace } of unreported)
-          expect(traceExceptionTypes(events, trace), label).toEqual([]);
         expect(JSON.stringify(events)).not.toContain(Redacted.value(issued.key));
       }).pipe(Effect.provide(McpClient.layer)),
     ),

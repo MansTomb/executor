@@ -41,10 +41,12 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { browserOnlySettings } from "../web/browser-only-settings.ts";
 import { cloudWorkers } from "../alchemy.run.ts";
+import { AppData } from "../src/infrastructure/app-data-worker.ts";
 import AppPages from "../src/app-ui.ts";
 import { Api } from "../src/main.ts";
 import { previewSlug } from "../src/contracts/pr-preview.ts";
 import { McpServer } from "../src/infrastructure/mcp-server-worker.ts";
+import { Marketing } from "../src/infrastructure/marketing-worker.ts";
 import { productionStage, testStagePrefix } from "../src/infrastructure/stage.ts";
 import { uploadedModulesPlugin } from "../src/infrastructure/worker-build.ts";
 import {
@@ -97,7 +99,7 @@ const deployConfiguration = {
   CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
   CLOUDFLARE_API_TOKEN: "unused",
   CLOUDFLARE_ZONE_ID: "00000000000000000000000000000000",
-  BETTER_AUTH_URL: "https://executor.sh",
+  BETTER_AUTH_URL: "https://v2.executor.sh",
   BETTER_AUTH_SECRET: "0".repeat(64),
   EXECUTOR_ENCRYPTION_KEY: "0".repeat(64),
   EXECUTOR_BUILD_VERSION: "0".repeat(40),
@@ -138,6 +140,15 @@ const production: Target = {
   stage: productionStage,
   configuration: {
     ...deployConfiguration,
+    // The v1 sign-in check runs only on production; previews receive none of its settings.
+    V1_WORKOS_API_KEY: "unused",
+    V1_MEMBERSHIP_CHECK_SINCE: "2026-01-01T00:00:00Z",
+    V1_PLANETSCALE_DATABASE_NAME: "unused",
+    // Production requires the GitHub App's credentials; previews have no operator clients.
+    EXECUTOR_OAUTH_GITHUB_CLIENT_ID: "unused",
+    EXECUTOR_OAUTH_GITHUB_CLIENT_SECRET: "unused",
+    // Evaluate the v1 import's production path too: it binds v1's blob bucket.
+    CLOUD_V1_IMPORT: "on",
     SENTRY_ENABLED: "true",
     POSTHOG_ENABLED: "true",
     SENTRY_URL: "https://sentry.io",
@@ -216,8 +227,10 @@ const budgetedWorkers = Alchemy.Stack(
   },
   Effect.gen(function* () {
     yield* Api;
+    yield* AppData;
     yield* AppPages;
     yield* McpServer;
+    yield* Marketing;
   }).pipe(Effect.provide(cloudWorkers)),
 );
 
@@ -470,7 +483,7 @@ const report = (
         "A dynamic `import()` does not help: its chunk is still uploaded.",
       "",
       "- Move rarely used code to another Worker behind a service binding, as `dashboard`, " +
-        "`formatter` and `mcp-server` do for the API Worker.",
+        "`formatter`, `authoring` and `mcp-server` do for the API Worker.",
       "- Serve large text or data as static assets or from storage instead of bundling it as JavaScript.",
       "- Remove duplicate copies of a package and import narrower entry points.",
       "",

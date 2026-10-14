@@ -1,5 +1,6 @@
 /** Shared OpenAPI compilation diagnostics. */
 import { Schema } from "effect";
+import { maxFailureMessageLength } from "./failure.ts";
 
 /** Which part of an OpenAPI document could not be compiled into tools. */
 export const OpenapiCompileErrorCode = Schema.Literals([
@@ -51,14 +52,20 @@ const listedReasons = 8;
 const reasonLength = 240;
 const cut = (text: string) =>
   text.length <= reasonLength ? text : `${text.slice(0, reasonLength - 1)}…`;
+/** Generated tools are a starting point: the app can call any operation with its own code. */
+const customTool =
+  'To call a left-out operation anyway, write a custom tool for it in this app with the same account: see "Custom tools beside generated ones" in the app-authoring skill\'s integrations.md.';
 
 /**
  * The reason, then which operations it affected or, when causes differ, each distinct skip reason
- * with one example operation and how many more share it.
+ * with one example operation and how many more share it. It ends by offering a custom tool, except
+ * for event streams, whose reason already offers a subscription. Fewer reasons are listed when they
+ * would push that sentence past the failure bound.
  */
 const compileMessage = (error: OpenapiCompileError) => {
   const skipped = error.skipped ?? [];
   if (skipped.length === 0) return error.reason;
+  const close = skipped.some(({ code }) => code !== "event_stream") ? ` ${customTool}` : "";
   const groups = new Map<string, { first: OpenapiSkippedOperation; count: number }>();
   for (const operation of skipped) {
     const key = JSON.stringify([operation.code, operation.reason]);
@@ -75,15 +82,19 @@ const compileMessage = (error: OpenapiCompileError) => {
     only.first.code === error.code &&
     only.first.reason === error.reason
   )
-    return `${error.reason} Left out: ${example(only)}.`;
-  const listed = [...groups.values()].slice(0, listedReasons);
+    return `${error.reason} Left out: ${example(only)}.${close}`;
+  const listed: string[] = [];
+  let room =
+    maxFailureMessageLength -
+    `${error.reason} Left out: ; and ${groups.size} other reasons.${close}`.length;
+  for (const group of groups.values()) {
+    const text = `${example(group)} (${group.first.code}: ${cut(group.first.reason.replace(/\.$/, ""))})`;
+    if (listed.length === listedReasons || text.length + 2 > room) break;
+    listed.push(text);
+    room -= text.length + 2;
+  }
   const rest = groups.size - listed.length;
-  return `${error.reason} Left out: ${listed
-    .map(
-      (group) =>
-        `${example(group)} (${group.first.code}: ${cut(group.first.reason.replace(/\.$/, ""))})`,
-    )
-    .join("; ")}${rest > 0 ? `; and ${rest} other reasons` : ""}.`;
+  return `${error.reason} Left out: ${listed.join("; ")}${rest > 0 ? `; and ${rest} other reasons` : ""}.${close}`;
 };
 
 /**
@@ -104,3 +115,32 @@ export class OpenapiCompileError extends Schema.TaggedError<OpenapiCompileError>
     return compileMessage(this);
   }
 }
+
+/** A tool a generated OpenAPI router exposes, read from the definition alone. */
+export const OpenapiToolName = Schema.Struct({
+  /** The tool name relative to the router, as `withApprovals` receives it. */
+  name: Schema.String,
+  /** The HTTP method, such as `GET`. */
+  method: Schema.String,
+  /** The request path, including any `pathPrefix`. */
+  path: Schema.String,
+  operationId: Schema.optionalKey(Schema.String),
+  /** After `kinds` (keyed by `operationId`, else `name`); otherwise reading methods are queries. */
+  kind: Schema.Literals(["query", "mutation"]),
+  /** Callable without credentials, so every account and a router without one expose it. */
+  public: Schema.Boolean,
+  /** The `methods` and `oauth` entries whose accounts expose it. */
+  methods: Schema.Array(Schema.String),
+});
+export type OpenapiToolName = typeof OpenapiToolName.Type;
+
+/** Every tool a definition yields for some account, and the operations the compiler left out. */
+export const OpenapiToolNames = Schema.Struct({
+  tools: Schema.Array(OpenapiToolName),
+  /**
+   * Operations the compiler left out, and why. An operation it imports but no configured `methods`
+   * or `oauth` entry can authorize is missing from `tools` and is not listed here.
+   */
+  skipped: Schema.Array(OpenapiSkippedOperation),
+});
+export type OpenapiToolNames = typeof OpenapiToolNames.Type;

@@ -16,7 +16,7 @@ import {
   StreamableHTTPError,
 } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { captureTelemetry } from "@executor-js/telemetry";
+import { captureTelemetry, owned } from "@executor-js/telemetry";
 import {
   Clock,
   Deferred,
@@ -177,6 +177,8 @@ const transportFetch =
           try: () => {
             const headers = new Headers(Redacted.value(connection.headers));
             new Headers(init?.headers).forEach((value, name) => headers.set(name, value));
+            // Workers send no User-Agent, and some Cloudflare-hosted servers refuse requests without one.
+            if (!headers.has("user-agent")) headers.set("user-agent", "Executor");
             return HttpClientRequest.fromWeb(new Request(target, { ...init, headers }));
           },
           // The provider's headers cannot form an HTTP request, such as a name with a space.
@@ -242,6 +244,20 @@ const explain = <E>(
   responses: ErrorResponses,
 ) => {
   if (Schema.is(ProviderError)(error)) return providerErrorDetail(error, { phase });
+  // A tool call's request that failed without an answer, such as on a closed connection, failed
+  // the call, which the server may already have run; it is not a failure to connect.
+  if (
+    phase === "call" &&
+    Schema.is(McpError)(error) &&
+    error.phase === "transport" &&
+    error.reason === "request"
+  )
+    return new McpError({
+      phase,
+      reason: error.reason,
+      ...(error.status === undefined ? {} : { status: error.status }),
+      ...(error.upstream === undefined ? {} : { upstream: error.upstream }),
+    });
   if (!Schema.is(McpError)(error) || error.status === undefined) return error;
   const response = responses.get(error.status);
   if (
@@ -299,6 +315,7 @@ function withClient<A, E>(
                   ),
                 );
                 pending.add(task);
+                // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's catalog invalidation
                 return task.finally(() => pending.delete(task));
               });
             }
@@ -321,6 +338,7 @@ function withClient<A, E>(
           ({ client, transport }) =>
             Effect.gen(function* () {
               client.removeNotificationHandler("notifications/tools/list_changed");
+              // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's catalog invalidations
               yield* Effect.promise(async () => {
                 await Promise.allSettled(pending);
               });
@@ -328,20 +346,23 @@ function withClient<A, E>(
                 transport instanceof StreamableHTTPClientTransport &&
                 transport.sessionId !== undefined
               ) {
+                // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
                 yield* Effect.tryPromise(() => transport.terminateSession()).pipe(
                   Effect.timeout(defaultMcpClientLimits.cleanupTimeoutMs),
                   Effect.ignore,
                 );
               }
+              // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
               yield* Effect.tryPromise(() => client.close()).pipe(
                 Effect.timeout(defaultMcpClientLimits.cleanupTimeoutMs),
                 Effect.ignore,
               );
-            }).pipe(Effect.withSpan("provider.mcp.close")),
+            }).pipe(owned("upstream", "provider.mcp.close")),
         );
         // Hide the SDK getter that conflicts with its own exact-optional Transport type.
         const wire: Omit<StreamableHTTPClientTransport, "sessionId"> | SSEClientTransport =
           transport;
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
         yield* Effect.tryPromise({
           try: (signal) => client.connect(wire, { signal, timeout: connection.timeoutMs }),
           catch: (error) => failure("connect", error),
@@ -349,14 +370,14 @@ function withClient<A, E>(
           Effect.raceFirst(Deferred.await(rejected)),
           Effect.catch(explained("connect", answered)),
           Effect.timeout(connection.timeoutMs),
-          Effect.withSpan("provider.mcp.connect"),
+          owned("upstream", "provider.mcp.connect"),
         );
         return yield* use(client, (work) =>
           work.pipe(Effect.raceFirst(Deferred.await(rejected))),
         ).pipe(Effect.raceFirst(Deferred.await(rejected)), Effect.catch(explained(mode, answered)));
       }),
     ).pipe(
-      Effect.withSpan("provider.mcp.session", {
+      owned("upstream", "provider.mcp.session", {
         attributes: {
           "mcp.transport": kind,
           "mcp.operation": mode,
@@ -464,9 +485,9 @@ export const mcpHealthEffect = (check: McpHealthCheck, options: McpHealthOptions
               ? Effect.void
               : Effect.fail(new McpCredentialsUnverified({ anonymous: error })),
       }),
-      Effect.withSpan("provider.mcp.anonymous"),
+      owned("upstream", "provider.mcp.anonymous"),
     );
-  }).pipe(Effect.withSpan("provider.mcp.health"));
+  }).pipe(owned("upstream", "provider.mcp.health"));
 
 /** Discover and compile all tools for connection probes and low-level consumers. */
 export const mcpToolsEffect = (input: McpToolsOptions) =>

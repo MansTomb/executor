@@ -7,7 +7,7 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -41,7 +41,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth metadata override", (it)
                   path: "index.ts",
                   content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2(${JSON.stringify(config)}) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ tools: router({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({ tools: router({
   read: query({ input: object({}) }, async ({ fetch }) => (await fetch(${JSON.stringify(`${issuer.origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } })).json()),
 }) }));`,
                 },
@@ -63,13 +63,14 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
           );
         const connect = (app: typeof App.Type) =>
           Effect.gen(function* () {
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             const start = yield* api.request(
               actors.owner,
@@ -94,10 +95,11 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
               `${prefix}/connections/${connection.id}/oauth/complete`,
               { callbackUrl: callback },
             );
-            return { completed, url, profile };
+            return { completed, url };
           });
 
-        // The resource advertises OpenID, but its root metadata omits signing algorithms.
+        // The resource advertises OpenID, but its root metadata omits signing algorithms. The
+        // ES256 ID token is ignored, so the RS256 default for unlisted algorithms never applies.
         yield* issuer.configure({
           scopes: ["openid", "profile", "email", "read"],
           includeIdToken: true,
@@ -105,11 +107,18 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
           expiresIn: 1,
         });
         const automatic = yield* deploy("Root metadata", { discover: `${issuer.origin}/mcp` });
-        const failed = yield* connect(automatic);
-        expect(failed.completed.status).toBe(400);
-        expect((yield* body(Failure, failed.completed)).reason).toBe("incompatible_response");
+        const root = yield* connect(automatic);
+        expect(root.url.searchParams.get("scope")).toBe("openid profile email read");
+        expect(root.url.searchParams.has("nonce")).toBe(false);
+        expect(root.completed.status, JSON.stringify(root.completed.body)).toBe(200);
+        const rootAccount = yield* body(Resource, root.completed);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "DELETE", `${prefix}/accounts/${rootAccount.id}`)
+            .pipe(Effect.orDie),
+        );
 
-        // An exact OIDC metadata location supplies ES256 without changing the expected issuer.
+        // An exact OIDC metadata location is used without changing the expected issuer.
         const overridden = yield* deploy("Explicit metadata", {
           discover: `${issuer.origin}/mcp`,
           authorizationServerMetadataUrl: metadataUrl,
@@ -117,7 +126,7 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
         const before = (yield* issuer.metrics).discoveryRequests.length;
         const connected = yield* connect(overridden);
         expect(connected.url.searchParams.get("scope")).toBe("openid profile email read");
-        expect(connected.url.searchParams.has("nonce")).toBe(true);
+        expect(connected.url.searchParams.has("nonce")).toBe(false);
         expect(connected.completed.status, JSON.stringify(connected.completed.body)).toBe(200);
         expect((yield* issuer.metrics).discoveryRequests.slice(before)).toContain(
           "/oauth/.well-known/openid-configuration",
@@ -131,18 +140,14 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
             .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
             .pipe(Effect.orDie),
         );
-        expect(
-          (yield* api.request(
-            actors.owner,
-            "GET",
-            `${prefix}/apps/${overridden.id}/profiles/${connected.profile.id}`,
-          )).body,
-        ).toMatchObject({ accounts: { service: account.id } });
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${overridden.id}`)).toEqual([
+          account.id,
+        ]);
         const executed = yield* api.request(
           actors.owner,
           "POST",
           `${prefix}/apps/${overridden.id}/tools/call`,
-          { profile: connected.profile.id, tool: "read", kind: "query", input: {} },
+          { tool: "read", kind: "query", input: {} },
         );
         expect(executed.status, JSON.stringify(executed.body)).toBe(200);
         expect(yield* body(Schema.Struct({ refreshed: Schema.Boolean }), executed)).toEqual({
@@ -157,10 +162,18 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
         expect((yield* body(Failure, mismatch)).reason).toBe("discovery_invalid");
         yield* issuer.configure({ metadataOverrideIssuer: null, metadataOverrideStatus: 404 });
         expect((yield* body(Failure, yield* setup(overridden))).reason).toBe("discovery_missing");
+        // An ID token with a nonce Executor never sent is ignored like any other.
         yield* issuer.configure({ metadataOverrideStatus: 200, invalidNonce: true });
-        const nonceFailure = yield* connect(overridden);
-        expect(nonceFailure.completed.status).toBe(400);
-        expect((yield* body(Failure, nonceFailure.completed)).reason).toBe("incompatible_response");
+        const foreignNonce = yield* connect(overridden);
+        expect(foreignNonce.completed.status, JSON.stringify(foreignNonce.completed.body)).toBe(
+          200,
+        );
+        const foreignNonceAccount = yield* body(Resource, foreignNonce.completed);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "DELETE", `${prefix}/accounts/${foreignNonceAccount.id}`)
+            .pipe(Effect.orDie),
+        );
         const blocked = yield* deploy("Blocked metadata", {
           discover: `${issuer.origin}/mcp`,
           authorizationServerMetadataUrl: "http://blocked.internal:8081/metadata",
@@ -209,7 +222,49 @@ export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ t
         );
         yield* issuer.configure({ postChallenge: true });
         expect((yield* body(Setup, yield* setup(automatic))).scopes).toEqual(["read"]);
-        yield* issuer.configure({ postChallenge: false, challengeScopes: null });
+
+        // The advertised list never widens a challenge, even one inside it: the issuer grants
+        // `read` or `admin:read`, but refuses the two together.
+        yield* issuer.configure({
+          postChallenge: false,
+          scopes: ["read", "admin:read"],
+          exclusiveScopes: ["read", "admin:read"],
+        });
+        expect((yield* body(Setup, yield* setup(automatic))).scopes).toEqual(["read"]);
+        const challenged = yield* connect(automatic);
+        expect(challenged.url.searchParams.get("scope")).toBe("read");
+        expect(challenged.completed.status, JSON.stringify(challenged.completed.body)).toBe(200);
+        const challengedAccount = yield* body(Resource, challenged.completed);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "DELETE", `${prefix}/accounts/${challengedAccount.id}`)
+            .pipe(Effect.orDie),
+        );
+        // Wider access is the author's choice: declared scopes replace the challenge, and the
+        // issuer's refusal of an incompatible set reaches the user as it is, never narrowed.
+        const declared = yield* deploy("Declared wider scopes", {
+          discover: `${issuer.origin}/mcp`,
+          scopes: ["read", "admin:read"],
+        });
+        expect((yield* body(Setup, yield* setup(declared))).scopes).toEqual(["read", "admin:read"]);
+        const refused = yield* connect(declared);
+        expect(refused.url.searchParams.get("scope")).toBe("read admin:read");
+        expect(refused.completed.status).toBe(400);
+        expect((yield* body(Failure, refused.completed)).reason).toBe("invalid_scope");
+        yield* issuer.configure({ exclusiveScopes: null });
+        const widened = yield* connect(declared);
+        expect(widened.url.searchParams.get("scope")).toBe("read admin:read");
+        expect(widened.completed.status, JSON.stringify(widened.completed.body)).toBe(200);
+        const widenedAccount = yield* body(Resource, widened.completed);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "DELETE", `${prefix}/accounts/${widenedAccount.id}`)
+            .pipe(Effect.orDie),
+        );
+        yield* issuer.configure({
+          challengeScopes: null,
+          scopes: ["openid", "profile", "email", "read"],
+        });
         expect((yield* body(Setup, yield* setup(automatic))).scopes).toEqual([
           "openid",
           "profile",

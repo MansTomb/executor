@@ -1,12 +1,68 @@
-import { Effect, FileSystem, Path, Redacted, Schedule, Schema, Stream } from "effect";
+import {
+  Clock,
+  Deferred,
+  Effect,
+  FileSystem,
+  Path,
+  Redacted,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient } from "effect/http";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
-import { serveOtlpCollector } from "./otlp-collector.ts";
+import { serveShardedOtlpCollector } from "./otlp-collector.ts";
 import { randomBytes } from "node:crypto";
-import { createEmulatorFixture, emulatorRequest } from "./emulators.ts";
-import { startCloudPostgres } from "./cloud-postgres.ts";
+import { createEmulatorFixture, EmulatorFixture, emulatorRequest } from "./emulators.ts";
+import { createV1Database, startCloudPostgres, v1DatabaseReader } from "./cloud-postgres.ts";
+import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
 import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
+import { roleHost } from "./role-hosts.ts";
+import { freePort } from "./ports.ts";
+import {
+  OperatorOAuthFixture,
+  operatorOAuthFile,
+  v1FirstPartyClients,
+  v1FirstPartyCredentials,
+} from "./operator-oauth.ts";
+
+/**
+ * The operator settings for `fixture`: one test client, whose tokens go only to its own host, the
+ * clients v1's first-party connections move to (`v1FirstPartyClients`), and their credentials.
+ * Emulated Cloud adds the definitions to its reviewed clients.
+ */
+const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
+  const origin = `http://127.0.0.1:${fixture.port}`;
+  return {
+    EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
+      {
+        id: "synthetic-cloud-mail",
+        label: "Executor for Synthetic Cloud Mail",
+        server: {
+          issuer: origin,
+          authorizationUrl: `${origin}/authorize`,
+          tokenUrl: `${origin}/token`,
+        },
+        tokenEndpointAuthMethod: "client_secret_basic",
+        defaultScopes: ["mail.read"],
+        placement: { hosts: [`127.0.0.1:${fixture.port}`] },
+      },
+      ...v1FirstPartyClients(`http://127.0.0.1:${fixture.v1Port}`),
+    ]),
+    EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_ID: fixture.clientId,
+    EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_SECRET: fixture.clientSecret,
+    ...Object.fromEntries(
+      Object.entries(v1FirstPartyCredentials).flatMap(([id, credentials]) => {
+        const prefix = `EXECUTOR_OAUTH_${id.toUpperCase().replaceAll("-", "_")}`;
+        return [
+          [`${prefix}_CLIENT_ID`, credentials.clientId],
+          [`${prefix}_CLIENT_SECRET`, credentials.secret],
+        ];
+      }),
+    ),
+  };
+};
 
 class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStartFailed", {
   operation: Schema.String,
@@ -16,6 +72,19 @@ class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStar
   }
 }
 
+/**
+ * Starts on this host took up to 324 s from `alchemy dev` to a ready API Worker, under load 60
+ * with other local Clouds starting beside them.
+ */
+const readinessDeadline = "10 minutes";
+
+/**
+ * Motels behind this Cloud's collector. Six scenario workers provisioning organizations at once
+ * export about 1,500 spans a second, as much as one Motel stores; four keep up with several times
+ * that and still leave a 16-vCPU runner most of its cores.
+ */
+const collectorShards = 4;
+
 /** A complete local Cloud Worker, real Postgres and hosted emulators; no inherited credentials. */
 export const startCloudEnvironment = (input: {
   readonly directory: string;
@@ -24,8 +93,34 @@ export const startCloudEnvironment = (input: {
   readonly databasePort: number;
   readonly commit: string;
   readonly observeUI: boolean;
+  /**
+   * Every scenario's request comes from this machine's one address, so they would share Better
+   * Auth's per-address allowance. As on deployed test stages, the limit is on only for the
+   * scenarios that prove it.
+   */
+  readonly authRateLimit: boolean;
+  /**
+   * Which host serves the dashboard and sign-in: `app.` of the origin, or, with the rollback
+   * switch (`CLOUD_BROWSER_ORIGIN=deployment`), the origin itself.
+   */
+  readonly browserOrigin: "app" | "deployment";
   /** Registry the local Cloud compiler resolves app packages from. */
   readonly npmRegistry?: string;
+  /**
+   * Better Auth's OAuth proxy is on, as in production. Without this, this Cloud is the proxy's
+   * production: its edge exchanges the codes of stages that sign in through it. With it, this
+   * Cloud is such a test stage: it names that production's edge and secret, and uses its emulated
+   * providers, whose clients return to that edge.
+   */
+  readonly signInThrough?: {
+    readonly productionUrl: string;
+    readonly secret: Redacted.Redacted<string>;
+    readonly services: typeof EmulatorFixture.Type.services;
+  };
+  /** Another local Cloud of this run built the Worker; a second build would rewrite its files. */
+  readonly prebuilt?: true;
+  /** Origins beside the SSO issuer that this Cloud trusts, such as a stage proxying through it. */
+  readonly trustedOrigins?: ReadonlyArray<string>;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem,
@@ -33,10 +128,24 @@ export const startCloudEnvironment = (input: {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner,
       http = yield* HttpClient.HttpClient;
     const cloud = path.resolve("apps/hosted/cloud");
+    const browser = input.browserOrigin === "app" ? roleHost(input.origin, "app") : input.origin;
     const directory = path.resolve(input.directory);
     const stage = `e2e-${randomBytes(8).toString("hex")}`;
     const container = `executor-${stage}`;
-    const fixture = yield* createEmulatorFixture(input.origin);
+    const fixture =
+      input.signInThrough === undefined
+        ? yield* createEmulatorFixture(input.origin)
+        : Redacted.make(
+            EmulatorFixture.make({
+              version: 4,
+              origin: input.origin,
+              services: input.signInThrough.services,
+            }),
+          );
+    const oauthProxy = {
+      productionUrl: input.signInThrough?.productionUrl ?? roleHost(input.origin, "edge"),
+      secret: input.signInThrough?.secret ?? Redacted.make(randomBytes(32).toString("hex")),
+    };
     yield* Effect.addFinalizer(() =>
       Effect.forEach(
         Object.values(Redacted.value(fixture).services),
@@ -48,8 +157,18 @@ export const startCloudEnvironment = (input: {
     yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
     const analyticsPort = yield* startAnalyticsCollector(directory);
-    const collector = yield* serveOtlpCollector(directory);
+    // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
+    const collector = yield* serveShardedOtlpCollector(directory, collectorShards);
     const databasePassword = randomBytes(24).toString("hex");
+    const operatorOAuth = OperatorOAuthFixture.make({
+      port: yield* freePort,
+      clientId: "first-party-client",
+      clientSecret: randomBytes(16).toString("hex"),
+      v1Port: yield* freePort,
+    });
+    const operatorOAuthPath = `${directory}/${operatorOAuthFile}`;
+    yield* fs.writeFileString(operatorOAuthPath, JSON.stringify(operatorOAuth), { mode: 0o600 });
+    yield* Effect.addFinalizer(() => fs.remove(operatorOAuthPath).pipe(Effect.orDie));
     const ssoDatabase = `${directory}/sso-database.json`;
     yield* fs.writeFileString(
       ssoDatabase,
@@ -59,6 +178,17 @@ export const startCloudEnvironment = (input: {
       { mode: 0o600 },
     );
     yield* Effect.addFinalizer(() => fs.remove(ssoDatabase).pipe(Effect.orDie));
+    // The emulated v1 database: the Worker reads it as v1's read-only login, scenarios write it.
+    const v1ReaderPassword = randomBytes(24).toString("hex");
+    const v1Database = `${directory}/v1-database.json`;
+    yield* fs.writeFileString(
+      v1Database,
+      JSON.stringify({
+        database: `postgresql://executor:${databasePassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
+      }),
+      { mode: 0o600 },
+    );
+    yield* Effect.addFinalizer(() => fs.remove(v1Database).pipe(Effect.orDie));
     const env = {
       PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
         process.platform === "win32" ? ";" : ":",
@@ -83,11 +213,15 @@ export const startCloudEnvironment = (input: {
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: `${collector}/v1/traces`,
       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: `${collector}/v1/logs`,
       EXECUTOR_ENVIRONMENT: "test-local",
+      TEST_STAGE_AUTH_RATE_LIMIT: String(input.authRateLimit),
       VITE_POSTHOG_KEY: "synthetic-ingestion-key",
       VITE_POSTHOG_PATH: "/api/0123456789abcdef",
       VITE_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,
+      // The site's own build reads the same synthetic project, so its pages run PostHog too.
+      PUBLIC_POSTHOG_KEY: "synthetic-ingestion-key",
+      PUBLIC_POSTHOG_PATH: "/api/0123456789abcdef",
+      PUBLIC_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,
       VITE_EXECUTOR_ENVIRONMENT: "test-local",
-      VITE_EXECUTOR_RELEASE: input.commit,
       // Serve the same built assets and routing as a deployed stage. Vite's
       // on-demand source transforms must not compete with timed scenarios.
       CLOUD_DEV_DASHBOARD: "built",
@@ -99,6 +233,15 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
       EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
+      // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
+      V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
+      V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
+      // Serve the role hosts as production does, at `app.`, `mcp.` and `api.` of the origin's host.
+      EXECUTOR_ROLE_HOSTS_DOMAIN: new URL(input.origin).hostname,
+      CLOUD_BROWSER_ORIGIN: input.browserOrigin,
+      EXECUTOR_EMULATED_OAUTH_PROXY_PRODUCTION_URL: oauthProxy.productionUrl,
+      EXECUTOR_EMULATED_OAUTH_PROXY_SECRET: Redacted.value(oauthProxy.secret),
+      ...operatorOAuthClients(operatorOAuth),
     };
     yield* fs.makeDirectory(env.ALCHEMY_HOME, { recursive: true, mode: 0o700 });
     const dockerHost = (yield* processes.string(
@@ -126,6 +269,18 @@ export const startCloudEnvironment = (input: {
       { mode: 0o600 },
     );
     yield* Effect.addFinalizer(() => fs.remove(postgresContainer).pipe(Effect.orDie));
+    // `alchemy dev` keeps this stage's state, including the secrets it mints, in the Cloud
+    // package's local state store. Scenarios that sign with a minted key read it there.
+    yield* fs.writeFileString(
+      `${directory}/alchemy-state.json`,
+      JSON.stringify({
+        directory: path.join(cloud, ".alchemy", "state", "executor-next-hosted", stage),
+      }),
+      { mode: 0o600 },
+    );
+    yield* Effect.addFinalizer(() =>
+      fs.remove(`${directory}/alchemy-state.json`).pipe(Effect.orDie),
+    );
     yield* fs.writeFileString(
       `${directory}/environment.json`,
       JSON.stringify(
@@ -143,18 +298,30 @@ export const startCloudEnvironment = (input: {
         2,
       ),
     );
-    const capture = (child: ChildProcessSpawner.ChildProcessHandle, file: string) =>
-      Stream.merge(child.stdout, child.stderr).pipe(
-        Stream.decodeText(),
-        Stream.runForEach((text) =>
-          fs.writeFileString(`${directory}/${file}`, text, { flag: "a", mode: 0o600 }),
+    const capture = (
+      child: ChildProcessSpawner.ChildProcessHandle,
+      file: string,
+      onLine: (line: string) => Effect.Effect<void> = () => Effect.void,
+    ) =>
+      outputLines(child).pipe(
+        Stream.runForEach((line) =>
+          fs
+            .writeFileString(`${directory}/${file}`, `${line}\n`, { flag: "a", mode: 0o600 })
+            .pipe(Effect.andThen(onLine(line))),
         ),
         Effect.forkScoped,
       );
     const ssoIssuer = yield* processes.spawn(
       ChildProcess.make(
         "node",
-        ["apps/hosted/testing/sso-idp.ts", "--directory", directory, "--application", input.origin],
+        [
+          "apps/hosted/testing/sso-idp.ts",
+          "--directory",
+          directory,
+          // SSO returns to the browser origin, where sign-in runs.
+          "--application",
+          browser,
+        ],
         {
           env: { PATH: env.PATH, NODE_ENV: "test" },
           extendEnv: false,
@@ -182,28 +349,42 @@ export const startCloudEnvironment = (input: {
       dockerEnv,
       log: `${directory}/postgres.log`,
     });
-    const built = yield* processes.exitCode(
-      ChildProcess.make("bun", ["run", "framework:build"], {
-        cwd: cloud,
-        env,
-        extendEnv: false,
-        stdout: "inherit",
-        stderr: "inherit",
-      }),
-    );
+    yield* createV1Database({ container, dockerEnv, readerPassword: v1ReaderPassword });
+    const built =
+      input.prebuilt === true
+        ? 0
+        : yield* processes.exitCode(
+            ChildProcess.make("bun", ["run", "framework:build"], {
+              cwd: cloud,
+              env,
+              extendEnv: false,
+              stdout: "inherit",
+              stderr: "inherit",
+            }),
+          );
     if (built !== 0)
       return yield* new CloudStartFailed({ operation: "Build the actual Cloud Worker" });
     const server = yield* processes.spawn(
       ChildProcess.make("node", ["scripts/dev.ts", "--stage", stage], {
         cwd: cloud,
-        env: { ...env, AUTH_TRUSTED_ORIGINS: sso.origin },
+        env: {
+          ...env,
+          AUTH_TRUSTED_ORIGINS: [sso.origin, ...(input.trustedOrigins ?? [])].join(","),
+        },
         extendEnv: false,
         stdout: "pipe",
         stderr: "pipe",
         forceKillAfter: "15 seconds",
       }),
     );
-    yield* capture(server, "cloud.log");
+    // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
+    // run nothing will edit the sources it waits on, so the Worker that failed never starts.
+    const applyFailed = yield* Deferred.make<void>();
+    yield* capture(server, "cloud.log", (line) =>
+      isAlchemyDevFailure(line) ? Deferred.succeed(applyFailed, undefined) : Effect.void,
+    );
+    // A Worker that is still starting holds the request until it can answer, so each probe has its
+    // own deadline and the whole wait has one too.
     const ready = Effect.scoped(
       http.get(`${input.origin}/health`).pipe(
         Effect.flatMap((response) =>
@@ -214,18 +395,41 @@ export const startCloudEnvironment = (input: {
           }),
         ),
       ),
-    ).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 360 }));
+    ).pipe(
+      Effect.timeout("10 seconds"),
+      Effect.retry({ schedule: Schedule.spaced("500 millis") }),
+      Effect.timeoutOrElse({
+        duration: readinessDeadline,
+        orElse: () =>
+          Effect.fail(
+            new CloudStartFailed({
+              operation: `Cloud did not answer /health within ${readinessDeadline}; see cloud.log`,
+            }),
+          ),
+      }),
+    );
     yield* Effect.raceFirst(
       ready,
-      server.exitCode.pipe(
-        Effect.flatMap(() =>
-          Effect.fail(
-            new CloudStartFailed({ operation: "Cloud stopped before readiness; see cloud.log" }),
+      Effect.raceFirst(
+        server.exitCode.pipe(
+          Effect.flatMap(() =>
+            Effect.fail(
+              new CloudStartFailed({ operation: "Cloud stopped before readiness; see cloud.log" }),
+            ),
+          ),
+        ),
+        Deferred.await(applyFailed).pipe(
+          Effect.flatMap(() =>
+            Effect.fail(
+              new CloudStartFailed({
+                operation: "Alchemy could not start every Cloud resource; see cloud.log",
+              }),
+            ),
           ),
         ),
       ),
     );
-    const fixtures = yield* startFixtureControl(input.origin, directory);
+    const fixtures = yield* startFixtureControl(input.origin, directory, browser);
     yield* fixtureRequest(fixtures, "/configure", {
       origin: input.origin,
       stage: "local",
@@ -234,5 +438,10 @@ export const startCloudEnvironment = (input: {
       databaseName: "executor",
       databaseUsername: "executor",
     });
-    return { emulators, fixtures, origin: input.origin };
+    return {
+      emulators,
+      fixtures,
+      origin: input.origin,
+      oauthProxy: { ...oauthProxy, services: Redacted.value(fixture).services },
+    };
   });

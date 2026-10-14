@@ -12,14 +12,15 @@ export {
   frameworkRoutes,
 } from "./implementation/framework.ts";
 /** Product-authorized app authoring, release discovery, and ordinary Git access. */
-import { Context, Effect, Layer, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { Array as Arr, Context, Effect, Layer, Schema } from "effect";
+import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   HttpApi,
   HttpApiBuilder,
   HttpApiEndpoint,
   HttpApiGroup,
   HttpApiMiddleware,
+  HttpApiSchema,
 } from "effect/http-api";
 import { AppGitProtocol } from "./contracts/git.ts";
 import {
@@ -30,6 +31,7 @@ import {
   RepositoryHost,
   SourceCommit,
   SourceError,
+  SourceFilePath,
   StorageError,
   RegistryError,
   Publication,
@@ -45,17 +47,34 @@ export class AppManagementHost extends Context.Service<
   Effect.Effect<
     {
       readonly executor: Executor;
-      /** Optional product-owned policy; local pairing uses the identity's existing authority. */
-      readonly access?:
-        | ((
-            app: App,
-            identity: Context.Service.Shape<typeof AppIdentity>,
-          ) => Effect.Effect<AppCapabilities, AppAccessDenied | StorageError>)
-        | undefined;
+      /**
+       * The product's policy for each app; every host states it, even when it allows all.
+       * Answers each app in order, so a list is checked in one read; any denied app fails it.
+       */
+      readonly access: (
+        apps: ReadonlyArray<App>,
+        identity: Context.Service.Shape<typeof AppIdentity>,
+      ) => Effect.Effect<ReadonlyArray<AppCapabilities>, AppAccessDenied | StorageError>;
     },
     StorageError
   >
 >()("apps/ManagementHost") {}
+/**
+ * The origins where the host serves {@link gitRoutes}, canonical first. Clone URLs use the
+ * canonical one; the others keep earlier remotes working. A host that serves Git on the origin
+ * it was called on reads that origin from the request.
+ */
+export class AppGitOrigins extends Context.Service<
+  AppGitOrigins,
+  (request: HttpServerRequest.HttpServerRequest) => readonly [string, ...string[]]
+>()("apps/GitOrigins") {}
+/** The clone URL of an app, on the host's canonical Git origin. */
+const gitRemote = (scope: string, app: App) =>
+  Effect.gen(function* () {
+    const [origin] = (yield* AppGitOrigins)(yield* HttpServerRequest.HttpServerRequest);
+    const path = `/git/${encodeURIComponent(scope)}/${app.slug}.git`;
+    return { path, url: origin + path };
+  });
 /** Cookies never authorize Git. The host validates the explicit scoped Git credential. */
 export class AppGitAccess extends Context.Service<
   AppGitAccess,
@@ -63,7 +82,7 @@ export class AppGitAccess extends Context.Service<
     readonly authenticate: (
       request: HttpServerRequest.HttpServerRequest,
       scope: string,
-    ) => Effect.Effect<Context.Service.Shape<typeof AppIdentity>, AppAccessDenied>;
+    ) => Effect.Effect<Context.Service.Shape<typeof AppIdentity>, AppAccessDenied | StorageError>;
   }
 >()("apps/GitAccess") {}
 
@@ -75,14 +94,28 @@ const writeIdentity = AppIdentity.pipe(
   ),
 );
 type ManagementHost = Effect.Success<Context.Service.Shape<typeof AppManagementHost>>;
+const capabilitiesOf = (
+  host: ManagementHost,
+  apps: ReadonlyArray<App>,
+  identity: Context.Service.Shape<typeof AppIdentity>,
+) =>
+  host
+    .access(apps, identity)
+    .pipe(
+      Effect.flatMap((access) =>
+        access.length === apps.length ? Effect.succeed(access) : Effect.fail(new StorageError()),
+      ),
+    );
 const capabilities = (
   host: ManagementHost,
   app: App,
   identity: Context.Service.Shape<typeof AppIdentity>,
 ) =>
-  host.access === undefined
-    ? Effect.succeed({ visible: true, manage: true, edit: true })
-    : host.access(app, identity);
+  capabilitiesOf(host, [app], identity).pipe(
+    Effect.flatMap(([access]) =>
+      access === undefined ? Effect.fail(new StorageError()) : Effect.succeed(access),
+    ),
+  );
 const projectApp = <A extends App>(
   host: ManagementHost,
   app: A,
@@ -122,12 +155,14 @@ const authoring = (id: AppId) =>
     const { publishing } = yield* host.executor.publications
       .status()
       .pipe(Effect.mapError(() => new StorageError()));
+    const remote = yield* gitRemote(identity.scope, app);
     return {
       app,
       host,
       metadata: {
         namespace: identity.namespace,
-        gitPath: `/git/${encodeURIComponent(identity.scope)}/${app.slug}.git`,
+        gitPath: remote.path,
+        gitUrl: remote.url,
         canEdit,
         canPublish: canEdit && publishing && identity.namespace !== null,
       },
@@ -193,11 +228,8 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
             ...(identity.readOwner === null ? {} : { owner: identity.readOwner }),
             ids: identity.appIds,
           });
-          return (yield* Effect.forEach(apps, (app) =>
-            capabilities(host, app, identity).pipe(
-              Effect.map((access) => (access.visible ? [app] : [])),
-            ),
-          )).flat();
+          const access = yield* capabilitiesOf(host, apps, identity);
+          return Arr.zip(apps, access).flatMap(([app, { visible }]) => (visible ? [app] : []));
         }),
       )
       .handle("create", ({ payload }) =>
@@ -281,7 +313,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           const identity = yield* AppIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
           const { app } = yield* ownedSource(host, identity, params.app);
-          return { path: `/git/${encodeURIComponent(identity.scope)}/${app.slug}.git` };
+          return yield* gitRemote(identity.scope, app);
         }),
       )
       .handle("history", ({ params }) =>
@@ -365,24 +397,38 @@ export const registryRoutes = (() => {
         success: PublicationSnapshot,
         error: RegistryError,
       }),
+      HttpApiEndpoint.get("file", "/api/registry/file", {
+        query: { name: PackageName, commit: SourceCommit, path: SourceFilePath },
+        success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+        error: RegistryError,
+      }),
     ),
   );
   const publicRegistry = Effect.flatten(AppManagementHost).pipe(
     Effect.mapError(() => new RegistryError({ reason: "storage" })),
   );
-  return HttpApiBuilder.layer(api).pipe(
-    Layer.provide(
-      HttpApiBuilder.group(api, "registry", (h) =>
-        h
-          .handle("list", ({ query }) =>
-            Effect.flatMap(publicRegistry, (host) => host.executor.registry.list(query)),
-          )
-          .handle("snapshot", ({ query }) =>
-            Effect.flatMap(publicRegistry, (host) => host.executor.registry.snapshot(query)),
-          ),
+  // Public sites read the catalog from another origin (`executor.sh` reads `api.executor.sh`).
+  // The reads carry no credentials, so any origin may read them; a preflight gets the same answer.
+  const anyOrigin = HttpRouter.middleware(HttpMiddleware.cors({ allowedMethods: ["GET"] })).layer;
+  return Layer.mergeAll(
+    HttpApiBuilder.layer(api).pipe(
+      Layer.provide(
+        HttpApiBuilder.group(api, "registry", (h) =>
+          h
+            .handle("list", ({ query }) =>
+              Effect.flatMap(publicRegistry, (host) => host.executor.registry.list(query)),
+            )
+            .handle("snapshot", ({ query }) =>
+              Effect.flatMap(publicRegistry, (host) => host.executor.registry.snapshot(query)),
+            )
+            .handle("file", ({ query }) =>
+              Effect.flatMap(publicRegistry, (host) => host.executor.registry.file(query)),
+            ),
+        ),
       ),
     ),
-  );
+    HttpRouter.add("OPTIONS", "/api/registry/*", HttpServerResponse.empty({ status: 204 })),
+  ).pipe(Layer.provide(anyOrigin));
 })();
 
 /** Resolve readable app slugs inside the authenticated owner's inventory before opening Git source. */
@@ -420,22 +466,22 @@ export const gitRoutes = (() => {
       ),
     ).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
   }).pipe(
-    Effect.catch((error) =>
-      Effect.succeed(
-        HttpServerResponse.empty({
-          status:
-            Schema.is(AppAccessDenied)(error) || Schema.is(AppNotFound)(error)
-              ? 401
-              : Schema.is(SourceError)(error) && error.reason === "protected"
-                ? 403
-                : 503,
-          headers: {
-            "www-authenticate": 'Basic realm="Executor Git"',
-            "cache-control": "no-store",
-          },
+    Effect.catch((error) => {
+      const headers = {
+        "www-authenticate": 'Basic realm="Executor Git"',
+        "cache-control": "no-store",
+      };
+      if (Schema.is(AppAccessDenied)(error) || Schema.is(AppNotFound)(error))
+        return Effect.succeed(HttpServerResponse.empty({ status: 401, headers }));
+      // Git prints a plain-text body as `remote:` lines when it cannot read the refs.
+      const source = Schema.is(SourceError)(error) ? error : new SourceError({ reason: "git" });
+      return Effect.succeed(
+        HttpServerResponse.text(`${source.message}\n`, {
+          status: source.reason === "protected" ? 403 : source.reason === "limit" ? 413 : 503,
+          headers,
         }),
-      ),
-    ),
+      );
+    }),
   );
   return HttpApiBuilder.layer(api).pipe(
     Layer.provide(

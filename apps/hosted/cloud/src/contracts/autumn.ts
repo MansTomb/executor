@@ -3,7 +3,10 @@ import { Context, Schema, type Effect, type Redacted } from "effect";
 
 /** Match the API version used by autumn-js 1.2.28. */
 export const autumnApiVersion = "2.3.0";
-/** Bound a complete request, including response decoding. Billing writes are never retried. */
+/**
+ * Bound a complete write, including response decoding. Writes are never retried; each consumer
+ * chooses how its reads are bounded (`autumnReads` in `implementation/autumn-client.ts`).
+ */
 export const autumnTimeout = "10 seconds";
 
 /**
@@ -41,10 +44,23 @@ const balance = Schema.Struct({
 const price = Schema.Struct({ amount: Schema.Number, interval: Schema.String });
 const item = Schema.Struct({
   featureId: Schema.String,
+  included: Schema.Number,
+  unlimited: Schema.Boolean,
   price: Schema.NullOr(
     Schema.Struct({ amount: Schema.optionalKey(Schema.Number), interval: Schema.String }),
   ),
 }).pipe(Schema.encodeKeys({ featureId: "feature_id" }));
+const trial = Schema.Struct({
+  durationLength: Schema.Number,
+  durationType: Schema.String,
+  cardRequired: Schema.Boolean,
+}).pipe(
+  Schema.encodeKeys({
+    durationLength: "duration_length",
+    durationType: "duration_type",
+    cardRequired: "card_required",
+  }),
+);
 
 /** Only the inputs used by the product, encoded with Autumn's wire field names. */
 export const AutumnRequests = {
@@ -52,6 +68,8 @@ export const AutumnRequests = {
     ...customer,
     autoEnablePlanId: Schema.optionalKey(Schema.String),
   }).pipe(Schema.encodeKeys({ ...customerKeys, autoEnablePlanId: "auto_enable_plan_id" })),
+  /** Read only: unlike `getOrCreateCustomer`, an unknown customer is not created. */
+  getCustomer: Schema.Struct(customer).pipe(Schema.encodeKeys(customerKeys)),
   listPlans: Schema.Struct(customer).pipe(Schema.encodeKeys(customerKeys)),
   updateBalance: Schema.Struct({
     ...customer,
@@ -73,16 +91,20 @@ export const AutumnRequests = {
   }).pipe(Schema.encodeKeys({ ...customerKeys, planId: "plan_id", cancelAction: "cancel_action" })),
 };
 
+const subscriptions = Schema.Array(
+  Schema.Struct({ planId: Schema.String, status: Schema.String }).pipe(
+    Schema.encodeKeys({ planId: "plan_id" }),
+  ),
+);
+
 /** Decode provider responses into the fields billing reads; unrelated provider fields are ignored. */
 export const AutumnResponses = {
   getOrCreateCustomer: Schema.Struct({
     balances: Schema.Record(Schema.String, balance),
-    subscriptions: Schema.Array(
-      Schema.Struct({ planId: Schema.String, status: Schema.String }).pipe(
-        Schema.encodeKeys({ planId: "plan_id" }),
-      ),
-    ),
+    subscriptions,
   }),
+  /** Null when Autumn has no customer with this id. */
+  getCustomer: Schema.NullOr(Schema.Struct({ subscriptions })),
   listPlans: Schema.Struct({
     list: Schema.Array(
       Schema.Struct({
@@ -92,7 +114,9 @@ export const AutumnResponses = {
         archived: Schema.Boolean,
         price: Schema.NullOr(price),
         items: Schema.Array(item),
-      }),
+        // Autumn omits the key for a plan without a trial.
+        freeTrial: Schema.optionalKey(trial),
+      }).pipe(Schema.encodeKeys({ freeTrial: "free_trial" })),
     ),
   }),
   updateBalance: Schema.Struct({ success: Schema.Literal(true) }),
@@ -110,6 +134,7 @@ export class AutumnRequestFailed extends Schema.TaggedError<AutumnRequestFailed>
   {
     operation: Schema.Literals([
       "getOrCreateCustomer",
+      "getCustomer",
       "listPlans",
       "updateBalance",
       "attach",

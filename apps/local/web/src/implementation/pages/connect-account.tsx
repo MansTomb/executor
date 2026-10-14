@@ -19,7 +19,7 @@ import { faviconUrl } from "@executor-js/ui/contracts/icons";
 import { Button } from "@executor-js/ui/components/button";
 import { ConnectionLinkFailure } from "../components/common.tsx";
 import { AccountForm } from "@executor-js/ui/dashboard/account-form";
-import { OAuthFields } from "./oauth-fields.tsx";
+import { LinkOAuthFields } from "./oauth-fields.tsx";
 
 /** A standalone, mobile-sized handoff page with no dashboard navigation or access. */
 export function ConnectAccountPage() {
@@ -105,9 +105,7 @@ function ConnectionForm({
               ? "Ask your agent for a new connection link."
               : "No credentials were saved."}
         </p>
-        {state.status === "completed" && connection.target && (
-          <p>Connected to {connection.target.name}.</p>
-        )}
+        {state.status === "completed" && <p>Connected to {connection.target.name}.</p>}
         <p className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
           You can return to your agent.
         </p>
@@ -120,9 +118,7 @@ function ConnectionForm({
         <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
           Connect {connection.provider.definition.name}
         </h1>
-        <p className="text-[13px] text-muted-foreground">
-          {connection.target ? `For ${connection.target.name}` : "Save this account in Executor."}
-        </p>
+        <p className="text-[13px] text-muted-foreground">For {connection.target.name}</p>
       </header>
       {failure && <div className="-mt-3 mb-4">{failure}</div>}
       <AccountForm
@@ -135,9 +131,9 @@ function ConnectionForm({
         submit={(input: AccountSubmission) => submit({ ...grant, ...input })}
         onSaved={(account) => setState({ status: "completed", account })}
         oauth={(props) => (
-          <OAuthFields
+          <LinkOAuthFields
             provider={connection.provider}
-            connection={grant}
+            grant={grant}
             onSaved={(account) => setState({ status: "completed", account })}
             {...(connection.reconnectAccount ? { account: connection.reconnectAccount } : {})}
             {...props}

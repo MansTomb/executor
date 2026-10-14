@@ -1,4 +1,8 @@
-/** Every released host protocol. `bun run check` compares each with its committed snapshot. */
+/**
+ * Every released host protocol that the framework no longer speaks. Each is frozen: `bun run check`
+ * compares it with its snapshot in `packages/apps/protocols/`. The protocol the framework speaks is
+ * `current.ts`, recorded under its own number.
+ */
 import { protocol1 } from "./1.ts";
 import { protocol2 } from "./2.ts";
 import { protocol3 } from "./3.ts";
@@ -9,6 +13,8 @@ import { protocol7 } from "./7.ts";
 import { protocol8 } from "./8.ts";
 import { protocol9 } from "./9.ts";
 import { protocol10 } from "./10.ts";
+import { protocol11 } from "./11.ts";
+import { protocol12 } from "./12.ts";
 
 export const releasedProtocols = [
   protocol1,
@@ -21,4 +27,6 @@ export const releasedProtocols = [
   protocol8,
   protocol9,
   protocol10,
+  protocol11,
+  protocol12,
 ] as const;

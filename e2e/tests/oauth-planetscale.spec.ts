@@ -8,9 +8,9 @@ import { Api, body } from "../support/api.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
-import { BaseUrl, emulatorRequest } from "../support/emulators.ts";
-import { createProfile } from "../support/profiles.ts";
+import { BaseUrl, emulatorRequest, withoutEmulatorTracing } from "../support/emulators.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Tools = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
@@ -46,13 +46,14 @@ layer(HostedLive, { excludeTestServices: true })("PlanetScale OAuth", (it) => {
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+            {},
+          ),
         );
         // No client is entered: Executor registers one, and PlanetScale issues IDs and secrets
         // containing `_`, which form encoding would otherwise send as `%5F`.
@@ -84,7 +85,11 @@ layer(HostedLive, { excludeTestServices: true })("PlanetScale OAuth", (it) => {
               return yield* Effect.die("PlanetScale emulator did not return a callback");
             return location;
           }),
-        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+        ).pipe(
+          Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+          // The consent request goes to the private instance's URL, which a client span would export.
+          withoutEmulatorTracing,
+        );
 
         const completed = yield* api.request(
           actors.owner,
@@ -101,11 +106,7 @@ layer(HostedLive, { excludeTestServices: true })("PlanetScale OAuth", (it) => {
         );
 
         // The saved grant reaches PlanetScale's MCP server.
-        const listed = yield* api.request(
-          actors.owner,
-          "GET",
-          `${prefix}/apps/${app.id}/tools?profile=${profile.id}`,
-        );
+        const listed = yield* api.request(actors.owner, "GET", `${prefix}/apps/${app.id}/tools`);
         expect(listed.status, JSON.stringify(listed.body)).toBe(200);
         const tool = (yield* body(Tools, listed)).items.find((entry) =>
           entry.name.endsWith("planetscale_list_organizations"),
@@ -115,7 +116,7 @@ layer(HostedLive, { excludeTestServices: true })("PlanetScale OAuth", (it) => {
           actors.owner,
           "POST",
           `${prefix}/apps/${app.id}/tools/call`,
-          { profile: profile.id, tool: tool?.name, input: { accountId: account.id, input: {} } },
+          { tool: tool?.name, input: { accountId: account.id, input: {} } },
         );
         expect(called.status, JSON.stringify(called.body)).toBe(200);
         expect(JSON.stringify(called.body)).toContain("acme");

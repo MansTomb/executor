@@ -18,12 +18,18 @@ import {
   approvedOperation,
   nativeOperation,
   operationDeclaration,
+  type OperationChild,
   type OperationDeclaration,
   type RouterChild,
   type RouterDeclaration,
 } from "./operations.ts";
 
-export type { RouterChild, RouterDeclaration } from "./operations.ts";
+export type {
+  OperationChild,
+  OperationDeclaration,
+  RouterChild,
+  RouterDeclaration,
+} from "./operations.ts";
 
 /** Author metadata for a router. Instructions become a skill named after the router's path. */
 export interface RouterOptions {
@@ -111,8 +117,10 @@ const withOverrides = (overrides: RouterMeta | undefined) =>
 /**
  * Declare a router whose tools are discovered when read. `list` returns tools with names relative
  * to this router; mark queries with `readOnly: true`. `resolve` receives one of those names.
+ * The router carries the handler contexts of the operations `resolve` returns, so `defineApp`
+ * checks them like a static router's.
  */
-export const dynamicRouter = (source: {
+export const dynamicRouter = <Query = unknown, Mutation = unknown>(source: {
   readonly meta?: () => RouterOptions | Promise<RouterOptions>;
   readonly list: () => readonly HostedTool[] | Promise<readonly HostedTool[]>;
   readonly summaries?: () => Promise<readonly HostedToolSummary[]>;
@@ -120,10 +128,10 @@ export const dynamicRouter = (source: {
   readonly resolve: (
     name: string,
   ) =>
-    | OperationDeclaration<"query" | "mutation", unknown>
+    | OperationChild<Query, Mutation>
     | undefined
-    | Promise<OperationDeclaration<"query" | "mutation", unknown> | undefined>;
-}): RouterDeclaration => {
+    | Promise<OperationChild<Query, Mutation> | undefined>;
+}): RouterDeclaration<Query, Mutation> => {
   const meta = source.meta;
   const { summaries, describe } = source;
   return routerDeclaration({
@@ -132,7 +140,7 @@ export const dynamicRouter = (source: {
       ? {}
       : {
           summaries: () =>
-            fromPromise(summaries)().pipe(
+            fromPromise(summaries, "router")().pipe(
               Effect.flatMap(
                 Schema.decodeUnknownEffect(
                   Schema.Array(Schema.Union([HostedTool, HostedToolSummary])),
@@ -144,7 +152,10 @@ export const dynamicRouter = (source: {
       ? {}
       : {
           describe: (name: string) =>
-            fromPromise(describe)(name).pipe(
+            fromPromise(
+              describe,
+              "router",
+            )(name).pipe(
               Effect.flatMap(Schema.decodeUnknownEffect(Schema.UndefinedOr(HostedTool))),
             ),
         }),
@@ -152,16 +163,16 @@ export const dynamicRouter = (source: {
       ? {}
       : {
           meta: () =>
-            fromPromise(async () => meta())().pipe(
+            fromPromise(async () => meta(), "router")().pipe(
               Effect.flatMap((options) => Schema.decodeUnknownEffect(RouterMeta)(options)),
             ),
         }),
     list: () =>
-      fromPromise(async () => source.list())().pipe(
+      fromPromise(async () => source.list(), "router")().pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(HostedTool))),
       ),
     resolve: (name) =>
-      fromPromise(async () => source.resolve(name))().pipe(
+      fromPromise(async () => source.resolve(name), "router")().pipe(
         Effect.map((value) => {
           if (value === undefined) return undefined;
           const operation = nativeOperation(value);
@@ -297,4 +308,62 @@ export const withApprovals = <Query, Mutation>(
           ),
         };
   return routerDeclaration(walk(native, ""));
+};
+
+/**
+ * Expose a protocol router's tools under other names, such as the names an earlier client used.
+ * `rename` receives each tool's name relative to this router and returns the name to expose, or
+ * undefined to leave the tool out. When two tools would share a name, the first listed keeps it.
+ * Calls and descriptions find a tool by its exposed name. Works on routers that discover their
+ * tools, such as `mcpRouter`, `graphqlRouter` and `liveOpenapiRouter`.
+ */
+export const renameTools = <Query, Mutation>(
+  source: RouterDeclaration<Query, Mutation>,
+  rename: (name: string) => string | undefined,
+): RouterDeclaration<Query, Mutation> => {
+  const native = nativeRouter(source);
+  if (native?.kind !== "dynamic") throw new Error("renameTools expects a protocol router");
+  /** Exposed name for each listed tool, first listed winning a shared name. */
+  const exposed = <T extends { readonly name: string }>(tools: readonly T[]) => {
+    const seen = new Set<string>();
+    return tools.flatMap((tool) => {
+      const name = rename(tool.name);
+      if (name === undefined || seen.has(name)) return [];
+      seen.add(name);
+      return [{ ...tool, name, source: tool.name }];
+    });
+  };
+  const listed = native.summaries ?? native.list;
+  /** The source name of an exposed name, read from the listing. */
+  const original = (name: string) =>
+    listed().pipe(Effect.map((tools) => exposed(tools).find((tool) => tool.name === name)?.source));
+  const strip = <T extends { readonly name: string; readonly source: string }>({
+    source: _source,
+    ...tool
+  }: T) => tool;
+  return routerDeclaration({
+    ...native,
+    list: () => native.list().pipe(Effect.map((tools) => exposed(tools).map(strip))),
+    ...(native.summaries === undefined
+      ? {}
+      : {
+          summaries: () => listed().pipe(Effect.map((tools) => exposed(tools).map(strip))),
+        }),
+    describe: (name) =>
+      original(name).pipe(
+        Effect.flatMap((found) =>
+          found === undefined
+            ? Effect.succeed(undefined)
+            : (native.describe?.(found) ??
+              native.list().pipe(Effect.map((tools) => tools.find((tool) => tool.name === found)))),
+        ),
+        Effect.map((tool) => (tool === undefined ? undefined : { ...tool, name })),
+      ),
+    resolve: (name) =>
+      original(name).pipe(
+        Effect.flatMap((found) =>
+          found === undefined ? Effect.succeed(undefined) : native.resolve(found),
+        ),
+      ),
+  });
 };

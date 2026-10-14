@@ -10,6 +10,7 @@ import { ssoFixture } from "../support/sso.ts";
 import { scenarios } from "../test-plan.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { Emulators } from "../support/emulators.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 
 const BillingOverview = Schema.Struct({
   enterprise: Schema.Boolean,
@@ -199,28 +200,15 @@ const captureSignInThemes = (name: string) =>
 const submitSso = (buttonName: string, expectedStatus = 200) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
-    const submit = browser.use("Start SSO", (page) =>
+    const status = yield* browser.use("Start SSO", (page) =>
       Promise.all([
         page
           .waitForResponse((response) => response.url().endsWith("/api/auth/sign-in/sso"))
-          .then((response) => ({
-            status: response.status(),
-            retryAfter: response.headers()["x-retry-after"],
-          })),
+          .then((response) => response.status()),
         page.getByRole("button", { name: buttonName, exact: true }).click(),
-      ]).then(([response]) => response),
+      ]).then(([status]) => status),
     );
-    let response = yield* submit;
-    if (response.status === 429) {
-      // The scenario makes several real sign-ins. Honor the server's bounded
-      // X-Retry-After without changing the product's authentication rate limit.
-      const seconds = yield* Schema.decodeUnknownEffect(
-        Schema.Number.check(Schema.isGreaterThan(0), Schema.isLessThanOrEqualTo(60)),
-      )(Number(response.retryAfter));
-      yield* Effect.sleep(seconds * 1000);
-      response = yield* submit;
-    }
-    expect(response.status).toBe(expectedStatus);
+    expect(status).toBe(expectedStatus);
   });
 const start = (email: string, destination: string, capture = false) =>
   Effect.gen(function* () {
@@ -418,7 +406,7 @@ const completed = (destination: string) =>
     yield* browser.use("Wait for the protocol result", (page) =>
       page.waitForURL(
         (url) =>
-          url.origin === target.metadata.origin &&
+          url.origin === targetHosts(target).browser &&
           (url.pathname === destination || url.searchParams.has("error")),
       ),
     );
@@ -635,6 +623,27 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
         const user = yield* browserSession;
         expect(user.user.email).toBe(email);
         expect(user.user.emailVerified).toBe(true);
+        // The identity provider owns this address; leaving the domain would also break SSO.
+        for (const path of ["request-email-change", "change-email"])
+          expect(
+            yield* browser.use(`An SSO user cannot ${path.replaceAll("-", " ")}`, (page) =>
+              page.evaluate(
+                (path) =>
+                  fetch(`/api/auth/email-otp/${path}`, {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ newEmail: "personal@example.test", otp: "000000" }),
+                  }).then((response) =>
+                    response.json().then((body: { code?: string }) => ({
+                      status: response.status,
+                      code: body.code,
+                    })),
+                  ),
+                path,
+              ),
+            ),
+          ).toEqual({ status: 403, code: "SSO_MANAGED_EMAIL" });
+        expect((yield* browserSession).user.email).toBe(email);
         const members = yield* api.request(
           actors.owner,
           "GET",
@@ -803,7 +812,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
           page.getByRole("button", { name: "Replay assertion", exact: true }).click(),
         );
         yield* browser.use("Replay returns an error", (page) =>
-          page.waitForURL((url) => url.origin === target.metadata.origin),
+          page.waitForURL((url) => url.origin === targetHosts(target).browser),
         );
         expect(
           yield* browser.use("Replay creates no session", (page) =>
@@ -816,7 +825,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
           page.getByRole("button", { name: "Continue to Executor", exact: true }).click(),
         );
         yield* browser.use("Tampering returns to the product", (page) =>
-          page.waitForURL((url) => url.origin === target.metadata.origin),
+          page.waitForURL((url) => url.origin === targetHosts(target).browser),
         );
         expect(
           yield* browser.use("Tampering creates no session", (page) =>

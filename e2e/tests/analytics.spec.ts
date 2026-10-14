@@ -47,7 +47,7 @@ layer(TestLive, { excludeTestServices: true })("Analytics", (it) => {
             {
               path: "index.ts",
               content: `import { defineApp, query, object, number, router } from "apps";
-export default defineApp({ accounts: {} }, { tools: router({ queries: router({ emit: query({ input: object({}) }, async context => {
+export default defineApp({}, { tools: router({ queries: router({ emit: query({ input: object({}) }, async context => {
   for (let i = 0; i < 250; i++) await context.analytics.emit({ event: "webhook_received", purpose: "slack" });
   return "sent";
 }), groups: query({ input: object({ offset: number() }) }, async (context, input) => {

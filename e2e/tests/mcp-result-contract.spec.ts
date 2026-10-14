@@ -182,7 +182,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP result contracts", (it) =>
               path: "index.ts",
               content: `import { defineApp, query, object, json, jsonSchema, router } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({
+export default defineApp({}, async ({ signal, cache }) => ({
   tools: router({ upstream: await mcpRouter({ url: ${JSON.stringify(url)}, signal, cache }),
   queries: router({
     validate_schema: query({ input: object({ schema: json(), values: json() }) }, async (_, { schema, values }) => {
@@ -301,7 +301,7 @@ export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({
               path: "index.ts",
               content: `import { defineApp, accountRouter } from "apps";
 import { mcpRouter } from "apps/mcp";
-export default defineApp({ accounts: {} }, async ({ signal, cache }) => ({ tools: await accountRouter([{ id: "acc_00000000-0000-4000-8000-000000000001", variant: "first" }, { id: "acc_00000000-0000-4000-8000-000000000002", variant: "second" }], account => mcpRouter({
+export default defineApp({}, async ({ signal, cache }) => ({ tools: await accountRouter([{ id: "acc_00000000-0000-4000-8000-000000000001", variant: "first" }, { id: "acc_00000000-0000-4000-8000-000000000002", variant: "second" }], account => mcpRouter({
     url: ${JSON.stringify(url)}, account, headers: { "X-Fixture-Variant": account.variant }, signal,
   }), { signal }) }),
 );`,

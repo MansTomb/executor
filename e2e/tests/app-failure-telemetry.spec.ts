@@ -158,7 +158,7 @@ const source = (marker: string, status: number, rewritesTelemetry: boolean) => [
     content: `import { defineApp, query, object, string, jsonSchema, router, workflow, NonRetryableError } from "apps";
 ${failing(marker, status)}
 ${rewritesTelemetry ? hostile : ""}
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: router({
     thrown: query({ input: object({}) }, thrown),
     rejected: query({ input: object({}), output: string() }, async () => "reply-" + "rejected"),
@@ -212,8 +212,8 @@ const InputRejected = Schema.Struct({
   problems: Schema.Array(Schema.String),
   message: Schema.String,
 });
-const EvaluationFailed = Schema.Struct({
-  _tag: Schema.Literal("AppEvaluationFailed"),
+const ResultLost = Schema.Struct({
+  _tag: Schema.Literal("ToolCallFailed"),
   reason: Schema.String,
   message: Schema.String,
 });
@@ -241,14 +241,24 @@ const appException = (type: string) => ({
 });
 type Delivered = (typeof SpanQuery.Type)["data"][number];
 
-/** The resource the host supplies for every record it forwards from an app isolate. */
-const resource = ["service.name", "service.version", "deployment.environment.name"];
-const resourceTags = {
+/**
+ * The resource the host supplies for every record it forwards from an app isolate, including the
+ * build that ran and the ID of the app it invoked, from the host's own invocation.
+ */
+const resource = [
+  "service.name",
+  "service.version",
+  "deployment.environment.name",
+  "executor.build.id",
+  "executor.app.id",
+];
+const resourceTags = (app: string) => ({
   "service.name": "executor-app",
   "service.version": expect.any(String),
   "deployment.environment.name": expect.any(String),
   "executor.build.id": expect.any(String),
-};
+  "executor.app.id": app,
+});
 
 layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) => {
   it.effect(scenarios.appFailureTelemetry.title, (context) =>
@@ -457,13 +467,27 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             `The app threw ${marker} (${marker}): ${thrownMessage(marker)} Details: detail: "${marker}".`,
           );
         }
-        // A rejected call, a reply that fails decoding and a failure after the tool returned: the
-        // caller gets the generic failure.
-        for (const failed of [rejected, malformed, unanswered, rewrittenLog]) {
+        // A rejected call and a reply that fails decoding: the caller is told no usable result
+        // arrived, not that the app's tools could not load.
+        for (const failed of [rejected, malformed]) {
           expect(failed.response.status).toBe(502);
-          expect(yield* body(EvaluationFailed, failed.response)).toMatchObject({
-            reason: "App evaluation failed",
-            message: "Executor could not load this app’s tool definitions.",
+          expect(yield* body(ResultLost, failed.response)).toMatchObject({
+            reason: "Executor did not receive a usable result from this tool call.",
+            message:
+              "Executor did not receive a usable result from this tool call. No further failure detail is available.",
+          });
+          expect(JSON.stringify(failed.response.body)).not.toContain(marker);
+        }
+        // A failure after the tool returned, which the app's framework reports like an invalid
+        // declaration: the caller is told no usable result arrived, not that the app's tools
+        // could not load.
+        for (const failed of [unanswered, rewrittenLog]) {
+          expect(failed.response.status).toBe(502);
+          expect(yield* body(ResultLost, failed.response)).toMatchObject({
+            reason:
+              "Executor did not receive a usable result from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it.",
+            message:
+              "Executor did not receive a usable result from this tool call. The app’s framework reported an invalid declaration or an unexpected failure while handling it. No further failure detail is available.",
           });
           expect(JSON.stringify(failed.response.body)).not.toContain(marker);
         }
@@ -491,6 +515,32 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           failure: { step: "fails", errorName: "NonRetryableError", message: marker },
         });
 
+        // Each forwarded record names the app the host invoked: its evaluation, its calls and its
+        // logs, whatever app ran before it.
+        const invoked = (name: string) =>
+          name === "rewritten" || name === "rewrittenLog" ? rewriting.id : ordinary.id;
+        for (const [name, { spans }] of Object.entries(calls))
+          expect(
+            appSpans(spans).map(({ span }) => [span.operationName, span.tags["executor.app.id"]]),
+            `${name}: each forwarded span names the invoked app`,
+          ).toEqual(appSpans(spans).map(({ span }) => [span.operationName, invoked(name)]));
+        for (const [name, { spans }] of [
+          ["thrown", thrown],
+          ["rewritten", rewritten],
+        ] as const)
+          expect(
+            named(spans, "app.evaluate").length,
+            `${name}: the app's evaluation was forwarded`,
+          ).toBeGreaterThan(0);
+        for (const [name, { appLogs }] of [
+          ["unanswered", unanswered],
+          ["rewrittenLog", rewrittenLog],
+        ] as const)
+          expect(
+            appLogs.map(({ attributes }) => attributes["executor.app.id"]),
+            `${name}: each forwarded log names the invoked app`,
+          ).toEqual([invoked(name)]);
+
         for (const [name, { spans, logs }] of Object.entries(calls)) {
           // Span events carry exception messages and stacks; Axiom also keeps status messages.
           expect(JSON.stringify(spans), `${name}: the spans omit the app's text`).not.toContain(
@@ -517,7 +567,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
                   ? "InputInvalid: The tool's input did not match its schema; the problems are not recorded"
                   : name === "workflowRun"
                     ? "WorkflowFailure: The workflow failed (execution); the app's error is not recorded"
-                    : "AppEvaluationFailed: Tools could not be loaded: the app's definition could not be evaluated";
+                    : "ToolCallFailed: The tool failed without further detail";
           expect(
             `${event?.attributes["exception.type"]}: ${event?.attributes["exception.message"]}`,
           ).toBe(description);
@@ -530,14 +580,14 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
               /^ {4}at .+ \([^()\s]+:\d+:\d+\)$/,
             );
           // Every record forwarded from the app isolate has only the host's vocabulary: its own
-          // attributes from closed sets, and exceptions by kind with fixed text.
+          // attributes from closed sets, its owners and timing, and exceptions by kind with fixed
+          // text.
           for (const { span } of appSpans(spans)) {
             expect(
               Object.keys(span.tags).filter(
                 (key) =>
                   !resource.includes(key) &&
                   ![
-                    "executor.build.id",
                     "executor.clock.type",
                     "executor.trace.parent_sampled",
                     "executor.operation",
@@ -545,6 +595,16 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
                     "executor.failure.source",
                     "executor.failure.code",
                     "error.type",
+                    "executor.owner",
+                    "executor.app.code",
+                    "cache.method",
+                    "executor.workflow.operation",
+                    "executor.upstream.wait_ms",
+                    "executor.elicitation.wait_ms",
+                    "executor.authored_ms",
+                    "executor.lease.wait_ms",
+                    "executor.background_ms",
+                    "executor.overhead_ms",
                   ].includes(key),
               ),
               `${name}: ${span.operationName} records only the host's attributes`,
@@ -557,18 +617,25 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         // The app's error: its name and code are not the framework's, so they are unrecognized.
         // The rewritten records keep only what the framework sent, plus the added exception, by
         // kind, and the added span under a fixed name.
-        const appCall = {
-          ...resourceTags,
+        const appCall = (app: string) => ({
+          ...resourceTags(app),
           "executor.clock.type": expect.any(String),
           "error.type": "unrecognized",
           "executor.failure.source": "app",
           "executor.failure.code": "unrecognized",
-        };
+          // How the call's time divided by owner: measured values, kept as numbers.
+          "executor.upstream.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
+          "executor.elicitation.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
+          "executor.authored_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
+          "executor.lease.wait_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
+          "executor.background_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
+          "executor.overhead_ms": expect.stringMatching(/^\d+(\.\d+)?$/),
+        });
         expect(named(thrown.spans, "app.call")).toMatchObject([
-          { tags: appCall, events: [appException("HostOperationFailed")] },
+          { tags: appCall(ordinary.id), events: [appException("HostOperationFailed")] },
         ]);
-        expect(named(thrown.spans, "app.call")[0]?.tags).toEqual(appCall);
-        expect(named(rewritten.spans, "app.call")[0]?.tags).toEqual(appCall);
+        expect(named(thrown.spans, "app.call")[0]?.tags).toEqual(appCall(ordinary.id));
+        expect(named(rewritten.spans, "app.call")[0]?.tags).toEqual(appCall(rewriting.id));
         expect(named(rewritten.spans, "app.call")[0]?.events).toEqual([
           appException("HostOperationFailed"),
           appException("unrecognized"),
@@ -578,7 +645,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             named(spans, "app.dispatch").map(({ tags }) => tags["executor.operation"]),
           ).toEqual(["call"]);
         expect(named(rewritten.spans, "app.unrecognized").map(({ tags }) => tags)).toEqual([
-          { ...resourceTags, "executor.operation": "call" },
+          { ...resourceTags(rewriting.id), "executor.operation": "call" },
         ]);
         expect(named(thrown.spans, "app.unrecognized")).toEqual([]);
 
@@ -593,11 +660,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         ]);
         for (const { appLogs } of [unanswered, rewrittenLog])
           for (const { attributes } of appLogs)
-            expect(
-              Object.keys(attributes).filter(
-                (key) => !resource.includes(key) && key !== "executor.build.id",
-              ),
-            ).toEqual([]);
+            expect(Object.keys(attributes).filter((key) => !resource.includes(key))).toEqual([]);
 
         if (cloud) {
           // Cloud's runner records the kind of each failed call, not its text.

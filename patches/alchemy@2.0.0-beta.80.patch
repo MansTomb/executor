@@ -132,6 +132,78 @@ index 42ce8028d052e3ad7b1916557dc34d9bb1f63fea..dedbdda5ba67840b3e6113d433c4ffc1
          }));
      }).pipe(
      // The "Handler does not export a fetch()" window is a property of
+diff --git a/lib/Cloudflare/Hyperdrive/Connection.js b/lib/Cloudflare/Hyperdrive/Connection.js
+index 286c278..22f93e4 100644
+--- a/lib/Cloudflare/Hyperdrive/Connection.js
++++ b/lib/Cloudflare/Hyperdrive/Connection.js
+@@ -4,7 +4,7 @@ import * as Option from "effect/Option";
+ import * as Redacted from "effect/Redacted";
+ import * as Schedule from "effect/Schedule";
+ import * as Stream from "effect/Stream";
+-import { isResolved } from "../../Diff.js";
++import { deepEqual, isResolved } from "../../Diff.js";
+ import * as ProviderLayer from "../../Local/ProviderLayer.js";
+ import { createPhysicalName } from "../../PhysicalName.js";
+ import * as Provider from "../../Provider.js";
+@@ -130,7 +130,7 @@ export const ProviderLive = () => Provider.succeed(Connection, {
+         }
+         return undefined;
+     }),
+-    reconcile: Effect.fn(function* ({ id, news, output }) {
++    reconcile: Effect.fn(function* ({ id, news, olds, output }) {
+         const { accountId } = yield* yield* CloudflareEnvironment;
+         const name = output?.name ?? (yield* createConfigName(id, news.name));
+         const requestBody = {
+@@ -139,6 +139,26 @@ export const ProviderLive = () => Provider.succeed(Connection, {
+             mtls: news.mtls,
+             originConnectionLimit: news.originConnectionLimit,
+         };
++        // Every update opens a new origin pool and leaves the old one open
++        // until it idles out, so an unchanged config must not be re-sent
++        // (alchemy-run/alchemy#1807). The password is write-only: compare it
++        // with the previous props, which state already holds, and compare the
++        // readable fields with the live config so drift is still corrected.
++        if (output?.hyperdriveId && olds !== undefined && deepEqual(requestBodyOf(olds), requestBody)) {
++            const live = yield* hyperdrive
++                .getConfig({ accountId: output.accountId, hyperdriveId: output.hyperdriveId })
++                .pipe(Effect.catchTag("HyperdriveConfigNotFound", () => Effect.succeed(undefined)));
++            if (live !== undefined && liveConfigMatches(live, news)) {
++                return {
++                    hyperdriveId: live.id,
++                    name: live.name,
++                    accountId: output.accountId,
++                    origin: news.origin,
++                    mtls: news.mtls ?? {},
++                    dev: news.dev,
++                };
++            }
++        }
+         // Observe + ensure. When we know the hyperdriveId we go straight
+         // to update; otherwise we createConfig and fall back to "find by
+         // name then update" if Cloudflare reports the name is already in
+@@ -239,6 +259,22 @@ const findByName = (name) => Effect.gen(function* () {
+     return yield* hyperdrive.listConfigs.items({ accountId }).pipe(Stream.filter((c) => c.name === name), Stream.runHead, Effect.map(Option.getOrUndefined));
+ });
+ export const defaultPort = (scheme) => scheme === "mysql" ? 3306 : 5432;
++const requestBodyOf = (props) => ({
++    origin: toRequestOrigin(props.origin),
++    caching: props.caching,
++    mtls: props.mtls,
++    originConnectionLimit: props.originConnectionLimit,
++});
++/** Desired fields the API reads back; unset fields keep whatever Cloudflare chose. */
++const subsetMatches = (desired, live) => Object.entries(desired ?? {}).every(([key, value]) => value === undefined || live?.[key] === value);
++const liveConfigMatches = (live, props) => {
++    const { password: _password, accessClientSecret: _secret, ...origin } = toRequestOrigin(props.origin);
++    return (subsetMatches(origin, live.origin) &&
++        subsetMatches(props.caching, live.caching) &&
++        subsetMatches(props.mtls, live.mtls) &&
++        (props.originConnectionLimit === undefined ||
++            live.originConnectionLimit === props.originConnectionLimit));
++};
+ const unwrap = (v) => Redacted.isRedacted(v) ? Redacted.value(v) : v;
+ /**
+  * Build the request body shape that the distilled `createConfig`/`updateConfig`
 diff --git a/lib/Cloudflare/Providers.d.ts b/lib/Cloudflare/Providers.d.ts
 index f3e7aacfc9f0a9effecdd5db82ed93ed80e933ce..1358c49090d74eb3876ef1acf724326e81c6ad9d 100644
 --- a/lib/Cloudflare/Providers.d.ts
@@ -390,8 +462,11 @@ index 9852684451c12099b69d55c6d86a76e566d6f1dd..c43196ba69953a2a65486a1cb75e8f76
 @@ -2,3 +2,4 @@ import * as Effect from "effect/Effect";
  declare const cloudflare_workers: Effect.Effect<typeof import("cloudflare:workers")>;
  export default cloudflare_workers;
- //# sourceMappingURL=cloudflare_workers.d.ts.map
+-//# sourceMappingURL=cloudflare_workers.d.ts.map
+\ No newline at end of file
++//# sourceMappingURL=cloudflare_workers.d.ts.map
 +export declare const platformSpan: <A>(name: string, run: () => Promise<A>) => Promise<A>;
+\ No newline at end of file
 diff --git a/lib/Cloudflare/Workers/cloudflare_workers.js b/lib/Cloudflare/Workers/cloudflare_workers.js
 index a9ec2cb5cf000f5af377af80e3833146101ba9da..08d72a08c1a70b604d8bcaf41b4abdf0c5d517c0 100644
 --- a/lib/Cloudflare/Workers/cloudflare_workers.js
@@ -409,7 +484,9 @@ index a9ec2cb5cf000f5af377af80e3833146101ba9da..08d72a08c1a70b604d8bcaf41b4abdf0
 @@ -20,3 +21,18 @@ const modulePromise = moduleImport.catch(() => ({
  const cloudflare_workers = Effect.promise(() => modulePromise);
  export default cloudflare_workers;
- //# sourceMappingURL=cloudflare_workers.js.map
+-//# sourceMappingURL=cloudflare_workers.js.map
+\ No newline at end of file
++//# sourceMappingURL=cloudflare_workers.js.map
 +export const platformSpan = (name, run) => {
 +  // Tail delivery gives each invocation a timing record even when native traces are sampled.
 +  // Cloudflare clocks advance on I/O: CPU cost remains the platform's separate cpuTime field.
@@ -425,6 +502,7 @@ index a9ec2cb5cf000f5af377af80e3833146101ba9da..08d72a08c1a70b604d8bcaf41b4abdf0
 +  };
 +  return tracing?.enterSpan === undefined ? measured() : tracing.enterSpan(name, measured);
 +};
+\ No newline at end of file
 diff --git a/node_modules/alchemy/lib/CloudflareRuntimeServices.d.ts b/lib/CloudflareRuntimeServices.d.ts
 new file mode 100644
 index 0000000000000000000000000000000000000000..76f3a22b4035aef540256cf80df988cfa742a950
@@ -616,6 +694,94 @@ index 4e8378e0ee295d63ad7df0b62de62edee566acca..2cdca36bff63b0d1fdd7fd0c4b1d447d
          }),
        );
      }).pipe(
+diff --git a/src/Cloudflare/Hyperdrive/Connection.ts b/src/Cloudflare/Hyperdrive/Connection.ts
+index 8b1d760..f771cd6 100644
+--- a/src/Cloudflare/Hyperdrive/Connection.ts
++++ b/src/Cloudflare/Hyperdrive/Connection.ts
+@@ -5,7 +5,7 @@ import * as Redacted from "effect/Redacted";
+ import * as Schedule from "effect/Schedule";
+ import * as Stream from "effect/Stream";
+ 
+-import { isResolved } from "../../Diff.ts";
++import { deepEqual, isResolved } from "../../Diff.ts";
+ import * as ProviderLayer from "../../Local/ProviderLayer.ts";
+ import { createPhysicalName } from "../../PhysicalName.ts";
+ import * as Provider from "../../Provider.ts";
+@@ -261,7 +261,7 @@ export const ProviderLive = () =>
+       }
+       return undefined;
+     }),
+-    reconcile: Effect.fn(function* ({ id, news, output }) {
++    reconcile: Effect.fn(function* ({ id, news, olds, output }) {
+       const { accountId } = yield* yield* CloudflareEnvironment;
+       const name = output?.name ?? (yield* createConfigName(id, news.name));
+ 
+@@ -272,6 +272,27 @@ export const ProviderLive = () =>
+         originConnectionLimit: news.originConnectionLimit,
+       };
+ 
++      // Every update opens a new origin pool and leaves the old one open
++      // until it idles out, so an unchanged config must not be re-sent
++      // (alchemy-run/alchemy#1807). The password is write-only: compare it
++      // with the previous props, which state already holds, and compare the
++      // readable fields with the live config so drift is still corrected.
++      if (output?.hyperdriveId && olds !== undefined && deepEqual(requestBodyOf(olds), requestBody)) {
++        const live = yield* hyperdrive
++          .getConfig({ accountId: output.accountId, hyperdriveId: output.hyperdriveId })
++          .pipe(Effect.catchTag("HyperdriveConfigNotFound", () => Effect.succeed(undefined)));
++        if (live !== undefined && liveConfigMatches(live, news)) {
++          return {
++            hyperdriveId: live.id,
++            name: live.name,
++            accountId: output.accountId,
++            origin: news.origin,
++            mtls: news.mtls ?? {},
++            dev: news.dev,
++          };
++        }
++      }
++
+       // Observe + ensure. When we know the hyperdriveId we go straight
+       // to update; otherwise we createConfig and fall back to "find by
+       // name then update" if Cloudflare reports the name is already in
+@@ -393,6 +414,37 @@ const findByName = (name: string) =>
+ export const defaultPort = (scheme: Scheme): number =>
+   scheme === "mysql" ? 3306 : 5432;
+ 
++const requestBodyOf = (props: Props) => ({
++  origin: toRequestOrigin(props.origin),
++  caching: props.caching,
++  mtls: props.mtls,
++  originConnectionLimit: props.originConnectionLimit,
++});
++
++/** Desired fields the API reads back; unset fields keep whatever Cloudflare chose. */
++const subsetMatches = (
++  desired: Record<string, unknown> | undefined,
++  live: Record<string, unknown> | null | undefined,
++) =>
++  Object.entries(desired ?? {}).every(
++    ([key, value]) => value === undefined || live?.[key] === value,
++  );
++
++const liveConfigMatches = (
++  live: hyperdrive.GetConfigResponse,
++  props: Props,
++): boolean => {
++  const { password: _password, accessClientSecret: _secret, ...origin } =
++    toRequestOrigin(props.origin) as Record<string, unknown>;
++  return (
++    subsetMatches(origin, live.origin as Record<string, unknown>) &&
++    subsetMatches(props.caching, live.caching as Record<string, unknown> | null) &&
++    subsetMatches(props.mtls, live.mtls as Record<string, unknown> | null) &&
++    (props.originConnectionLimit === undefined ||
++      live.originConnectionLimit === props.originConnectionLimit)
++  );
++};
++
+ const unwrap = (v: string | Redacted.Redacted<string>): string =>
+   Redacted.isRedacted(v) ? Redacted.value(v) : v;
+ 
 diff --git a/src/Cloudflare/Providers.ts b/src/Cloudflare/Providers.ts
 index 1db2c4b09ad3cf4929cda741294fb19996798130..ab1c872fd5379b756b65d8ffb415b15c5c12d6f1 100644
 --- a/src/Cloudflare/Providers.ts
@@ -976,3 +1142,894 @@ index b07a50d07003d6c78fae8ad2d1661f5dc6da61a0..d55689cc1f4d86e95f1733906984b326
  
  export type ResourceConstructor<R extends ResourceLike, Req = never> = {
    Type: R["Type"];
+diff --git a/lib/Bundle/Bundle.js b/lib/Bundle/Bundle.js
+--- a/lib/Bundle/Bundle.js
++++ b/lib/Bundle/Bundle.js
+@@ -4,6 +4,8 @@
+ import * as Schema from "effect/Schema";
+ import * as Stream from "effect/Stream";
+ import assert from "node:assert";
++import * as NodeFS from "node:fs";
++import * as NodePath from "node:path";
+ import { sha256, sha256Object } from "../Util/sha256.js";
+ import { bundleAnalyzerPlugin, } from "./BundleAnalyzerPlugin.js";
+ import { purePlugin } from "./PurePlugin.js";
+@@ -134,60 +136,400 @@
+     catch: bundleErrorFromUnknown,
+ }).pipe(Effect.flatMap(Effect.forEach(bundleFileFromOutputChunk)), Effect.flatMap(bundleOutputFromFiles));
+ /**
++ * Rebuild on macOS when a file of the module graph changes, from one
++ * recursive `fs.watch` over the graph's common directory.
++ *
++ * Rolldown's FSEvents watcher makes every watched directory its own watch
++ * root, and FSEvents holds a descriptor for that directory and each of its
++ * ancestors up to `/`. A workspace directory therefore costs as many
++ * descriptors as its path is deep, again for every Worker that imports it.
++ * Local Workers sharing workspace sources took the sidecar past OPEN_MAX
++ * (10,240); macOS `posix_spawn` refuses pipes above it, so every later
++ * workerd spawn failed with `spawn EBADF`. A recursive `fs.watch` is one
++ * FSEvents stream with no per-directory descriptors. Linux keeps rolldown's
++ * watcher: inotify needs no descriptor per directory, and a recursive
++ * `fs.watch` there would add a watch for every directory under the root.
++ *
++ * The watch covers each source before rolldown reads it. Changes during a
++ * build are kept and checked against the graph the build collected, so an
++ * edit made while it runs rebuilds again. A source whose stat changed after
++ * the build loaded it also rebuilds, since a new FSEvents stream starts
++ * asynchronously and may miss a change made just after it is created. The
++ * watched directory's inode is polled: when it or an ancestor moves, the
++ * graph rebuilds (reporting the missing entry) and the watch moves to the
++ * nearest directory that still exists. A move undone between two polls keeps
++ * the inode and may send no event, but sets the moved directory's change
++ * time; the poll then compares each source with what the build read.
++ * Plugins' `watchChange` hooks are not called.
++ */
++const watchModuleTree = (rolldown, inputOptions, outputOptions, start, fail, built) => {
++    let files = new Set();
++    // Directories between the watched directory and a file; renaming one
++    // moves the file.
++    let directories = new Set();
++    // The graph's common directory.
++    let root;
++    // The directory under watch: `root`, or its nearest existing ancestor
++    // once `root` has moved away.
++    let watched;
++    // Device and inode of `watched` when the watch started.
++    let identity;
++    // Change times of `watched` and its ancestors at the last idle poll.
++    let lineage;
++    let tree;
++    let poller;
++    // Watchers a build replaced by moving the watch; closed when it ends.
++    let replaced = [];
++    // Paths changed during the current build; `null` for an unnamed change.
++    let changed = new Set();
++    // Each source's stat when the current build loaded it.
++    let loaded = new Map();
++    let timer;
++    let building;
++    let again = false;
++    let closed = false;
++    // A graph file or a directory holding one changed. An event without a
++    // file name may be either.
++    const affects = (path) => path === null || files.has(path) || directories.has(path);
++    const inode = (path) => {
++        try {
++            const stat = NodeFS.statSync(path);
++            return `${stat.dev}:${stat.ino}`;
++        }
++        catch {
++            return undefined;
++        }
++    };
++    const stamp = (path) => {
++        try {
++            const stat = NodeFS.statSync(path);
++            return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
++        }
++        catch {
++            return "";
++        }
++    };
++    const changedAt = (path) => {
++        try {
++            return NodeFS.statSync(path).ctimeMs;
++        }
++        catch {
++            return undefined;
++        }
++    };
++    // A source changed after the current build read it.
++    const edited = () => [...loaded].some(([file, before]) => stamp(file) !== before);
++    // When `watched` moved or was replaced, watch where the graph is now and
++    // rebuild, which reports a missing entry. When it or an ancestor moved and
++    // came back, rebuild if a source changed meanwhile.
++    const poll = () => {
++        const target = watched;
++        NodeFS.stat(target, (error, stat) => {
++            if (closed || target !== watched)
++                return;
++            if (error === null && `${stat.dev}:${stat.ino}` === identity) {
++                let times = "";
++                for (let path = target; path !== NodePath.dirname(path); path = NodePath.dirname(path))
++                    times += `${changedAt(path)}:`;
++                // A build in progress compares its sources when it ends.
++                if (building === undefined && times !== lineage) {
++                    lineage = times;
++                    if (edited())
++                        schedule();
++                }
++                return;
++            }
++            observe();
++            if (building !== undefined)
++                changed.add(null);
++            else
++                schedule();
++        });
++    };
++    // Watch `root`, or its nearest existing ancestor while it is missing.
++    // The current watch stays while it contains `root` and has not moved. A
++    // replaced watcher keeps running until the build ends so nothing is
++    // missed while the new one starts.
++    const observe = () => {
++        if (closed || root === undefined)
++            return;
++        if (watched !== undefined &&
++            !NodePath.relative(watched, root).startsWith("..") &&
++            inode(watched) === identity)
++            return;
++        let next = root;
++        let current = inode(next);
++        while (current === undefined && next !== NodePath.dirname(next)) {
++            next = NodePath.dirname(next);
++            current = inode(next);
++        }
++        if (tree !== undefined)
++            replaced.push(tree);
++        watched = next;
++        identity = current;
++        tree = NodeFS.watch(next, { recursive: true }, (_event, name) => {
++            const path = name === null ? null : NodePath.join(next, name);
++            if (building !== undefined)
++                changed.add(path);
++            else if (affects(path))
++                schedule();
++        }).on("error", fail);
++        poller ??= setInterval(poll, 500).unref();
++    };
++    // Widen the root to contain `file`. The root never narrows.
++    const cover = (file) => {
++        if (closed || !NodePath.isAbsolute(file))
++            return;
++        const directory = NodePath.dirname(file);
++        let next = root ?? directory;
++        while (NodePath.relative(next, directory).startsWith(".."))
++            next = NodePath.dirname(next);
++        if (next === root)
++            return;
++        root = next;
++        observe();
++    };
++    const coverage = {
++        name: "alchemy:watch-sources",
++        load: {
++            filter: { id: { exclude: /[\\/]node_modules[\\/]/ } },
++            handler(id) {
++                if (!NodePath.isAbsolute(id))
++                    return;
++                loaded.set(id, stamp(id));
++                cover(id);
++            },
++        },
++    };
++    // Adopt the build's graph; true when a source changed after the build
++    // read it, or a change during the build affects the graph.
++    const settle = (next, failed) => {
++        const sources = next.filter((file) => NodePath.isAbsolute(file) &&
++            !file.split(NodePath.sep).includes("node_modules"));
++        // A failed build may stop before loading every module; keep watching
++        // the last complete graph so fixing any of its files rebuilds.
++        files = new Set(failed ? [...files, ...sources] : sources);
++        // Watch files a plugin added without rolldown loading them.
++        for (const file of files)
++            cover(file);
++        directories = new Set();
++        for (const file of files) {
++            let directory = NodePath.dirname(file);
++            while (directory !== watched && !directories.has(directory)) {
++                directories.add(directory);
++                directory = NodePath.dirname(directory);
++            }
++        }
++        for (const watcher of replaced)
++            watcher.close();
++        replaced = [];
++        return edited() || [...changed].some(affects);
++    };
++    const rebuild = async () => {
++        let failed = false;
++        let next = [];
++        try {
++            // Plugins' `options` hooks rewrite `input` in place (the virtual
++            // entries wrap it); rolldown's own watcher runs them once, so each
++            // build here starts from a copy of the caller's options.
++            const bundle = await rolldown.rolldown({
++                ...inputOptions,
++                plugins: [coverage, inputOptions.plugins],
++            });
++            try {
++                await bundle.write(outputOptions);
++            }
++            catch (error) {
++                failed = true;
++                fail(error);
++            }
++            finally {
++                next = await bundle.watchFiles;
++                await bundle.close();
++            }
++        }
++        catch (error) {
++            failed = true;
++            fail(error);
++        }
++        return settle(next, failed);
++    };
++    const run = () => {
++        if (building) {
++            again = true;
++            return;
++        }
++        changed = new Set();
++        loaded = new Map();
++        building = rebuild()
++            .catch((error) => {
++            fail(error);
++            return false;
++        })
++            .then((stale) => {
++            building = undefined;
++            built();
++            if ((stale || again) && !closed) {
++                again = false;
++                schedule();
++            }
++        });
++    };
++    const schedule = () => {
++        clearTimeout(timer);
++        timer = setTimeout(() => {
++            start();
++            run();
++        }, 50);
++    };
++    run();
++    return {
++        close: async () => {
++            closed = true;
++            clearTimeout(timer);
++            clearInterval(poller);
++            tree?.close();
++            for (const watcher of replaced)
++                watcher.close();
++            await building;
++        },
++    };
++};
++/**
++ * Local Workers start their watchers together, and each first build loads
++ * that Worker's whole module graph. Rolldown already spreads one build over
++ * every core, so first builds running side by side only multiply memory:
++ * seventeen Executor Workers took the dev sidecar to 9.6 GB and the kernel
++ * killed it. First builds in this process take turns. Rebuilds after an edit
++ * and deploy builds do not wait.
++ *
++ * A turn ends when the first build ends or fails, when the watcher closes or
++ * cannot start, and at the latest after {@link firstBuildTurn}: a build that
++ * hangs keeps running, and the next one starts beside it. A watcher that
++ * closes while it waits leaves the queue.
++ */
++const firstBuildTurn = 60_000;
++const firstBuilds = (() => {
++    let running = false;
++    const waiting = [];
++    const next = () => {
++        const start = waiting.shift();
++        if (start)
++            start();
++        else
++            running = false;
++    };
++    return {
++        /** Joins the queue. `release` ends the turn or leaves the queue; it is idempotent. */
++        join: () => {
++            let state = "waiting";
++            let timer;
++            let started;
++            const turn = new Promise((resolve) => (started = resolve));
++            const release = () => {
++                if (state === "waiting")
++                    waiting.splice(waiting.indexOf(start), 1);
++                else if (state === "running") {
++                    clearTimeout(timer);
++                    next();
++                }
++                state = "done";
++            };
++            const start = () => {
++                state = "running";
++                timer = setTimeout(() => {
++                    console.warn(`alchemy: a first build has run for ${firstBuildTurn / 1000} s; the next one starts beside it.`);
++                    release();
++                }, firstBuildTurn).unref();
++                started();
++            };
++            if (running)
++                waiting.push(start);
++            else {
++                running = true;
++                start();
++            }
++            return { turn, release };
++        },
++    };
++})();
++/**
+  * Watch for changes in the bundle and return a stream of bundle output.
+  * @param inputOptions - The input options for the bundle.
+  * @param outputOptions - The output options for the bundle.
+  * @returns A stream of Result instances containing either the bundle output or an error.
+  */
+-export const watch = (inputOptions, outputOptions, extra) => Stream.callback((queue) => Effect.acquireRelease(Effect.promise(async () => {
+-    const rolldown = await loadRolldown();
+-    const watcher = rolldown.watch({
+-        ...withAlchemyDefine(inputOptions),
+-        plugins: [
+-            inputOptions.plugins,
+-            await builtInPlugins(extra),
+-            // The watcher event listener does not receive the bundle output, so we grab it using a plugin.
+-            {
+-                name: "alchemy:watch-bundle",
+-                watchChange() {
+-                    Queue.offerUnsafe(queue, {
+-                        _tag: "Start",
+-                    });
+-                },
+-                generateBundle(_outputOptions, bundle) {
+-                    Queue.offerUnsafe(queue, {
+-                        _tag: "Success",
+-                        output: bundle,
+-                    });
++export const watch = (inputOptions, outputOptions, extra) => Stream.callback((queue) => Effect.gen(function* () {
++    // Waiting for the turn can be interrupted; closing the stream ends the
++    // turn or leaves the queue.
++    const { turn, release: built } = yield* Effect.acquireRelease(Effect.sync(firstBuilds.join), ({ release }) => Effect.sync(release));
++    yield* Effect.promise(() => turn);
++    const open = async () => {
++        const rolldown = await loadRolldown();
++        const start = () => {
++            Queue.offerUnsafe(queue, { _tag: "Start" });
++        };
++        const options = {
++            ...withAlchemyDefine(inputOptions),
++            plugins: [
++                inputOptions.plugins,
++                await builtInPlugins(extra),
++                // The watcher event listener does not receive the bundle output, so we grab it using a plugin.
++                {
++                    name: "alchemy:watch-bundle",
++                    watchChange: start,
++                    generateBundle(_outputOptions, bundle) {
++                        Queue.offerUnsafe(queue, {
++                            _tag: "Success",
++                            output: bundle,
++                        });
++                    },
+                 },
+-            },
+-        ],
+-        watch: {
+-            // Watching the full module graph of an Effect worker (all of
+-            // `effect`, `alchemy`, `@distilled.cloud/*`) registers thousands
+-            // of OS watch handles *per worker*; with several Effect workers
+-            // this exhausts the process fd table and the next `posix_spawn`
+-            // (workerd / docker) fails with `spawn EBADF`. Workspace packages
+-            // resolve to their real source paths (outside `node_modules`), so
+-            // they stay watched and local HMR is unaffected.
+-            exclude: ["**/node_modules/**"],
+-        },
+-        output: withDceDefault(outputOptions),
+-    });
+-    watcher.on("event", (event) => {
+-        if (event.code === "ERROR") {
+-            Queue.offerUnsafe(queue, {
++            ],
++        };
++        if (process.platform === "darwin") {
++            return watchModuleTree(rolldown, options, withDceDefault(outputOptions), start, (error) => Queue.offerUnsafe(queue, {
+                 _tag: "Error",
+-                error: bundleErrorFromUnknown(event.error),
+-            });
++                error: bundleErrorFromUnknown(error),
++            }), built);
+         }
+-        else if (event.code === "BUNDLE_END") {
+-            // This must be called to avoid resource leaks.
+-            event.result.close().catch(() => { });
+-        }
+-    });
+-    return watcher;
+-}), (watcher) => Effect.promise(() => watcher.close()))).pipe(Stream.mapEffect((event) => Effect.gen(function* () {
++        const watcher = rolldown.watch({
++            ...options,
++            watch: {
++                // Watching the full module graph of an Effect worker (all of
++                // `effect`, `alchemy`, `@distilled.cloud/*`) registers thousands
++                // of OS watch handles *per worker*; with several Effect workers
++                // this exhausts the process fd table and the next `posix_spawn`
++                // (workerd / docker) fails with `spawn EBADF`. Workspace packages
++                // resolve to their real source paths (outside `node_modules`), so
++                // they stay watched and local HMR is unaffected.
++                exclude: ["**/node_modules/**"],
++            },
++            output: withDceDefault(outputOptions),
++        });
++        watcher.on("event", (event) => {
++            if (event.code === "ERROR") {
++                built();
++                Queue.offerUnsafe(queue, {
++                    _tag: "Error",
++                    error: bundleErrorFromUnknown(event.error),
++                });
++            }
++            else if (event.code === "BUNDLE_END") {
++                built();
++                // This must be called to avoid resource leaks.
++                event.result.close().catch(() => { });
++            }
++        });
++        return watcher;
++    };
++    yield* Effect.acquireRelease(Effect.tryPromise({ try: open, catch: bundleErrorFromUnknown }), (watcher) => Effect.promise(() => watcher.close())).pipe(
++    // A watcher that cannot start reports why and gives its turn back.
++    Effect.catch((error) => Effect.sync(() => {
++        built();
++        Queue.offerUnsafe(queue, { _tag: "Error", error });
++    })));
++})).pipe(Stream.mapEffect((event) => Effect.gen(function* () {
+     if (event._tag !== "Success") {
+         return event;
+     }
+diff --git a/src/Bundle/Bundle.ts b/src/Bundle/Bundle.ts
+--- a/src/Bundle/Bundle.ts
++++ b/src/Bundle/Bundle.ts
+@@ -4,6 +4,8 @@
+ import * as Schema from "effect/Schema";
+ import * as Stream from "effect/Stream";
+ import assert from "node:assert";
++import * as NodeFS from "node:fs";
++import * as NodePath from "node:path";
+ import type * as rolldown from "rolldown";
+ import { sha256, sha256Object } from "../Util/sha256.ts";
+ import {
+@@ -253,6 +255,322 @@
+   );
+ 
+ /**
++ * Rebuild on macOS when a file of the module graph changes, from one
++ * recursive `fs.watch` over the graph's common directory.
++ *
++ * Rolldown's FSEvents watcher makes every watched directory its own watch
++ * root, and FSEvents holds a descriptor for that directory and each of its
++ * ancestors up to `/`. A workspace directory therefore costs as many
++ * descriptors as its path is deep, again for every Worker that imports it.
++ * Local Workers sharing workspace sources took the sidecar past OPEN_MAX
++ * (10,240); macOS `posix_spawn` refuses pipes above it, so every later
++ * workerd spawn failed with `spawn EBADF`. A recursive `fs.watch` is one
++ * FSEvents stream with no per-directory descriptors. Linux keeps rolldown's
++ * watcher: inotify needs no descriptor per directory, and a recursive
++ * `fs.watch` there would add a watch for every directory under the root.
++ *
++ * The watch covers each source before rolldown reads it. Changes during a
++ * build are kept and checked against the graph the build collected, so an
++ * edit made while it runs rebuilds again. A source whose stat changed after
++ * the build loaded it also rebuilds, since a new FSEvents stream starts
++ * asynchronously and may miss a change made just after it is created. The
++ * watched directory's inode is polled: when it or an ancestor moves, the
++ * graph rebuilds (reporting the missing entry) and the watch moves to the
++ * nearest directory that still exists. A move undone between two polls keeps
++ * the inode and may send no event, but sets the moved directory's change
++ * time; the poll then compares each source with what the build read.
++ * Plugins' `watchChange` hooks are not called.
++ */
++const watchModuleTree = (
++  rolldown: typeof import("rolldown"),
++  inputOptions: rolldown.InputOptions,
++  outputOptions: rolldown.OutputOptions,
++  start: () => void,
++  fail: (error: unknown) => void,
++  built: () => void,
++) => {
++  let files = new Set<string>();
++  // Directories between the watched directory and a file; renaming one
++  // moves the file.
++  let directories = new Set<string>();
++  // The graph's common directory.
++  let root: string | undefined;
++  // The directory under watch: `root`, or its nearest existing ancestor
++  // once `root` has moved away.
++  let watched: string | undefined;
++  // Device and inode of `watched` when the watch started.
++  let identity: string | undefined;
++  // Change times of `watched` and its ancestors at the last idle poll.
++  let lineage: string | undefined;
++  let tree: NodeFS.FSWatcher | undefined;
++  let poller: ReturnType<typeof setInterval> | undefined;
++  // Watchers a build replaced by moving the watch; closed when it ends.
++  let replaced: Array<NodeFS.FSWatcher> = [];
++  // Paths changed during the current build; `null` for an unnamed change.
++  let changed = new Set<string | null>();
++  // Each source's stat when the current build loaded it.
++  let loaded = new Map<string, string>();
++  let timer: ReturnType<typeof setTimeout> | undefined;
++  let building: Promise<void> | undefined;
++  let again = false;
++  let closed = false;
++  // A graph file or a directory holding one changed. An event without a
++  // file name may be either.
++  const affects = (path: string | null) =>
++    path === null || files.has(path) || directories.has(path);
++  const inode = (path: string) => {
++    try {
++      const stat = NodeFS.statSync(path);
++      return `${stat.dev}:${stat.ino}`;
++    } catch {
++      return undefined;
++    }
++  };
++  const stamp = (path: string) => {
++    try {
++      const stat = NodeFS.statSync(path);
++      return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
++    } catch {
++      return "";
++    }
++  };
++  const changedAt = (path: string) => {
++    try {
++      return NodeFS.statSync(path).ctimeMs;
++    } catch {
++      return undefined;
++    }
++  };
++  // A source changed after the current build read it.
++  const edited = () =>
++    [...loaded].some(([file, before]) => stamp(file) !== before);
++  // When `watched` moved or was replaced, watch where the graph is now and
++  // rebuild, which reports a missing entry. When it or an ancestor moved and
++  // came back, rebuild if a source changed meanwhile.
++  const poll = () => {
++    const target = watched!;
++    NodeFS.stat(target, (error, stat) => {
++      if (closed || target !== watched) return;
++      if (error === null && `${stat.dev}:${stat.ino}` === identity) {
++        let times = "";
++        for (
++          let path = target;
++          path !== NodePath.dirname(path);
++          path = NodePath.dirname(path)
++        )
++          times += `${changedAt(path)}:`;
++        // A build in progress compares its sources when it ends.
++        if (building === undefined && times !== lineage) {
++          lineage = times;
++          if (edited()) schedule();
++        }
++        return;
++      }
++      observe();
++      if (building !== undefined) changed.add(null);
++      else schedule();
++    });
++  };
++  // Watch `root`, or its nearest existing ancestor while it is missing.
++  // The current watch stays while it contains `root` and has not moved. A
++  // replaced watcher keeps running until the build ends so nothing is
++  // missed while the new one starts.
++  const observe = () => {
++    if (closed || root === undefined) return;
++    if (
++      watched !== undefined &&
++      !NodePath.relative(watched, root).startsWith("..") &&
++      inode(watched) === identity
++    )
++      return;
++    let next = root;
++    let current = inode(next);
++    while (current === undefined && next !== NodePath.dirname(next)) {
++      next = NodePath.dirname(next);
++      current = inode(next);
++    }
++    if (tree !== undefined) replaced.push(tree);
++    watched = next;
++    identity = current;
++    tree = NodeFS.watch(next, { recursive: true }, (_event, name) => {
++      const path = name === null ? null : NodePath.join(next, name);
++      if (building !== undefined) changed.add(path);
++      else if (affects(path)) schedule();
++    }).on("error", fail);
++    poller ??= setInterval(poll, 500).unref();
++  };
++  // Widen the root to contain `file`. The root never narrows.
++  const cover = (file: string) => {
++    if (closed || !NodePath.isAbsolute(file)) return;
++    const directory = NodePath.dirname(file);
++    let next = root ?? directory;
++    while (NodePath.relative(next, directory).startsWith(".."))
++      next = NodePath.dirname(next);
++    if (next === root) return;
++    root = next;
++    observe();
++  };
++  const coverage: rolldown.Plugin = {
++    name: "alchemy:watch-sources",
++    load: {
++      filter: { id: { exclude: /[\\/]node_modules[\\/]/ } },
++      handler(id) {
++        if (!NodePath.isAbsolute(id)) return;
++        loaded.set(id, stamp(id));
++        cover(id);
++      },
++    },
++  };
++  // Adopt the build's graph; true when a source changed after the build
++  // read it, or a change during the build affects the graph.
++  const settle = (next: ReadonlyArray<string>, failed: boolean) => {
++    const sources = next.filter(
++      (file) =>
++        NodePath.isAbsolute(file) &&
++        !file.split(NodePath.sep).includes("node_modules"),
++    );
++    // A failed build may stop before loading every module; keep watching
++    // the last complete graph so fixing any of its files rebuilds.
++    files = new Set(failed ? [...files, ...sources] : sources);
++    // Watch files a plugin added without rolldown loading them.
++    for (const file of files) cover(file);
++    directories = new Set();
++    for (const file of files) {
++      let directory = NodePath.dirname(file);
++      while (directory !== watched && !directories.has(directory)) {
++        directories.add(directory);
++        directory = NodePath.dirname(directory);
++      }
++    }
++    for (const watcher of replaced) watcher.close();
++    replaced = [];
++    return edited() || [...changed].some(affects);
++  };
++  const rebuild = async () => {
++    let failed = false;
++    let next: ReadonlyArray<string> = [];
++    try {
++      // Plugins' `options` hooks rewrite `input` in place (the virtual
++      // entries wrap it); rolldown's own watcher runs them once, so each
++      // build here starts from a copy of the caller's options.
++      const bundle = await rolldown.rolldown({
++        ...inputOptions,
++        plugins: [coverage, inputOptions.plugins],
++      });
++      try {
++        await bundle.write(outputOptions);
++      } catch (error) {
++        failed = true;
++        fail(error);
++      } finally {
++        next = await bundle.watchFiles;
++        await bundle.close();
++      }
++    } catch (error) {
++      failed = true;
++      fail(error);
++    }
++    return settle(next, failed);
++  };
++  const run = (): void => {
++    if (building) {
++      again = true;
++      return;
++    }
++    changed = new Set();
++    loaded = new Map();
++    building = rebuild()
++      .catch((error) => {
++        fail(error);
++        return false;
++      })
++      .then((stale) => {
++        building = undefined;
++        built();
++        if ((stale || again) && !closed) {
++          again = false;
++          schedule();
++        }
++      });
++  };
++  const schedule = () => {
++    clearTimeout(timer);
++    timer = setTimeout(() => {
++      start();
++      run();
++    }, 50);
++  };
++  run();
++  return {
++    close: async () => {
++      closed = true;
++      clearTimeout(timer);
++      clearInterval(poller);
++      tree?.close();
++      for (const watcher of replaced) watcher.close();
++      await building;
++    },
++  };
++};
++
++/**
++ * Local Workers start their watchers together, and each first build loads
++ * that Worker's whole module graph. Rolldown already spreads one build over
++ * every core, so first builds running side by side only multiply memory:
++ * seventeen Executor Workers took the dev sidecar to 9.6 GB and the kernel
++ * killed it. First builds in this process take turns. Rebuilds after an edit
++ * and deploy builds do not wait.
++ *
++ * A turn ends when the first build ends or fails, when the watcher closes or
++ * cannot start, and at the latest after {@link firstBuildTurn}: a build that
++ * hangs keeps running, and the next one starts beside it. A watcher that
++ * closes while it waits leaves the queue.
++ */
++const firstBuildTurn = 60_000;
++const firstBuilds = (() => {
++  let running = false;
++  const waiting: Array<() => void> = [];
++  const next = () => {
++    const start = waiting.shift();
++    if (start) start();
++    else running = false;
++  };
++  return {
++    /** Joins the queue. `release` ends the turn or leaves the queue; it is idempotent. */
++    join: () => {
++      let state: "waiting" | "running" | "done" = "waiting";
++      let timer: ReturnType<typeof setTimeout> | undefined;
++      let started!: () => void;
++      const turn = new Promise<void>((resolve) => (started = resolve));
++      const release = () => {
++        if (state === "waiting") waiting.splice(waiting.indexOf(start), 1);
++        else if (state === "running") {
++          clearTimeout(timer);
++          next();
++        }
++        state = "done";
++      };
++      const start = () => {
++        state = "running";
++        timer = setTimeout(() => {
++          console.warn(
++            `alchemy: a first build has run for ${firstBuildTurn / 1000} s; the next one starts beside it.`,
++          );
++          release();
++        }, firstBuildTurn).unref();
++        started();
++      };
++      if (running) waiting.push(start);
++      else {
++        running = true;
++        start();
++      }
++      return { turn, release };
++    },
++  };
++})();
++
++/**
+  * Watch for changes in the bundle and return a stream of bundle output.
+  * @param inputOptions - The input options for the bundle.
+  * @param outputOptions - The output options for the bundle.
+@@ -271,10 +589,20 @@
+         readonly output: rolldown.OutputBundle;
+       }
+   >((queue) =>
+-    Effect.acquireRelease(
+-      Effect.promise(async () => {
++    Effect.gen(function* () {
++      // Waiting for the turn can be interrupted; closing the stream ends the
++      // turn or leaves the queue.
++      const { turn, release: built } = yield* Effect.acquireRelease(
++        Effect.sync(firstBuilds.join),
++        ({ release }) => Effect.sync(release),
++      );
++      yield* Effect.promise(() => turn);
++      const open = async (): Promise<{ close(): Promise<void> }> => {
+         const rolldown = await loadRolldown();
+-        const watcher = rolldown.watch({
++        const start = () => {
++          Queue.offerUnsafe(queue, { _tag: "Start" });
++        };
++        const options: rolldown.InputOptions = {
+           ...withAlchemyDefine(inputOptions),
+           plugins: [
+             inputOptions.plugins,
+@@ -282,11 +610,7 @@
+             // The watcher event listener does not receive the bundle output, so we grab it using a plugin.
+             {
+               name: "alchemy:watch-bundle",
+-              watchChange() {
+-                Queue.offerUnsafe(queue, {
+-                  _tag: "Start",
+-                });
+-              },
++              watchChange: start,
+               generateBundle(_outputOptions, bundle) {
+                 Queue.offerUnsafe(queue, {
+                   _tag: "Success",
+@@ -295,6 +619,23 @@
+               },
+             },
+           ],
++        };
++        if (process.platform === "darwin") {
++          return watchModuleTree(
++            rolldown,
++            options,
++            withDceDefault(outputOptions),
++            start,
++            (error) =>
++              Queue.offerUnsafe(queue, {
++                _tag: "Error",
++                error: bundleErrorFromUnknown(error),
++              }),
++            built,
++          );
++        }
++        const watcher = rolldown.watch({
++          ...options,
+           watch: {
+             // Watching the full module graph of an Effect worker (all of
+             // `effect`, `alchemy`, `@distilled.cloud/*`) registers thousands
+@@ -309,19 +650,32 @@
+         });
+         watcher.on("event", (event) => {
+           if (event.code === "ERROR") {
++            built();
+             Queue.offerUnsafe(queue, {
+               _tag: "Error",
+               error: bundleErrorFromUnknown(event.error),
+             });
+           } else if (event.code === "BUNDLE_END") {
++            built();
+             // This must be called to avoid resource leaks.
+             event.result.close().catch(() => {});
+           }
+         });
+         return watcher;
+-      }),
+-      (watcher) => Effect.promise(() => watcher.close()),
+-    ),
++      };
++      yield* Effect.acquireRelease(
++        Effect.tryPromise({ try: open, catch: bundleErrorFromUnknown }),
++        (watcher) => Effect.promise(() => watcher.close()),
++      ).pipe(
++        // A watcher that cannot start reports why and gives its turn back.
++        Effect.catch((error) =>
++          Effect.sync(() => {
++            built();
++            Queue.offerUnsafe(queue, { _tag: "Error", error });
++          }),
++        ),
++      );
++    }),
+   ).pipe(
+     Stream.mapEffect((event) =>
+       Effect.gen(function* () {

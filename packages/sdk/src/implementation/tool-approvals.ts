@@ -1,8 +1,9 @@
 /** Pending tool calls are encrypted; consumption clears their payload before external work. */
-import type { ApprovalElicitation, ApprovalResponse } from "apps/contracts";
+import { approvalElicitation, type ApprovalResponse } from "apps/contracts";
 import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
 import {
   defaultToolApprovalLimits,
+  ToolApprovalIssuer,
   ToolApprovalNotFound,
   ToolInvocation,
   type ToolResumeResult,
@@ -19,14 +20,14 @@ import {
 import type { Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 
-const Payload = Schema.Struct({
-  invocation: ToolInvocation.pipe(
-    Schema.encodeKeys({
-      profile: "installation",
-      profileRevision: "installationRevision",
-    }),
-  ),
+/**
+ * A pending call as its encrypted record holds it, read again on resume. Requests saved before
+ * accounts were named per call carry installation keys; decoding ignores them.
+ */
+export const ApprovalPayload = Schema.Struct({
+  invocation: ToolInvocation,
   originalInput: Json,
+  issuer: Schema.optional(ToolApprovalIssuer),
 });
 const Record = Schema.Struct({
   id: ApprovalRequestId,
@@ -73,6 +74,16 @@ export function makeToolApprovals(
         }),
       );
     });
+  const decrypt = (row: typeof Record.Type) =>
+    credentials
+      .decrypt(row.id, row.encrypted)
+      .pipe(
+        Effect.flatMap((value) =>
+          Schema.decodeUnknownEffect(ApprovalPayload)(Redacted.value(value)).pipe(
+            Effect.mapError(() => new StorageError()),
+          ),
+        ),
+      );
   return {
     prune,
     get: (requestId: ApprovalRequestId, owner?: OwnerId) =>
@@ -80,13 +91,22 @@ export function makeToolApprovals(
         const row = yield* read(requestId, owner);
         if (row.status !== "pending" || row.expiresAt.getTime() <= (yield* Clock.currentTimeMillis))
           return yield* new ToolApprovalNotFound({ requestId });
-        const payload = yield* credentials.decrypt(row.id, row.encrypted).pipe(
-          Effect.flatMap((value) => Schema.decodeUnknownEffect(Payload)(Redacted.value(value))),
-          Effect.mapError(() => new StorageError()),
-        );
-        return { invocation: payload.invocation, expiresAt: row.expiresAt.getTime() };
+        const payload = yield* decrypt(row).pipe(Effect.mapError(() => new StorageError()));
+        return {
+          invocation: payload.invocation,
+          expiresAt: row.expiresAt.getTime(),
+          ...(payload.issuer === undefined ? {} : { issuer: payload.issuer }),
+        };
       }),
-    save: (invocation: ToolInvocation, originalInput: Json, elicitation: ApprovalElicitation) =>
+    /**
+     * Save a call for review. Its prompt is built here from the saved invocation, never taken from
+     * the app, so it describes the exact call approval runs, as every later review of it does.
+     */
+    save: (
+      invocation: ToolInvocation,
+      originalInput: Json,
+      issuer: ToolApprovalIssuer | undefined,
+    ) =>
       Effect.gen(function* () {
         yield* prune(invocation.owner);
         const id = ApprovalRequestId.make(`apr_${yield* next}`);
@@ -94,7 +114,11 @@ export function makeToolApprovals(
         const expiresAt = new Date(
           (yield* Clock.currentTimeMillis) + defaultToolApprovalLimits.ttlMs,
         );
-        const payload = yield* Schema.encodeEffect(Payload)({ invocation, originalInput }).pipe(
+        const payload = yield* Schema.encodeEffect(ApprovalPayload)({
+          invocation,
+          originalInput,
+          ...(issuer === undefined ? {} : { issuer }),
+        }).pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(JsonObject)),
           Effect.mapError(() => new StorageError()),
         );
@@ -114,7 +138,7 @@ export function makeToolApprovals(
           status: "approval-required" as const,
           requestId: id,
           invocation,
-          elicitation,
+          elicitation: approvalElicitation(invocation.tool, invocation.input),
           expiresAt: expiresAt.getTime(),
         };
       }),
@@ -124,6 +148,7 @@ export function makeToolApprovals(
         response: ApprovalResponse;
         owner?: OwnerId | undefined;
       },
+      issuer: ToolApprovalIssuer | undefined,
       execute: (
         invocation: ToolInvocation,
         originalInput: Json,
@@ -133,6 +158,12 @@ export function makeToolApprovals(
         yield* Effect.annotateCurrentSpan("executor.approval.id", input.requestId);
         if (yield* inTransaction) return yield* new RequestInvalid();
         yield* prune(input.owner, input.requestId);
+        // The issuer is inside the ciphertext, so check it before the claim: a caller from another
+        // flow consumes nothing. A pending payload never changes, so the check holds at the claim.
+        // A consumed request has no payload left and reports already-consumed below.
+        const found = yield* read(input.requestId, input.owner);
+        if (found.status === "pending" && (yield* decrypt(found)).issuer !== issuer)
+          return yield* new ToolApprovalNotFound({ requestId: input.requestId });
         const claim = yield* next;
         const consumed = yield* transaction(db, () =>
           Effect.gen(function* () {
@@ -181,15 +212,7 @@ export function makeToolApprovals(
           return { status: "denied" as const, requestId: input.requestId };
         if (input.response.action === "cancel")
           return { status: "cancelled" as const, requestId: input.requestId };
-        const payload = yield* credentials
-          .decrypt(consumed.original.id, consumed.original.encrypted)
-          .pipe(
-            Effect.flatMap((value) =>
-              Schema.decodeUnknownEffect(Payload)(Redacted.value(value)).pipe(
-                Effect.mapError(() => new StorageError()),
-              ),
-            ),
-          );
+        const payload = yield* decrypt(consumed.original);
         // The consume commits before dispatch. A crash, interruption or lost response never makes it retryable.
         return yield* execute(payload.invocation, payload.originalInput);
       }),

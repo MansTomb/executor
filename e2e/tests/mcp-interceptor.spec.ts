@@ -10,7 +10,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
-import { createProfile, selectProfileAccounts } from "../support/profiles.ts";
+import { connectionsPath, linkedAccountIds, unlinkAccount } from "../support/app-accounts.ts";
 
 const Wire = Schema.Struct({
   id: Schema.optionalKey(Schema.Json),
@@ -134,7 +134,7 @@ const source = (origin: string) => [
 import { defineApp, defineProvider, accountRouter, secrets, object, string } from "apps";
 import { mcpRouter, McpError } from "apps/mcp";
 const provider = defineProvider({ name: "Interceptor account", auth: { key: secrets({ label: "Account", fields: object({ token: string() }) }) } });
-export default defineApp({ accounts: { service: provider.many() } }, async ctx => ({ tools: await accountRouter(ctx.accounts.service, account => mcpRouter({
+export default defineApp({ user: { accounts: { service: provider.many() } } }, async ctx => ({ tools: await accountRouter(ctx.user?.accounts.service ?? [], account => mcpRouter({
     url: ${JSON.stringify(`${origin}/mcp`)}, headers: { "X-Account": account.fields.token }, account,
     signal: ctx.signal, cache: ctx.cache,
     intercept: async ({ tool, context, input, next }) => {
@@ -144,7 +144,7 @@ export default defineApp({ accounts: { service: provider.many() } }, async ctx =
       if (input.message === "badoutput") return { content: [], structuredContent: { account: 42 } };
       if (input.message === "bad-envelope") return { content: "invalid" };
       if (input.message === "toolerror") return { content: [{ type: "text", text: "Explicit tool failure" }], isError: true };
-      if (context.signal.aborted || !context.accounts.service.some(selected => selected.id === account.id)) throw new Error("Wrong invocation context");
+      if (context.signal.aborted || !(context.user?.accounts.service ?? []).some(selected => selected.id === account.id)) throw new Error("Wrong invocation context");
       await context.analytics.emit({ event: "upstream_request", operation: "read", transport: "rest", purpose: "task", phase: "started" });
       const response = await context.fetch(${JSON.stringify(`${origin}/rest`)} + "?message=" + encodeURIComponent(String(input.message)), {
         headers: { "X-Account": account.fields.token }, signal: context.signal,
@@ -182,15 +182,16 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${id}`);
           }).pipe(Effect.orDie),
         );
-        const profile = yield* createProfile(actors.owner, path);
         const connect = (token: string) =>
           Effect.gen(function* () {
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${path}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(path, "user", "service"),
+                {},
+              ),
             );
             const account = yield* body(
               Resource,
@@ -210,15 +211,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
           });
         const alpha = yield* connect("alpha"),
           bravo = yield* connect("bravo");
-        yield* selectProfileAccounts(actors.owner, path, profile.id, { service: [alpha, bravo] });
-        const call = (
-          accountId: string,
-          message: Schema.Json,
-          tool = "read",
-          profileId = profile.id,
-        ) =>
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([alpha, bravo]);
+        const call = (accountId: string, message: Schema.Json, tool = "read") =>
           api.request(actors.owner, "POST", `${path}/tools/call`, {
-            profile: profileId,
             tool,
             input: { accountId, input: { message } },
           });
@@ -235,11 +230,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
             ...(route === "rest" ? { _meta: { intercepted: true } } : {}),
           });
         };
-        const described = yield* api.request(
-          actors.owner,
-          "GET",
-          `${path}/tools/read?profile=${profile.id}`,
-        );
+        const described = yield* api.request(actors.owner, "GET", `${path}/tools/read`);
         expect(described.status).toBe(200);
         expect(described.body).toMatchObject({
           name: "read",
@@ -248,10 +239,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
           annotations: { readOnlyHint: true },
           _meta: { fixture: "native" },
         });
-        expect(
-          (yield* api.request(actors.owner, "GET", `${path}/tools/write?profile=${profile.id}`))
-            .body,
-        ).toMatchObject({ name: "write", annotations: { readOnlyHint: false } });
+        expect((yield* api.request(actors.owner, "GET", `${path}/tools/write`)).body).toMatchObject(
+          { name: "write", annotations: { readOnlyHint: false } },
+        );
         assertValue(yield* call(alpha, "fresh"), "alpha", "fresh", "rest");
         assertValue(yield* call(bravo, "next"), "bravo", "next", "mcp");
         assertValue(yield* call(alpha, "write", "write"), "alpha", "write", "mcp");
@@ -318,7 +308,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
             { account: "alpha", path: "read", message: "upstream-failure" },
           ].sort((a, b) => a.message.localeCompare(b.message)),
         );
-        yield* selectProfileAccounts(actors.owner, path, profile.id, { service: [bravo] });
+        yield* unlinkAccount(actors.owner, path, "service", alpha);
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([bravo]);
         const deselected = yield* call(alpha, "forbidden");
         expect(deselected.status).toBe(422);
         assertValue(yield* call(bravo, "selected"), "bravo", "selected", "rest");

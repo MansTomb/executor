@@ -17,7 +17,7 @@ import {
   type RuntimeAsset,
 } from "../contracts/runtime.ts";
 import type { DeclarationCache } from "../contracts/declarations.ts";
-import type { SourceFiles } from "../contracts/deployment.ts";
+import type { CodeFiles } from "../contracts/source.ts";
 import type { BuildId, Json } from "../contracts/shared.ts";
 import { BlobStore, type BlobStorage } from "../contracts/blobs.ts";
 
@@ -30,7 +30,10 @@ export interface AppRuntime {
 
 /** Standalone Promise adapter after host dependencies have been resolved. */
 export interface ResolvedAppRuntime {
-  readonly build: (input: { readonly files: SourceFiles }) => Promise<BuiltApp>;
+  readonly build: (input: {
+    readonly files: CodeFiles;
+    readonly public?: ReadonlyArray<string>;
+  }) => Promise<BuiltApp>;
   readonly asset?: (input: {
     readonly build: BuildId;
     readonly path: string;
@@ -198,6 +201,13 @@ export const toEffectRuntime = (
         }),
       ),
     remove: (key) => blobs.remove(key).pipe(Effect.withSpan("storage.blob.remove")),
+    list: (folder, options) =>
+      blobs.list(folder, options).pipe(Effect.withSpan("storage.blob.list")),
+    stream: (key, range) =>
+      blobs.stream(key, range).pipe(
+        Effect.tap((body) => Effect.annotateCurrentSpan("storage.blob.found", Option.isSome(body))),
+        Effect.withSpan("storage.blob.stream"),
+      ),
   });
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) => observe(store(effect));
   const withAnalytics = <A extends { readonly app: string }>(input: A) => ({

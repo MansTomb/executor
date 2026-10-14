@@ -4,7 +4,7 @@
  * through a service binding to itself, to run its job. The placed handler does the database work,
  * and any Durable Object or Workflow the job first contacts is created beside it.
  */
-import { traceHeaders } from "@executor-js/telemetry";
+import { recordRoute, traceHeaders } from "@executor-js/telemetry";
 import { Random, RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { Fetcher } from "@cloudflare/workers-types";
@@ -20,10 +20,12 @@ export const BackgroundJob = Schema.Literals([
   "data-steps",
   "repository-recovery",
   "schedule-wake",
+  "site-assets",
   "app-domain-heartbeat",
   "welcome-emails",
   "workflow-reconcile",
   "billing-reconcile",
+  "agent-grant-expiry",
 ]);
 export type BackgroundJob = typeof BackgroundJob.Type;
 
@@ -99,6 +101,8 @@ export const cloudBackgroundJobs = Effect.gen(function* () {
           if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected))
             return HttpServerResponse.empty({ status: 404 });
           const { job } = yield* HttpRouter.schemaPathParams(Schema.Struct({ job: BackgroundJob }));
+          // Job names are Executor's own, so the path keeps the job the route ran.
+          yield* recordRoute(`/api/internal/jobs/${job}`);
           const ran = yield* run(job).pipe(lifetime.background, Effect.exit);
           return HttpServerResponse.empty({ status: Exit.isSuccess(ran) ? 204 : 500 });
         }).pipe(

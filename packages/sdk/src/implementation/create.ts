@@ -1,10 +1,11 @@
 import { AppNotFound } from "../contracts/apps.ts";
-import { AppId } from "../contracts/shared.ts";
-import { ProfileHost } from "../contracts/profiles.ts";
-import { makeProfileSetup } from "./profile-setup.ts";
+import { WebhookSourceHost } from "../contracts/webhooks.ts";
+import { makeWebhookSources } from "./webhook-sources.ts";
 import { WorkflowHost } from "../contracts/workflow-runtime.ts";
 import { RepositoryHost } from "../contracts/source.ts";
 import { StorageHost } from "../contracts/storage.ts";
+import { PrefetchHost } from "../contracts/tools.ts";
+import { OAuthGrantImport } from "../contracts/oauth.ts";
 import { gitSourceStorage } from "./git-sources.ts";
 import { makeRegistry } from "./registry.ts";
 import { remoteRegistry } from "./remote-registry.ts";
@@ -17,13 +18,16 @@ import { makeWorkflowRuns } from "./workflows.ts";
 /** Compose native operations once for in-process and HTTP callers. */
 import { Crypto, Effect, Schema } from "effect";
 import type { Executor, ExecutorOptions, RemoteExecutorOptions } from "../contracts/executor.ts";
-import { CredentialsError, NotImplemented, StorageError } from "../contracts/shared.ts";
+import { AppId, CredentialsError, NotImplemented, StorageError } from "../contracts/shared.ts";
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
 import { makeAccountConnections } from "./account-connections.ts";
-import { makeAccounts } from "./accounts.ts";
+import { makeAccounts, storedAccount } from "./accounts.ts";
+import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
+import { makeOwnerMoves } from "./owner-moves.ts";
+import { SavedOAuthClientsHost } from "../contracts/oauth-clients.ts";
+import { OwnerMovesHost } from "../contracts/owner.ts";
 import { makeAccountHealth } from "./account-health.ts";
-import { makeProfiles } from "./profiles.ts";
 import { makeApps } from "./apps.ts";
 import { makeOwners } from "./owners.ts";
 import { makeSchedules } from "./schedules.ts";
@@ -34,6 +38,9 @@ import { database, query } from "./database.ts";
 import { makeOAuth } from "./oauth.ts";
 import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
 import { makeListings } from "./listings.ts";
+import { makeToolSearch } from "./tool-search.ts";
+import { makeEvents } from "./events.ts";
+import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/runtime.ts";
 
 /** Capture host cryptography; caller owns database and platform resource lifetimes. */
 export const createExecutor = (
@@ -55,7 +62,24 @@ export const createExecutor = (
     );
     const toolListings = { ...defaultToolListingPolicy, ...options.cache?.toolListings };
     const cache = options.cache?.memory ?? makeDeclarationCache();
-    const runtime = toEffectRuntime(options.runtime, options.blobs, cache, (app, records) =>
+    const events = makeEvents({
+      db,
+      credentials,
+      options: options.events,
+      background: options.background,
+    });
+    // Every invocation reports the events it emitted here, whichever operation started it.
+    const sink: typeof AppEventSink.Service = {
+      emitted: (input) =>
+        events
+          .record({ app: AppId.make(input.app), accounts: input.accounts, events: input.events })
+          .pipe(
+            Effect.tapError(() => Effect.logError("Emitted app events could not be saved")),
+            Effect.mapError(() => new RuntimeProtocolFailed({ reason: "data" })),
+          ),
+    };
+    // Analytics are best-effort: an app that no longer exists, or a failed write, records nothing.
+    const base = toEffectRuntime(options.runtime, options.blobs, cache, (app, records) =>
       query(() =>
         db.findFirst("apps", { where: (b) => b("id", "=", Schema.decodeUnknownSync(AppId)(app)) }),
       ).pipe(
@@ -66,6 +90,16 @@ export const createExecutor = (
         ),
         Effect.catchCause(() => Effect.void),
       ),
+    );
+    const runtime: Runtime = {
+      ...base,
+      call: (input) => base.call(input).pipe(Effect.provideService(AppEventSink, sink)),
+      mutate: (input) => base.mutate(input).pipe(Effect.provideService(AppEventSink, sink)),
+      webhook: (input) => base.webhook(input).pipe(Effect.provideService(AppEventSink, sink)),
+    };
+    // The operator's own OAuth clients, by ID; their tokens are managed.
+    const firstPartyClients = new Map(
+      (options.oauth?.firstPartyClients ?? []).map((client) => [client.id, client] as const),
     );
     const oauth = makeOAuth(
       db,
@@ -92,7 +126,6 @@ export const createExecutor = (
       crypto,
       declarations,
       options.workflows,
-      options.hooks,
     );
     const webhooks = makeWebhooks(
       options.database,
@@ -100,7 +133,7 @@ export const createExecutor = (
       oauth.resolveSelected,
       credentials,
       crypto,
-      options.origin,
+      options.webhookOrigin ?? options.origin,
       declarations,
       workflows.controls,
       options.hooks,
@@ -116,13 +149,14 @@ export const createExecutor = (
         options.blobs,
         options.hooks,
       ),
-      profiles: makeProfiles(db, crypto),
       workflows: { list: workflows.definitions },
       workflowRuns: workflows.runs,
     };
+    const search = makeToolSearch({ store: options.database.toolSearch, crypto });
     const tools = makeTools(
       options.database,
       oauth,
+      firstPartyClients,
       runtime,
       credentials,
       crypto,
@@ -131,26 +165,47 @@ export const createExecutor = (
         background: options.background,
         declarations,
         resolveAccount: oauth.resolveSelected,
-        lifecycle: options.hooks,
         policy: toolListings,
+        search,
       }),
       workflows.controls,
       options.hooks,
     );
     const connections = makeAccountConnections(db, credentials, crypto, options.hooks);
-    const { checkCredentials, ...accountHealth } = makeAccountHealth(db, runtime, oauth, apps.list);
-    const schedules = makeSchedules(options.database, apps, tools, credentials, crypto);
-    const setup = makeProfileSetup(db, crypto, apps.profiles, {
+    const { add, replaceCredentials, ...accountOperations } = makeAccounts(
+      db,
+      credentials,
+      crypto,
+      options.hooks,
+      oauth.revokeRemoved,
+    );
+    const { checkCredentials, ...accountHealth } = makeAccountHealth(
+      db,
+      runtime,
+      oauth,
+      firstPartyClients,
+      apps.list,
+    );
+    const schedules = makeSchedules(
+      options.database,
+      apps,
+      tools,
+      credentials,
+      crypto,
+      options.hooks,
+    );
+    const webhookSources = makeWebhookSources(db, crypto, options.hooks, {
       webhooks: webhooks.webhooks,
-      webhookDefinitions: webhooks.liveDefinitions,
-      schedules: schedules.operations,
-      reconcileSchedules: schedules.reconcile,
-      runs: workflows.runs,
+      liveDefinitions: webhooks.liveDefinitions,
+      retarget: webhooks.retarget,
+      createManaged: webhooks.createManaged,
       accountNeedingReconnect: tools.accountNeedingReconnect,
     });
     // App source defines schedules. Each activation removes saved settings for schedules the new
-    // deployment no longer declares. The activation has committed, so a deployment that cannot be
-    // evaluated keeps them and the activation still succeeds. Profiles reconcile in setup.
+    // deployment no longer declares and retimes those whose timing changed. The activation has
+    // committed, so a deployment that cannot be evaluated keeps them and the activation still
+    // succeeds. Webhook sources reconcile in the
+    // background.
     const activated = (app: AppId) =>
       schedules
         .activated(app)
@@ -178,7 +233,7 @@ export const createExecutor = (
             return yield* options.database.analytics.summary({ ...input, owner: app.owner });
           }),
       },
-      [ProfileHost]: { tick: setup.tick },
+      [WebhookSourceHost]: { tick: webhookSources.tick },
       [WorkflowHost]: workflows.host,
       [RepositoryHost]: {
         request: (input, request) =>
@@ -193,24 +248,48 @@ export const createExecutor = (
           blobs: options.blobs,
         }),
       },
+      [OAuthGrantImport]: {
+        importOAuthGrant: oauth.importGrant,
+        firstPartyClient: oauth.firstPartyClient,
+      },
       [StorageHost]: {
         transaction: (effect) =>
           db.transaction(effect).pipe(
             Effect.withSpan("storage.transaction"),
             Effect.catchTag("SqlError", () => new StorageError()),
           ),
+        read: options.database.reactivity.read,
+        write: options.database.reactivity.write,
       },
+      [PrefetchHost]: { invocation: tools.prefetchInvocation },
+      [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
+        ...(options.oauth?.savedClientCallbacks ?? []),
+        ...(options.oauth?.previousRedirectUris ?? []),
+        new URL("/api/oauth/callback", origin).href,
+      ]),
+      [OwnerMovesHost]: makeOwnerMoves(db, credentials),
       scheduler: schedules.dispatcher,
+      events,
       schedules: schedules.operations,
       accounts: {
-        ...makeAccounts(db, credentials, crypto, options.hooks, oauth.revokeRemoved),
+        ...accountOperations,
         ...accountHealth,
+        revocation: (input) =>
+          storedAccount(db, input.account, input.owner).pipe(
+            Effect.flatMap((account) => oauth.revocation(account.id)),
+            Effect.withSpan("sdk.accounts.revocation"),
+          ),
       },
+      managedAccounts: { add, replaceCredentials },
       accountConnections: {
         ...connections,
         ...oauth.connections,
-        findOAuth: (input) => Effect.flatMap(oauth.findOAuth(input), connections.get),
+        findOAuth: (input) =>
+          Effect.flatMap(oauth.findOAuth(input), ({ redirectUri, ...found }) =>
+            Effect.map(connections.get(found), (connection) => ({ ...connection, redirectUri })),
+          ),
       },
+      oauthClients: oauth.clients,
       apps: {
         ...apps,
         deploy: (input) =>
@@ -222,23 +301,22 @@ export const createExecutor = (
               ),
             ),
         activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
-        profiles: setup.operations,
         checkCredentials,
       },
       owners: makeOwners(db),
       publications: catalog.publications,
       registry: catalog.registry,
       skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
-      webhooks: webhooks.webhooks,
+      webhooks: {
+        ...webhooks.webhooks,
+        sources: webhookSources.sources,
+        link: webhookSources.link,
+        configureSource: webhookSources.configureSource,
+        unlink: webhookSources.unlink,
+      },
       webhookSetup: webhooks.webhookSetup,
-      appData: makeAppData(
-        options.database,
-        oauth.resolveSelected,
-        runtime,
-        workflows.controls,
-        options.hooks,
-      ),
-      tools,
+      appData: makeAppData(options.database, oauth.resolveSelected, runtime, workflows.controls),
+      tools: { ...tools, search: search.page },
     };
   });
 

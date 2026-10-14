@@ -13,8 +13,9 @@ import {
   failureMessage,
   type DashboardError,
 } from "../../contracts/errors.ts";
-import { Link } from "@tanstack/react-router";
+import { Link, useParams } from "@tanstack/react-router";
 export {
+  AppIcon,
   ProviderIcon,
   SearchInput,
   LoadingRows,
@@ -37,16 +38,18 @@ export function Failure({
     return (
       <ProviderErrorNotice
         error={error.value}
-        context="While using this app and selected profile."
+        context="While using this app and its accounts."
         retry={retry}
         retrying={retrying}
         layout={layout}
       />
     );
   const { title, description, account } = failureMessage(cause);
-  const reconnect = account !== undefined && (
+  const app = useParams({ strict: false }).appId;
+  // Credentials are replaced from the app that needs them, on its Accounts tab.
+  const reconnect = account !== undefined && app !== undefined && (
     <Button variant="outline" size="sm" asChild>
-      <Link to="/accounts/$accountId/credentials" params={{ accountId: account }}>
+      <Link to="/apps/$appId" params={{ appId: app }} search={{ view: "accounts" }}>
         Reconnect
       </Link>
     </Button>

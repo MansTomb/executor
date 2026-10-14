@@ -48,6 +48,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted malformed resource link
         const org = `/org/${actors.organization.slug}`;
         for (const path of [
           `${org}/apps/${malformed}`,
+          // The app launch route is gone; an old launch link is a missing page too.
           `${org}/apps/${malformed}/open`,
           `${org}/apps/${malformed}/setup`,
           `${org}/connections/${malformed}`,
@@ -87,7 +88,6 @@ layer(TestLive, { excludeTestServices: true })("Local malformed resource links",
         for (const path of [
           `/apps/${malformed}`,
           `/apps/${malformed}/setup`,
-          `/accounts/${malformed}/credentials`,
           `/webhooks/${malformed}/${malformed}`,
         ])
           yield* expectNotFound(path);

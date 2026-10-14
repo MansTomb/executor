@@ -3,7 +3,7 @@
  * invocations for the runner, gives each invocation a build loader over the host's build store,
  * and decodes the reply. Hosts differ only in where the runner lives and how builds are stored.
  */
-import { Effect, Option, Redacted, Result, Schema, type Scope, type Stream } from "effect";
+import { Clock, Effect, Option, Redacted, Result, Schema, type Scope, type Stream } from "effect";
 import {
   analyticsRecords,
   makeTelemetryForwarder,
@@ -22,6 +22,7 @@ import {
   HostResponse,
   MigrateResult,
   indexCommand,
+  InvocationTiming,
   inspectCommand,
   selectTools,
   skillCatalog,
@@ -30,11 +31,18 @@ import {
   ToolResultObservation,
   type HostContext,
   type HostRequest,
+  scopedSlots,
 } from "apps/contracts";
 import {
   AppCacheChanges,
+  AppCodeEntered,
+  DispatchTiming,
+  AppEventSink,
   InvocationRun,
+  IsolateTiming,
+  RuntimeCallTimings,
   RuntimeProtocolFailed,
+  type RuntimeCallTiming,
   type RuntimeProtocolUnsupported,
   type Runtime,
   type RuntimeBuildUnavailable,
@@ -46,6 +54,7 @@ import { appWorker, type AppCapabilities, type AppInvocation } from "./app-runne
 import { appProtocol } from "./app-protocols.ts";
 import { invocationElicitation } from "./worker-elicitation.ts";
 import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
+import { runtimeCallParts } from "./tool-call-overhead.ts";
 
 /** What telemetry records for an error an app's reply carried, beside the error's name. */
 const appErrorRecorded = "The app returned this error; its text is not recorded";
@@ -145,8 +154,11 @@ export const appRuntime = (host: AppRuntimeHost) =>
       command: HostRequest,
       output: Schema.Decoder<A>,
       errors: Schema.Decoder<E>,
-    ) =>
-      Effect.scoped(
+    ) => {
+      // This call's share of a tool call, reported when it is over.
+      let invoked: RuntimeCallTiming["invoked"];
+      let parts: RuntimeCallTiming["parts"];
+      return Effect.scoped(
         Effect.gen(function* () {
           const lifetime = yield* Effect.acquireRelease(
             Effect.sync(() => new AbortController()),
@@ -170,19 +182,30 @@ export const appRuntime = (host: AppRuntimeHost) =>
           // Only the trusted runner or data supervisor calls the loader. The runner may sit behind
           // RPC, so the loader keeps an unsupported protocol as this call's typed failure.
           const loader = yield* invocationBuildLoader(invocation, host.loadBuild(build));
-          const body = yield* loader.refused(
-            host.invoke(invocation, {
-              load: loader.load,
-              elicit:
-                input.elicitation === undefined
-                  ? null
-                  : invocationElicitation(input.elicitation, lifetime.signal),
-              controls:
-                input.workflowControls === undefined
-                  ? null
-                  : yield* invocationWorkflowControls(input.workflowControls, lifetime.signal),
-              ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
-            }),
+          const capabilities: AppCapabilities = {
+            load: loader.load,
+            elicit:
+              input.elicitation === undefined
+                ? null
+                : invocationElicitation(input.elicitation, lifetime.signal),
+            controls:
+              input.workflowControls === undefined
+                ? null
+                : yield* invocationWorkflowControls(input.workflowControls, lifetime.signal),
+            ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
+          };
+          const from = yield* Clock.currentTimeNanos;
+          // Recorded here, by the host, before the runner receives the invocation: whatever it
+          // reports afterwards came through code the app controls.
+          (yield* AppCodeEntered).entered();
+          const body = yield* loader.refused(host.invoke(invocation, capabilities)).pipe(
+            Effect.ensuring(
+              Effect.flatMap(Clock.currentTimeNanos, (to) =>
+                Effect.sync(() => {
+                  invoked = [from, to];
+                }),
+              ),
+            ),
           );
           // Telemetry is an additive transport field. Retained builds keep their original protocol.
           const collected = yield* Schema.decodeUnknownEffect(
@@ -190,8 +213,65 @@ export const appRuntime = (host: AppRuntimeHost) =>
               telemetry: Schema.optional(TelemetryBatch),
               executorRevision: Schema.optional(Schema.Int),
               cacheChanged: Schema.optional(Schema.Boolean),
+              timing: Schema.optional(InvocationTiming),
+              dispatch: Schema.optional(DispatchTiming),
+              runner: Schema.optional(IsolateTiming),
+              supervisor: Schema.optional(IsolateTiming),
             }),
           )(body).pipe(Effect.result);
+          // Each isolate reports its own part on its own clock; see tool-call-overhead.ts.
+          if (
+            Result.isSuccess(collected) &&
+            collected.success.timing !== undefined &&
+            collected.success.dispatch !== undefined &&
+            collected.success.runner !== undefined &&
+            invoked !== undefined
+          ) {
+            const { timing, dispatch, runner, supervisor } = collected.success;
+            parts = runtimeCallParts(
+              Number(invoked[1] - invoked[0]) / 1_000_000,
+              runner,
+              supervisor,
+              dispatch,
+              timing,
+            );
+            yield* Effect.annotateCurrentSpan({
+              "executor.runner.own_ms": runner.elapsedMs - runner.waitMs,
+              "executor.runner.wait_ms": runner.waitMs,
+              "executor.runner.gap_ms": parts.gaps.runner,
+              // The runner ran inside the app's data supervisor, which the caller reached directly.
+              ...(runner.host === undefined ? {} : { "executor.runner.host": runner.host }),
+              ...(supervisor === undefined
+                ? {}
+                : {
+                    "executor.supervisor.own_ms": supervisor.elapsedMs - supervisor.waitMs,
+                    "executor.supervisor.wait_ms": supervisor.waitMs,
+                    "executor.supervisor.gap_ms": parts.gaps.supervisor ?? 0,
+                  }),
+              "executor.app.elapsed_ms": dispatch.elapsedMs,
+              "executor.app.own_ms": parts.appOwnMs,
+              "executor.app.gap_ms": parts.gaps.app,
+              "executor.upstream.wait_ms": parts.upstreamMs,
+              "executor.elicitation.wait_ms": parts.elicitationMs,
+              "executor.authored_ms": parts.authoredMs,
+              "executor.lease.wait_ms": parts.leaseMs,
+              "executor.background_ms": parts.backgroundMs,
+              "executor.start_ms": parts.startMs,
+              "executor.unclocked_ms": parts.unclockedMs,
+              ...(parts.started === undefined
+                ? {}
+                : {
+                    "executor.runtime.cold": parts.cold === true,
+                    "executor.runtime.started": parts.started.join(","),
+                  }),
+              ...(parts.staleClocks.length === 0
+                ? {}
+                : {
+                    "executor.clock.stale": true,
+                    "executor.clock.stale_between": parts.staleClocks.join(","),
+                  }),
+            });
+          }
           if (Result.isFailure(collected)) yield* Effect.logWarning("Invalid app telemetry batch");
           if (Result.isSuccess(collected) && collected.success.telemetry !== undefined) {
             if (input.recordAnalytics !== undefined)
@@ -200,7 +280,10 @@ export const appRuntime = (host: AppRuntimeHost) =>
                 .pipe(Effect.catchCause(() => Effect.void));
             const span = yield* Effect.currentSpan.pipe(Effect.option);
             if (Option.isSome(span))
-              yield* forward(collected.success.telemetry, span.value.traceId, build);
+              yield* forward(collected.success.telemetry, span.value.traceId, {
+                build,
+                app: input.app,
+              });
           }
           if (Result.isSuccess(collected) && collected.success.cacheChanged === true)
             yield* (yield* AppCacheChanges).changed(input.app);
@@ -219,6 +302,19 @@ export const appRuntime = (host: AppRuntimeHost) =>
             });
           }
           const value = yield* Schema.decodeUnknownEffect(output)(reply.value);
+          // Only a successful invocation's events are kept; its writes have committed.
+          if (reply.events !== undefined && reply.events.length > 0)
+            yield* (yield* AppEventSink).emitted({
+              app: input.app,
+              accounts: [
+                ...new Set(
+                  scopedSlots(Redacted.value(input.accounts)).flatMap(([, selected]) =>
+                    (Array.isArray(selected) ? selected : [selected]).map((account) => account.id),
+                  ),
+                ),
+              ],
+              events: reply.events,
+            });
           const revision = Result.isSuccess(collected)
             ? collected.success.executorRevision
             : undefined;
@@ -227,10 +323,20 @@ export const appRuntime = (host: AppRuntimeHost) =>
           return value;
         }),
       ).pipe(
+        Effect.onExit(() =>
+          Effect.gen(function* () {
+            const report = yield* RuntimeCallTimings;
+            report?.({
+              ...(invoked === undefined ? {} : { invoked }),
+              ...(parts === undefined ? {} : { parts }),
+            });
+          }),
+        ),
         Effect.catchTag("SchemaError", () =>
           Effect.fail(new RuntimeProtocolFailed({ reason: "invalid-reply" })),
         ),
       );
+    };
     const span = (operation: string) => `${host.name}.${operation}`;
     return {
       build: (input) => host.build(input).pipe(Effect.withSpan(span("build"))),
@@ -294,7 +400,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
         ).pipe(Effect.withSpan(span("checkAccount"))),
       migrate: (input) =>
         dispatch(
-          { ...input, database: true, accounts: Redacted.make({}) },
+          { ...input, database: true, accounts: Redacted.make({ app: {} }) },
           { operation: "migrate" },
           MigrateResult,
           HostCallError,

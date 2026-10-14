@@ -8,6 +8,7 @@ import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { scenarios } from "../test-plan.ts";
 
 const jobs = [
   "local",
@@ -15,17 +16,38 @@ const jobs = [
   "self-host-inventory",
   "self-host-catalog",
   "cloud",
+  "cloud-product",
+  "cloud-domains",
   "cloud-workers",
   "cloud-locks",
+  "cloud-batch",
+  "cloud-autumn",
   "cloud-isolate",
+  "cloud-rate-limit",
+  "cloud-rollback",
+  "cloud-oauth-proxy-preview",
 ];
+/** The outputs that start the E2E runners: each sharded job's parts and the Cloud runners. */
+const runnerOutputs = ["local-shards", "self-host-shards", "cloud-runners"];
+const cloudJobs = jobs.filter((job) => job.startsWith("cloud"));
+
+/** A sharded job's matrix entries: each part's name, such as 2/3, and its pattern. */
+const shards = (outputs: Readonly<Record<string, string>>, job: string) =>
+  JSON.parse(outputs[`${job}-shards`]!) as ReadonlyArray<{ shard: string; pattern: string }>;
+
+/** The Cloud runners' matrix entries: a name and every Cloud job's pattern, empty when not its own. */
+const cloudRunners = (outputs: Readonly<Record<string, string>>) =>
+  outputs["cloud-runners"] === ""
+    ? []
+    : (JSON.parse(outputs["cloud-runners"]!) as ReadonlyArray<Readonly<Record<string, string>>>);
 
 const block = (...lines: ReadonlyArray<string>) =>
   ["Description.", "", "```e2e", ...lines, "```", ""].join("\n");
 
 /**
- * A `gh` that answers the select job's three reads from files beside it: the description
- * (`body.<n>`), the open pull requests based on the branch (`above.<n>`) and the changed files.
+ * A `gh` that answers the select job's reads from files beside it: the description (`body.<n>`),
+ * the open pull requests based on the branch (`above.<n>`), the changed files and main's contents
+ * (`main/<path with / as _>`).
  * The nth read of a kind returns its nth answer, and the last answer once they run out, so a case
  * can edit the description while the job waits.
  */
@@ -34,6 +56,7 @@ dir=$(dirname "$0")
 case "$*" in
   "pr list "*) kind=above ;;
   *"/files "*) cat "$dir/files"; exit ;;
+  *"/contents/"*) exec cat "$dir/main/$(echo "$*" | sed 's|.*/contents/||; s|[?].*||' | tr / _)" ;;
   *) kind=body ;;
 esac
 read=$(cat "$dir/$kind.reads" 2>/dev/null || echo 0)
@@ -46,11 +69,13 @@ cat "$dir/$kind.$read"
  * One select run: a pull request run when `body` is given, otherwise a push to main. A list of
  * bodies, or of `stackedAbove` answers, is what successive reads return. The job waits `wait`
  * seconds, none by default, for an incomplete description. It runs the checkout's selector unless
- * `root` names a fixture tree.
+ * `root` names a fixture tree. `main` answers the reads of main's contents by repository path;
+ * without it the job has no default branch and compares nothing with main.
  */
 const select = (input: {
   readonly body?: string | ReadonlyArray<string>;
   readonly changed?: ReadonlyArray<string>;
+  readonly main?: Readonly<Record<string, string>>;
   readonly stackedAbove?: string | ReadonlyArray<string>;
   readonly wait?: number;
   readonly root?: string;
@@ -77,6 +102,9 @@ const select = (input: {
     yield* answers("body", input.body ?? "");
     yield* answers("above", input.stackedAbove ?? "");
     yield* fs.writeFileString(path.join(bin, "files"), (input.changed ?? []).join("\n"));
+    yield* fs.makeDirectory(path.join(bin, "main"));
+    for (const [file, text] of Object.entries(input.main ?? {}))
+      yield* fs.writeFileString(path.join(bin, "main", file.replaceAll("/", "_")), text);
     const child = yield* processes.spawn(
       ChildProcess.make("node", ["e2e/ci-selection.ts"], {
         cwd: input.root,
@@ -84,6 +112,7 @@ const select = (input: {
           PATH: `${bin}:${process.env.PATH ?? ""}`,
           E2E_PULL_REQUEST: input.body === undefined ? "" : "1",
           E2E_HEAD_REF: "layer",
+          E2E_DEFAULT_BRANCH: input.main === undefined ? "" : "main",
           E2E_DESCRIPTION_WAIT_SECONDS: String(input.wait ?? 0),
           E2E_DESCRIPTION_POLL_SECONDS: "0.05",
           GITHUB_REPOSITORY: "owner/repository",
@@ -137,6 +166,135 @@ const fixture = (files: Readonly<Record<string, string>> = {}) =>
     return root;
   });
 
+/**
+ * A saved run's report: each scenario on a target, with how it ended. `files` keeps only some spec
+ * files, as one part of a sharded job saves.
+ */
+interface SavedRun {
+  readonly target: "local" | "self-host" | "cloud";
+  readonly status?: (title: string) => string;
+  readonly files?: (file: string) => boolean;
+}
+
+/**
+ * `node e2e/ci-selection.ts verify <suite>` over runs saved as the E2E jobs save them, each with
+ * every scenario the plan schedules on its target. `status` says how one ended; passed by default.
+ */
+const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-ci-coverage-" });
+    for (const [index, run] of saved.entries()) {
+      const files = new Map<string, Array<{ title: string; status: string }>>();
+      for (const scenario of Object.values(scenarios))
+        if (
+          scenario.targets[run.target].status === "scheduled" &&
+          (run.files?.(scenario.file) ?? true)
+        )
+          files.set(scenario.file, [
+            ...(files.get(scenario.file) ?? []),
+            { title: scenario.title, status: run.status?.(scenario.title) ?? "passed" },
+          ]);
+      const report = path.join(
+        directory,
+        `artifact-${index}`,
+        `run-${index}`,
+        run.target,
+        "report",
+        "diagnostics",
+      );
+      yield* fs.makeDirectory(report, { recursive: true });
+      yield* fs.writeFileString(
+        path.join(report, "results.json"),
+        JSON.stringify({
+          testResults: [...files].map(([file, assertionResults]) => ({
+            name: `/runner/work/e2e/tests/${file}`,
+            assertionResults,
+          })),
+        }),
+      );
+    }
+    const child = yield* processes.spawn(
+      ChildProcess.make("node", ["e2e/ci-selection.ts", "verify", suite, directory], {
+        env: { GITHUB_STEP_SUMMARY: "" },
+        extendEnv: true,
+      }),
+    );
+    const [log, exitCode] = yield* Effect.all(
+      [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+      { concurrency: "unbounded" },
+    );
+    return { exitCode, log };
+  }).pipe(Effect.scoped);
+
+/**
+ * A job of .github/workflows/checks.yml, read from its text: its `if`, its `needs` and its first
+ * step's `run` script. The workflow is plain block YAML, so a job is the lines indented under it.
+ */
+const workflowJob = (name: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const lines = (yield* fs.readFileString(".github/workflows/checks.yml")).split("\n");
+    const start = lines.indexOf(`  ${name}:`);
+    expect(start, name).toBeGreaterThan(-1);
+    const end = lines.findIndex((line, index) => index > start && /^ {0,2}\S/.test(line));
+    const body = lines.slice(start + 1, end === -1 ? undefined : end);
+    const field = (key: string) =>
+      body.find((line) => line.startsWith(`    ${key}: `))?.slice(`    ${key}: `.length);
+    const run = body.findIndex((line) => line === "        run: |");
+    const script = body
+      .slice(run + 1)
+      .filter((line, index, rest) => rest.slice(0, index + 1).every((l) => /^ {10}|^$/.test(l)))
+      .map((line) => line.slice(10))
+      .join("\n");
+    return { if: field("if"), needs: field("needs"), script: run === -1 ? undefined : script };
+  });
+
+/** The select outputs that start each E2E job, as its `if` in checks.yml reads them. */
+const startedBy = {
+  "e2e-local": ["local-shards"],
+  "e2e-self-host": ["self-host-shards"],
+  "e2e-self-host-scale": ["self-host-inventory", "self-host-catalog"],
+  "e2e-cloud": ["cloud-runners"],
+} as const;
+type E2eJob = keyof typeof startedBy;
+const e2eJobs = Object.keys(startedBy) as ReadonlyArray<E2eJob>;
+
+/** Whether select's outputs start an E2E job. */
+const chosen = (outputs: Readonly<Record<string, string>>, job: E2eJob) =>
+  startedBy[job].some((name) => (outputs[name] ?? "") !== "");
+
+/**
+ * The `e2e` check's script, run as its step runs it, with `needs` as GitHub gives it: each job's
+ * result, and select's outputs. `results` says how each E2E job ended.
+ */
+const gate = (
+  select: { readonly result: string; readonly outputs: Readonly<Record<string, string>> },
+  results: Readonly<Record<E2eJob, string>>,
+) =>
+  Effect.gen(function* () {
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const { script } = yield* workflowJob("e2e");
+    expect(script).toBeDefined();
+    const needs = {
+      select,
+      ...Object.fromEntries(e2eJobs.map((job) => [job, { result: results[job], outputs: {} }])),
+    };
+    const child = yield* processes.spawn(
+      ChildProcess.make("bash", ["-e", "-c", script!], {
+        env: { NEEDS: JSON.stringify(needs) },
+        extendEnv: true,
+      }),
+    );
+    const [log, exitCode] = yield* Effect.all(
+      [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+      { concurrency: "unbounded" },
+    );
+    return { exitCode, log };
+  }).pipe(Effect.scoped);
+
 /** This suite's own config, rewritten only in a fixture tree. */
 const ownConfig = "e2e/ci-selection.config.ts";
 
@@ -145,10 +303,113 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
     Effect.gen(function* () {
       const run = yield* select({});
       expect(run.exitCode).toBe(0);
-      expect(Object.keys(run.outputs).sort()).toEqual([...jobs].sort());
-      for (const job of jobs) expect(run.outputs[job], job).not.toBe("");
+      expect(Object.keys(run.outputs).sort()).toEqual([...jobs, ...runnerOutputs, "full"].sort());
+      for (const job of [...jobs, ...runnerOutputs]) expect(run.outputs[job], job).not.toBe("");
+      expect(run.outputs.full).toBe("true");
       expect(run.summary).toContain("Full suite: this run is not for a pull request.");
     }),
+  );
+
+  it.effect(
+    "a full run splits local and self-host by spec file and spreads Cloud over three runners",
+    () =>
+      Effect.gen(function* () {
+        const [main, all, named] = yield* Effect.all(
+          [
+            select({}),
+            select({ body: block("all: changes the lockfile") }),
+            select({
+              body: block("groups.spec.ts", "cloud-onboarding.spec.ts", "auth-cleanup.spec.ts"),
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        for (const run of [main, all]) {
+          expect(run.exitCode, run.log).toBe(0);
+          for (const [job, target, names] of [
+            ["local", "local", ["1/2", "2/2"]],
+            ["self-host", "self-host", ["1/3", "2/3", "3/3"]],
+          ] as const) {
+            const parts = shards(run.outputs, job);
+            expect(parts.map(({ shard }) => shard)).toEqual(names);
+            // The parts run every scenario the job's full pattern runs, each once, and keep each
+            // spec file's scenarios together.
+            const full = new RegExp(run.outputs[job]!);
+            const partOf = new Map<string, number>();
+            let count = 0;
+            for (const scenario of Object.values(scenarios)) {
+              if (scenario.targets[target].status !== "scheduled") continue;
+              const matched = parts.flatMap(({ pattern }, index) =>
+                new RegExp(pattern).test(scenario.title) ? [index] : [],
+              );
+              expect(matched.length, scenario.title).toBe(full.test(scenario.title) ? 1 : 0);
+              if (matched.length === 0) continue;
+              count++;
+              expect(partOf.get(scenario.file) ?? matched[0], scenario.file).toBe(matched[0]);
+              partOf.set(scenario.file, matched[0]!);
+            }
+            expect(run.summary).toContain(
+              `| ${job} | ${count} | ${names.length}, split by spec file |`,
+            );
+          }
+          const runners = cloudRunners(run.outputs);
+          expect(runners.map(({ name }) => name)).toEqual([
+            "cloud, cloud-autumn, cloud-isolate",
+            "cloud-workers, cloud-locks, cloud-batch, cloud-rollback",
+            "cloud-product, cloud-domains, cloud-rate-limit, cloud-oauth-proxy-preview",
+          ]);
+          // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
+          // runs it unchanged, except cloud-product past what one local Cloud holds: its local
+          // Clouds together run exactly the scenarios its pattern does, each once, and keep each
+          // spec file's scenarios on one.
+          for (const job of cloudJobs) {
+            const values = runners.map((runner) => runner[job]);
+            expect(
+              values.filter((value) => value === ""),
+              job,
+            ).toHaveLength(runners.length - 1);
+            const value = values.find((value) => value !== "");
+            if (value === run.outputs[job]) continue;
+            expect(job).toBe("cloud-product");
+            const parts = (value ?? "").split("\n");
+            const full = new RegExp(run.outputs[job]!);
+            const partOf = new Map<string, number>();
+            let count = 0;
+            for (const scenario of Object.values(scenarios)) {
+              const cloud = scenario.targets.cloud;
+              if (cloud.status !== "scheduled") continue;
+              if ("runtime" in cloud && cloud.runtime !== "managed") continue;
+              const matched = parts.flatMap((pattern, index) =>
+                new RegExp(pattern).test(scenario.title) ? [index] : [],
+              );
+              expect(matched.length, scenario.title).toBe(full.test(scenario.title) ? 1 : 0);
+              if (matched.length === 0) continue;
+              count++;
+              expect(partOf.get(scenario.file) ?? matched[0], scenario.file).toBe(matched[0]);
+              partOf.set(scenario.file, matched[0]!);
+            }
+            expect(count).toBeGreaterThan(30);
+            expect(parts).toHaveLength(Math.ceil(count / 30));
+          }
+        }
+        expect(main.summary).toMatch(
+          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-batch, cloud-rollback\) \|/,
+        );
+
+        // A selection runs each job on one runner, and starts only the Cloud runners it needs.
+        expect(named.exitCode, named.log).toBe(0);
+        expect(shards(named.outputs, "self-host")).toEqual([
+          { shard: "1/1", pattern: named.outputs["self-host"] },
+        ]);
+        const runners = cloudRunners(named.outputs);
+        expect(runners.map(({ name }) => name)).toEqual(["cloud", "cloud-locks"]);
+        expect(runners[0]!.cloud).toBe(named.outputs.cloud);
+        expect(runners[1]!["cloud-locks"]).toBe(named.outputs["cloud-locks"]);
+        for (const job of cloudJobs.filter((job) => job !== "cloud" && job !== "cloud-locks")) {
+          expect(named.outputs[job], job).toBe("");
+          for (const runner of runners) expect(runner[job], job).toBe("");
+        }
+      }),
   );
 
   it.effect("a named spec file selects its scenarios, with or without the e2e/tests/ prefix", () =>
@@ -163,6 +424,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(bare.exitCode).toBe(0);
       expect(bare.outputs["self-host"]).toMatch(/^\^\(\?:/);
       expect(bare.outputs.cloud).toBe("");
+      expect(shards(bare.outputs, "self-host")).toEqual([
+        { shard: "1/1", pattern: bare.outputs["self-host"] },
+      ]);
+      expect(bare.outputs["cloud-runners"]).toBe("");
       expect(prefixed.outputs).toEqual(bare.outputs);
     }),
   );
@@ -243,6 +508,301 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "- billing.spec.ts runs only by hand, with e2e/billing.config.ts",
       );
     }),
+  );
+
+  it.effect("a changed scenario only deployed Cloud runs runs in cloud-product when it can", () =>
+    Effect.gen(function* () {
+      const [links, compiler, all] = yield* Effect.all(
+        [
+          select({ body: block("none"), changed: ["e2e/tests/deployment-links.spec.ts"] }),
+          select({ body: block("none"), changed: ["e2e/tests/cloud-compiler.spec.ts"] }),
+          select({
+            body: block("all: changes the lockfile"),
+            changed: ["e2e/tests/deployment-links.spec.ts"],
+          }),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(links.exitCode, links.log).toBe(0);
+      expect(links.outputs["cloud-product"]).toBe(
+        "^(?:Cloud product links follow the deployment origin)$",
+      );
+      expect(links.outputs.cloud).toBe("");
+      expect(links.summary).toContain("Spec files: deployment-links.spec.ts\n");
+      expect(links.summary).toContain(
+        "- deployment-links.spec.ts: Cloud product links follow the deployment origin",
+      );
+      expect(links.summary).not.toContain("Changed spec files these jobs do not run");
+      expect(links.log).not.toContain("::warning");
+
+      // Three of its scenarios need a deployed stage, and one runs on no CI path at all.
+      expect(compiler.exitCode, compiler.log).toBe(0);
+      expect(compiler.outputs["cloud-product"]).toContain(
+        "Cloud compiler installs imported packages",
+      );
+      // This one is in the cloud job's own pattern.
+      expect(compiler.outputs.cloud).toContain("Cloud deploys fail promptly");
+      for (const job of ["cloud", "cloud-product"]) {
+        expect(compiler.outputs[job]).not.toContain("Concurrent Cloud deploys");
+        expect(compiler.outputs[job]).not.toContain("Cloud catalog installs Axiom");
+        expect(compiler.outputs[job]).not.toContain("memory failures");
+      }
+      for (const title of [
+        "Cloud catalog installs Axiom through the browser and reaches account setup",
+        "Concurrent Cloud deploys that install npm packages all compile",
+        "Cloud builds keep large UI files out of the server bundle",
+      ]) {
+        expect(compiler.log).toContain(
+          `::warning title=Runs only on deployed Cloud after merge::cloud-compiler.spec.ts: "${title}" changed`,
+        );
+        expect(compiler.summary).toContain(`- cloud-compiler.spec.ts: ${title}`);
+      }
+      expect(compiler.summary).toContain(
+        "bun run e2e:deployed --test-name '^(?:Cloud catalog installs Axiom through the browser and reaches account setup|Concurrent Cloud deploys that install npm packages all compile|Cloud builds keep large UI files out of the server bundle)$'",
+      );
+      expect(compiler.log).not.toContain('"Cloud compiler memory failures');
+
+      // The full suite keeps the job's own pattern and adds the changed scenario.
+      expect(all.exitCode, all.log).toBe(0);
+      expect(all.outputs["cloud-product"]).toMatch(
+        /^Cloud SSO SAML accepts\|.*\|\^\(\?:Cloud product links follow the deployment origin\)\$$/,
+      );
+      expect(all.outputs.cloud).not.toContain("Cloud product links");
+    }),
+  );
+
+  it.effect(
+    "changed scenarios past what one local Cloud holds run in cloud-product on local Clouds of their own, split by spec file",
+    () =>
+      Effect.gen(function* () {
+        // Each file's scenarios otherwise run only on deployed Cloud after merge.
+        const files = [
+          "app-ui.spec.ts",
+          "workflows.spec.ts",
+          "webhook-source-handover.spec.ts",
+          "mcp-execute-failures.spec.ts",
+          "hosted-app-accounts.spec.ts",
+          "hosted-account-scheduling.spec.ts",
+          "app-account-links.spec.ts",
+          "pat-mcp.spec.ts",
+          "hosted-schedule-browser.spec.ts",
+          "mcp-connections.spec.ts",
+          "mcp-server.spec.ts",
+          "hosted-shared.spec.ts",
+          "credential-hosts.spec.ts",
+        ];
+        const run = yield* select({
+          body: block("none"),
+          changed: files.map((file) => `e2e/tests/${file}`),
+        });
+        expect(run.exitCode, run.log).toBe(0);
+        /** The titles an exact pattern of the selector's matches. */
+        const titlesOf = (pattern: string) => {
+          expect(pattern).toMatch(/^\^\(\?:.*\)\$$/);
+          return pattern
+            .slice(4, -2)
+            .split(/(?<!\\)\|/)
+            .map((title) => title.replace(/\\(.)/g, "$1"));
+        };
+        const selected = titlesOf(run.outputs["cloud-product"]!);
+        // More than one local Cloud holds, so the case is not vacuous.
+        expect(selected.length).toBeGreaterThan(30);
+        const fileOf = new Map(Object.values(scenarios).map((s) => [s.title, s.file]));
+        const runner = cloudRunners(run.outputs).find((entry) => entry["cloud-product"] !== "");
+        const parts = runner!["cloud-product"]!.split("\n").map(titlesOf);
+        expect(parts).toHaveLength(Math.ceil(selected.length / 30));
+        // Every selected scenario runs once, and a spec file's scenarios share one local Cloud.
+        expect(parts.flat().sort()).toEqual([...selected].sort());
+        const partOfFile = new Map<string, number>();
+        parts.forEach((part, index) => {
+          for (const title of part) {
+            const file = fileOf.get(title)!;
+            expect(partOfFile.get(file) ?? index, file).toBe(index);
+            partOfFile.set(file, index);
+          }
+        });
+        expect(run.summary).toContain(
+          `| cloud-product | ${selected.length} | e2e-cloud (cloud-product), ${parts.length} local Clouds split by spec file |`,
+        );
+      }),
+  );
+
+  it.effect("naming a spec file only deployed Cloud runs says where it runs", () =>
+    Effect.gen(function* () {
+      const run = yield* select({ body: block("deployment-links.spec.ts") });
+      expect(run.exitCode).toBe(1);
+      expect(run.log).toContain(
+        "- deployment-links.spec.ts: only Cloud tests on main runs its scenarios, on a deployed stage after merge.",
+      );
+    }),
+  );
+
+  it.effect("naming a changed spec file only deployed Cloud runs selects its scenarios", () =>
+    Effect.gen(function* () {
+      const [changed, other] = yield* Effect.all(
+        [
+          select({
+            body: block("deployment-links.spec.ts"),
+            changed: ["e2e/tests/deployment-links.spec.ts"],
+          }),
+          // Another changed deployed-only file does not let an unchanged one be named.
+          select({
+            body: block("deployment-links.spec.ts"),
+            changed: ["e2e/tests/cloud-compiler.spec.ts"],
+          }),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(changed.exitCode, changed.log).toBe(0);
+      expect(changed.outputs["cloud-product"]).toBe(
+        "^(?:Cloud product links follow the deployment origin)$",
+      );
+      expect(changed.summary).toContain("Spec files: deployment-links.spec.ts\n");
+      expect(other.exitCode).toBe(1);
+      expect(other.log).toContain(
+        "- deployment-links.spec.ts: only Cloud tests on main runs its scenarios, on a deployed stage after merge.",
+      );
+      expect(other.outputs).toEqual({});
+    }),
+  );
+
+  it.effect("a scheduled scenario no CI job runs fails every run except a skipped layer", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const deadline = "Cloud deploys fail promptly when the compiler does not answer";
+      const renamed = "Cloud deploys stop when the compiler is silent";
+      const root = yield* fixture({
+        "e2e/test-plan.ts": (yield* fs.readFileString("e2e/test-plan.ts")).replace(
+          `"${deadline}"`,
+          `"${renamed}"`,
+        ),
+      });
+      const [main, named, skip] = yield* Effect.all(
+        [
+          select({ root }),
+          select({ body: block("groups.spec.ts"), root }),
+          select({ body: block("skip"), stackedAbove: "123", root }),
+        ],
+        { concurrency: "unbounded" },
+      );
+      for (const run of [main, named]) {
+        expect(run.exitCode, run.log).toBe(1);
+        expect(run.log).toContain(
+          `- scenarios.cloudCompilerDeadline (cloud-compiler.spec.ts) on cloud: "${renamed}" is scheduled, but no CI job runs it.`,
+        );
+        expect(run.log).toContain("add it to notRunInCi in e2e/ci-selection.ts with why");
+        expect(run.outputs).toEqual({});
+      }
+      expect(skip.exitCode, skip.log).toBe(0);
+      expect(skip.outputs).toEqual({ skip: "true" });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("an exception no longer needed fails until it is removed", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      // The self-host job stops excluding the Claude Code scenario, which needs a model API key.
+      const selection = (yield* fs.readFileString("e2e/ci-selection.ts")).replace(
+        "pattern: `^(?!.*(?:${claude}|",
+        "pattern: `^(?!.*(?:",
+      );
+      const root = yield* fixture({ "e2e/ci-selection.ts": selection });
+      const run = yield* select({ root });
+      expect(run.exitCode, run.log).toBe(1);
+      expect(run.log).toContain(
+        "- scenarios.mcp (claude-mcp.spec.ts) on self-host is in notRunInCi, but the self-host job runs it.",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "an effect version or patch that differs from main runs the session object timing",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const protocols = "packages/sdk/src/implementation/app-protocols.ts";
+        const names = yield* fs.readDirectory("patches");
+        const [current = "", ...blobs] = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            protocols,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        // Main as this checkout, except for the blob ID it lists for effect's patch.
+        const patches = names
+          .map(
+            (name, index) =>
+              `${name.startsWith("effect@") ? "0".repeat(40) : blobs[index]} ${name}`,
+          )
+          .join("\n");
+        const run = yield* select({
+          body: block("none"),
+          main: {
+            "package.json": yield* fs.readFileString("package.json"),
+            patches,
+            "packages/sdk/src/implementation": `${current} ${protocols}\n`,
+          },
+        });
+        expect(run.exitCode, run.log).toBe(0);
+        expect(run.summary).not.toContain("A guarded file differs");
+        expect(run.summary).toContain(
+          "A dependency patch differs from main, so its guards run: mcp-telemetry-privacy.spec.ts, mcp-protocol-versions.spec.ts, cloud-mcp-session-timing.spec.ts",
+        );
+        expect(run.outputs["cloud-isolate"]).toContain("Cloud MCP session objects report");
+      }),
+  );
+
+  it.effect(
+    "a guarded file that differs from main runs its scenarios, whatever the block says",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const protocols = "packages/sdk/src/implementation/app-protocols.ts";
+        const names = yield* fs.readDirectory("patches");
+        // Git's own blob IDs for the working tree, as the contents API lists main's.
+        const [current = "", ...patchBlobs] = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            protocols,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        const patches = names.map((name, index) => `${patchBlobs[index]} ${name}`);
+        const manifest = yield* fs.readFileString("package.json");
+        // Main as this checkout, except for the blob ID it lists for the host's protocols.
+        const main = (protocolsBlob: string) => ({
+          "package.json": manifest,
+          patches: patches.join("\n"),
+          "packages/sdk/src/implementation": `${protocolsBlob} ${protocols}\n`,
+        });
+        const [same, changed] = yield* Effect.all(
+          [
+            select({ body: block("none"), main: main(current) }),
+            select({ body: block("none"), main: main("0".repeat(40)) }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(same.exitCode, same.log).toBe(0);
+        expect(same.summary).toContain("No E2E scenarios");
+        expect(same.summary).not.toContain("guards run");
+        expect(changed.exitCode, changed.log).toBe(0);
+        expect(changed.summary).toContain(
+          "Spec files: app-older-protocols.spec.ts, app-package.spec.ts\n",
+        );
+        expect(changed.summary).toContain(
+          "A guarded file differs from main, so its guards run: app-package.spec.ts, app-older-protocols.spec.ts",
+        );
+        expect(changed.outputs["self-host"]).toContain(
+          "App builds retain their selected npm framework across rebuilds",
+        );
+      }),
   );
 
   it.effect("a changed spec file that no plan or config includes fails", () =>
@@ -359,9 +919,11 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         { concurrency: 4 },
       );
       expect(none.exitCode).toBe(0);
-      for (const job of jobs) expect(none.outputs[job], job).toBe("");
+      for (const job of [...jobs, ...runnerOutputs]) expect(none.outputs[job], job).toBe("");
+      expect(none.outputs.full).toBe("false");
       expect(all.exitCode).toBe(0);
-      for (const job of jobs) expect(all.outputs[job], job).not.toBe("");
+      for (const job of [...jobs, ...runnerOutputs]) expect(all.outputs[job], job).not.toBe("");
+      expect(all.outputs.full).toBe("true");
       expect(all.summary).toContain("Full suite: changes the lockfile");
       expect(bareAll.exitCode).toBe(1);
       expect(skip.exitCode).toBe(0);
@@ -450,5 +1012,208 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(loneSkip.log).toContain("no open pull request builds on this branch");
       expect(loneSkip.log).toContain("gh run rerun 123456.");
     }),
+  );
+  it.effect("a full run passes when every scheduled scenario ran, passed or failed", () =>
+    Effect.gen(function* () {
+      const failed = "Cloud onboarding";
+      const [ci, deployed] = yield* Effect.all(
+        [
+          verify("ci", [
+            { target: "local" },
+            { target: "self-host" },
+            {
+              target: "cloud",
+              status: (title) => (title.startsWith(failed) ? "failed" : "passed"),
+            },
+          ]),
+          verify("deployed", [{ target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(ci.exitCode, ci.log).toBe(0);
+      expect(ci.log).toMatch(
+        /Every one of the \d+ scenario runs the jobs here schedule executed\./,
+      );
+      expect(deployed.exitCode, deployed.log).toBe(0);
+      expect(deployed.log).toMatch(/Every one of the \d+ scenario runs Cloud tests on main/);
+    }),
+  );
+
+  it.effect("a sharded job's parts count together, and a missing part fails the full run", () =>
+    Effect.gen(function* () {
+      // Three parts by spec file, as e2e-self-host's runners save them.
+      const part = (index: number) => (file: string) =>
+        [...file].reduce((sum, character) => sum + character.charCodeAt(0), 0) % 3 === index;
+      const parts = [0, 1, 2].map((index) => ({
+        target: "self-host" as const,
+        files: part(index),
+      }));
+      const [complete, missing] = yield* Effect.all(
+        [
+          verify("ci", [{ target: "local" }, ...parts, { target: "cloud" }]),
+          verify("ci", [{ target: "local" }, ...parts.slice(0, 2), { target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(complete.exitCode, complete.log).toBe(0);
+      expect(missing.exitCode, missing.log).toBe(1);
+      expect(missing.log).toMatch(
+        /- the self-host job on self-host: \d+ of \d+ scenarios did not run/,
+      );
+      expect(missing.log).not.toContain("- the local job");
+      expect(missing.log).not.toMatch(/- the cloud[\w-]* job/);
+    }),
+  );
+
+  it.effect("a job, step or deployed run that saved no result fails the full run", () =>
+    Effect.gen(function* () {
+      const rateLimit =
+        /^Cloud (?:limits sign-in|counts two first requests|reports a Better Auth query the database failed|records a rate-limited OAuth token request)/;
+      const [noCloud, skippedStep, noDeployed, deployedOnLocal] = yield* Effect.all(
+        [
+          // The e2e-cloud job was skipped or disabled: it saved nothing.
+          verify("ci", [{ target: "local" }, { target: "self-host" }]),
+          // The rate-limit step's guard never held: its scenarios are only filtered out.
+          verify("ci", [
+            { target: "local" },
+            { target: "self-host" },
+            { target: "cloud", status: (title) => (rateLimit.test(title) ? "skipped" : "passed") },
+          ]),
+          verify("deployed", []),
+          verify("deployed", [{ target: "self-host" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      for (const run of [noCloud, skippedStep, noDeployed, deployedOnLocal]) {
+        expect(run.exitCode, run.log).toBe(1);
+        expect(run.log).toContain("A full run must execute every scheduled scenario");
+      }
+      for (const job of [
+        "cloud",
+        "cloud-product",
+        "cloud-domains",
+        "cloud-workers",
+        "cloud-locks",
+        "cloud-batch",
+        "cloud-autumn",
+        "cloud-isolate",
+        "cloud-rate-limit",
+        "cloud-rollback",
+        "cloud-oauth-proxy-preview",
+      ])
+        expect(noCloud.log).toMatch(
+          new RegExp(`- the ${job} job on cloud: (\\d+) of \\1 scenarios did not run`),
+        );
+      expect(noCloud.log).not.toContain("- the local job");
+      expect(noCloud.log).not.toContain("- the self-host job");
+      expect(skippedStep.log).toContain(
+        "- the cloud-rate-limit job on cloud: 4 of 4 scenarios did not run",
+      );
+      expect(skippedStep.log).not.toContain("- the cloud job");
+      for (const run of [noDeployed, deployedOnLocal])
+        expect(run.log).toMatch(
+          /- Cloud tests on main on cloud: (\d+) of \1 scenarios did not run/,
+        );
+    }),
+  );
+
+  it.effect("a report outside a directory named for its target fails", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-ci-coverage-" });
+      yield* fs.makeDirectory(path.join(directory, "run", "report", "diagnostics"), {
+        recursive: true,
+      });
+      yield* fs.writeFileString(
+        path.join(directory, "run", "report", "diagnostics", "results.json"),
+        JSON.stringify({ testResults: [] }),
+      );
+      const child = yield* processes.spawn(
+        ChildProcess.make("node", ["e2e/ci-selection.ts", "verify", "ci", directory]),
+      );
+      const [log, exitCode] = yield* Effect.all(
+        [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+        { concurrency: "unbounded" },
+      );
+      expect(exitCode).toBe(1);
+      expect(log).toContain("is not in a run directory named for its target");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("the e2e check runs after a cancellation and skips only for a skipped layer", () =>
+    Effect.gen(function* () {
+      // A check its condition skips counts as passed, so a condition that a cancellation can
+      // make false, such as !cancelled(), would pass a cancelled run.
+      const check = yield* workflowJob("e2e");
+      expect(check.if).toBe("${{ always() && needs.select.outputs.skip != 'true' }}");
+      expect(check.needs).toBe(`[select, ${e2eJobs.join(", ")}]`);
+      for (const job of e2eJobs)
+        expect((yield* workflowJob(job)).if, job).toBe(
+          startedBy[job].map((name) => `needs.select.outputs.${name} != ''`).join(" || "),
+        );
+    }),
+  );
+
+  it.effect(
+    "the e2e check passes only when select succeeded, each chosen job passed and the rest skipped",
+    () =>
+      Effect.gen(function* () {
+        const [main, named] = yield* Effect.all(
+          [select({}), select({ body: block("groups.spec.ts") })],
+          { concurrency: "unbounded" },
+        );
+        expect(named.exitCode, named.log).toBe(0);
+        const skippedJobs = e2eJobs.filter((job) => !chosen(named.outputs, job));
+        const namedJobs = e2eJobs.filter((job) => chosen(named.outputs, job));
+        expect(skippedJobs.length, named.log).toBeGreaterThan(0);
+        expect(namedJobs.length, named.log).toBeGreaterThan(0);
+        const ended = (
+          outputs: Readonly<Record<string, string>>,
+          change: Partial<Record<E2eJob, string>> = {},
+        ) =>
+          ({
+            ...Object.fromEntries(
+              e2eJobs.map((job) => [job, chosen(outputs, job) ? "success" : "skipped"]),
+            ),
+            ...change,
+          }) as Record<E2eJob, string>;
+        const succeeded = (outputs: Readonly<Record<string, string>>) => ({
+          result: "success",
+          outputs,
+        });
+
+        for (const run of [main, named]) {
+          const passed = yield* gate(succeeded(run.outputs), ended(run.outputs));
+          expect(passed.exitCode, passed.log).toBe(0);
+        }
+
+        const [job] = namedJobs;
+        const failing = yield* Effect.all(
+          [
+            // A chosen job that a failed or cancelled select left unstarted is skipped.
+            gate(succeeded(named.outputs), ended(named.outputs, { [job!]: "skipped" })),
+            gate(succeeded(named.outputs), ended(named.outputs, { [job!]: "cancelled" })),
+            gate(succeeded(named.outputs), ended(named.outputs, { [job!]: "failure" })),
+            gate(succeeded(main.outputs), ended(main.outputs, { "e2e-cloud": "cancelled" })),
+            // A cancelled or failed select gives no outputs, so every E2E job is skipped.
+            gate({ result: "cancelled", outputs: {} }, ended({})),
+            gate({ result: "failure", outputs: {} }, ended({})),
+          ],
+          { concurrency: "unbounded" },
+        );
+        for (const run of failing) expect(run.exitCode, run.log).toBe(1);
+        expect(failing[0]!.log).toContain(`::error::${job}: selected, but skipped`);
+        expect(failing[1]!.log).toContain(`::error::${job}: selected, but cancelled`);
+        expect(failing[2]!.log).toContain(`::error::${job}: selected, but failure`);
+        expect(failing[3]!.log).toContain("::error::e2e-cloud: selected, but cancelled");
+        expect(failing[4]!.log).toContain(
+          "::error::select: cancelled, so the E2E jobs did not run its selection",
+        );
+        expect(failing[5]!.log).toContain(
+          "::error::select: failure, so the E2E jobs did not run its selection",
+        );
+      }),
   );
 });

@@ -1,7 +1,8 @@
 import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
 import { executorSelfHostApiDocument } from "../contracts/api.ts";
-import { AppManagementHost } from "@executor-js/app-management";
-import { runStartupDataSteps } from "@executor-js/app-management/data-steps";
+import { AppGitOrigins, AppManagementHost } from "@executor-js/app-management";
+import { expireIdleAgentGrants, runStartupDataSteps } from "@executor-js/app-management/data-steps";
+import { SelfHostAuth, selfHostAuth } from "../auth.ts";
 /** Self-host SDK uses the same PGlite connection as Better Auth. */
 import type { HostEgress } from "@executor-js/utils/url-policy";
 import {
@@ -14,6 +15,8 @@ import {
   declarationConfig,
   hostedExecutorOrigin,
   remoteRegistry,
+  httpEventSender,
+  type DurableDeclarations,
   type Executor,
   type RepositoryBackend,
 } from "@executor-js/sdk/core";
@@ -25,12 +28,20 @@ import {
   makeOrganizationIcons,
   OrganizationDefaults,
   organizationDefaults,
+  noOrganizationRemovals,
   lazyHostedApiDocument,
+  authSettings,
   clientMetadataSetting,
+  firstPartyOAuthClients,
   hostedOAuthClientName,
+  withDeploySetupWake,
   withExecutorAnalytics,
+  executorDefaultRedeployed,
+  hostedAppCopies,
 } from "@executor-js/hosted-server";
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
+import { hostedEventAuthority } from "@executor-js/hosted-server/events";
+import { deliverEvents } from "@executor-js/sdk/scheduling";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
 import { workerdHostHandler } from "@executor-js/sdk/workerd";
@@ -45,6 +56,8 @@ export interface SelfHostPlatform {
   readonly repositories: RepositoryBackend;
   readonly runtime: AppRuntime;
   readonly workflows: WorkflowRuntime;
+  /** Evaluated results kept in each app's data supervisor. */
+  readonly declarations: DurableDeclarations;
 }
 
 /** Private callback surface for app workflows, exposed only through a service binding. */
@@ -61,18 +74,32 @@ export const selfHostExecutorServices = <E, R>(
   Layer.unwrap(
     Effect.gen(function* () {
       const key = yield* Config.Redacted("EXECUTOR_ENCRYPTION_KEY");
-      const origin = yield* Config.String("BETTER_AUTH_URL");
-      const clientMetadata = yield* clientMetadataSetting(origin);
+      const settings = yield* authSettings;
+      const origin = settings.url;
+      // A configured account callback is the one saved clients were keyed with.
+      const accountCallback = settings.oauthRedirectUri;
+      const clientMetadata = yield* clientMetadataSetting({
+        origin,
+        oauthRedirectUri: Option.getOrUndefined(accountCallback),
+      });
+      // Only E2E hosts add test client definitions; see `firstPartyOAuthClients`.
+      const firstPartyClients = yield* firstPartyOAuthClients({
+        testDefinitions:
+          (yield* Config.String("EXECUTOR_ENVIRONMENT").pipe(Config.withDefault(""))) === "e2e",
+      });
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       const evaluation = yield* declarationConfig;
       const server = yield* Scope.Scope;
       const ready = yield* Deferred.make<Executor>();
-      const { runtime, workflows, blobs, repositories } = yield* acquire(Deferred.await(ready));
+      const { runtime, workflows, declarations, blobs, repositories } = yield* acquire(
+        Deferred.await(ready),
+      );
       const registry = remoteRegistry(
         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
           Config.withDefault(hostedExecutorOrigin),
         ),
       );
+      const lifecycle = yield* hostedResourceLifecycle;
       const executor = yield* createExecutor({
         database: storage,
         secret: key,
@@ -82,23 +109,60 @@ export const selfHostExecutorServices = <E, R>(
         runtime,
         workflows,
         registry,
-        hooks: yield* hostedResourceLifecycle,
+        hooks: lifecycle.hooks,
         oauth: {
           httpClient: egress.client,
           clientName: hostedOAuthClientName,
           urlPolicy: egress.policy,
-          ...(Option.isSome(clientMetadata) ? { clientMetadataUrl: clientMetadata.value.url } : {}),
+          ...(Option.isSome(clientMetadata)
+            ? {
+                clientMetadataUrl: clientMetadata.value.url,
+                clientMetadataRedirectUri: clientMetadata.value.redirectUri,
+              }
+            : {}),
+          ...(Option.isSome(accountCallback)
+            ? { savedClientCallbacks: [accountCallback.value] }
+            : {}),
+          firstPartyClients,
         },
         cache: {
           memory: makeDeclarationCache(evaluation.limits),
+          // Kept in each app's supervisor too, so a restart does not evaluate every app again.
+          durable: declarations,
           toolListings: evaluation.toolListings,
         },
         // Stale declarations refresh on the server's own lifetime.
         background: (work) => Effect.forkIn(work, server).pipe(Effect.as(true)),
+        events: {
+          sender: httpEventSender(egress),
+          authorize: hostedEventAuthority(Effect.succeed(yield* SqlClient.SqlClient)),
+          allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
+        },
       }).pipe(Effect.provide(BrowserCrypto.layer));
+      yield* lifecycle.attach(executor);
       yield* Deferred.succeed(ready, executor);
+      yield* Effect.forkScoped(deliverEvents(executor));
       // The schema is current and nothing serves or builds yet; the caller holds the data lock.
-      yield* runStartupDataSteps({ executor, blobs }, "private_hosted");
+      const auth = yield* selfHostAuth;
+      yield* runStartupDataSteps(
+        {
+          executor,
+          blobs,
+          agentGrants: auth.agentGrants,
+          // Nothing reconciles webhook sources yet: the schedule worker starts after these steps,
+          // and its first pass reconciles the sources a redeploy left pending.
+          executorAppRedeployed: executorDefaultRedeployed(Effect.void),
+          appCopies: hostedAppCopies(executor),
+        },
+        "private_hosted",
+      );
+      // Once the idle grant step has applied, revoke grants that became idle since, daily.
+      yield* Effect.forkScoped(
+        expireIdleAgentGrants(auth.agentGrants, "private_hosted").pipe(
+          Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
+          Effect.repeat(Schedule.spaced("1 day")),
+        ),
+      );
       yield* Effect.forkScoped(
         executor[RepositoryHost].recover.pipe(
           Effect.catch(() => Effect.logWarning("App repository recovery failed")),
@@ -119,6 +183,9 @@ export const selfHostExecutorServices = <E, R>(
         false,
       );
       const scheduleAuthority = yield* makeScheduledAuthority(executor);
+      // Records and wakes setup only inside requests that carry this instance's analytics sink
+      // and schedule wake.
+      const hosted = withDeploySetupWake(withExecutorAnalytics(executor));
       const groupDatabase = yield* SqlClient.SqlClient;
       const workflowRequests = yield* workerdHostHandler({
         executor: Effect.succeed(executor),
@@ -126,20 +193,24 @@ export const selfHostExecutorServices = <E, R>(
       });
       return Layer.mergeAll(
         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
+        Layer.succeed(SelfHostAuth, auth),
         Layer.succeed(ScheduledAuthority, scheduleAuthority),
         Layer.succeed(GroupDatabase, Effect.succeed(groupDatabase)),
         Layer.succeed(OrganizationIcons, makeOrganizationIcons(blobs)),
+        // Self-host serves Git, like everything else, on its one origin.
+        Layer.succeed(AppGitOrigins, () => [new URL(origin).origin]),
         Layer.succeed(
           AppManagementHost,
           Effect.succeed({
-            executor: withExecutorAnalytics(executor),
+            executor: hosted,
             access: yield* hostedAppCapabilities,
           }),
         ),
-        // Records only inside requests that carry this instance's analytics sink.
-        Layer.succeed(HostedExecutor, Effect.succeed(withExecutorAnalytics(executor))),
+        Layer.succeed(HostedExecutor, Effect.succeed(hosted)),
         Layer.succeed(OrganizationDefaults, initialize),
         Layer.succeed(HostedAppRuntime, toEffectRuntime(runtime, blobs)),
+        // Self-host cannot remove an organization.
+        noOrganizationRemovals,
       );
     }),
   );

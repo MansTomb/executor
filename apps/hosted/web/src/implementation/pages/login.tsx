@@ -14,7 +14,9 @@ import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-t
 const callbackError = (error: unknown): string | null => {
   if (typeof error !== "string" || error === "") return null;
   if (error === "access_denied") return "Sign-in was canceled. You can try again.";
-  if (error === "account_not_linked" || error === "unable_to_link_account")
+  if (error === "account_not_linked")
+    return "An Executor account already uses this email. Sign in with the method you used before.";
+  if (error === "unable_to_link_account")
     return "This email is not linked to this sign-in method. Contact an administrator.";
   return "Sign-in could not be completed. Please try again.";
 };
@@ -89,7 +91,9 @@ export function LoginPage({
   title = "Sign in",
   cardFooter,
   footer,
+  chatGpt = false,
 }: LoginProps & {
+  readonly chatGpt?: boolean;
   readonly children?: ReactNode;
   readonly title?: string;
   readonly cardFooter?: ReactNode;
@@ -102,7 +106,7 @@ export function LoginPage({
   const signIn = useAtomSet(signInAtom, { mode: "promiseExit" });
   const state = useAtomValue(signInAtom);
   const [error, setError] = useState<string | null>(null);
-  const [provider, setProvider] = useState<"google" | "github" | null>(null);
+  const [provider, setProvider] = useState<"google" | "github" | "openai" | null>(null);
   const lastSession = AsyncResult.value(session);
   // Keep child form fields mounted during revalidation of a signed-out session.
   const signedOut = Option.isSome(lastSession) && lastSession.value === null;
@@ -123,7 +127,7 @@ export function LoginPage({
         <Spinner />
       </div>
     );
-  const start = async (provider: "google" | "github") => {
+  const start = async (provider: "google" | "github" | "openai") => {
     setError(null);
     setProvider(provider);
     const result = await signIn({ provider, redirect });
@@ -163,6 +167,20 @@ export function LoginPage({
             <GitHubIcon />
             Continue with GitHub
           </Button>
+          {chatGpt && (
+            <Button
+              variant="outline"
+              className="chatgpt-sign-in"
+              aria-label="Continue with ChatGPT"
+              disabled={state.waiting}
+              loading={state.waiting && provider === "openai"}
+              onClick={() => start("openai")}
+            >
+              <img src="/auth/chatgpt-black.svg" alt="" className="size-[21px] dark:hidden" />
+              <img src="/auth/chatgpt-white.svg" alt="" className="hidden size-[21px] dark:block" />
+              Continue with ChatGPT
+            </Button>
+          )}
         </div>
         {AsyncResult.isFailure(session) && (
           <div role="alert" className="space-y-3 text-sm text-destructive">

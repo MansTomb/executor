@@ -51,21 +51,28 @@ export {
   ApprovalElicitation,
   ApprovalResponse,
   approvalElicitation,
+  exactApprovalElicitation,
 } from "./elicitation.ts";
 export { McpClientLimits, defaultMcpClientLimits } from "./mcp.ts";
 export * from "./webhook-protocol.ts";
+export * from "./events.ts";
+export { AppIcon, AppIcons, appIconLimits } from "./icons.ts";
+export * from "./placement.ts";
 
 export { AccountId, HttpUrl } from "./schema.ts";
 export {
+  OAuthAuthorizationParams,
   OAuthClientAuth,
   OAuthSecretClientAuth,
   OAuthTokenRequestFormat,
   OAuthTokenResponse,
+  reservedAuthorizationParams,
+  type ReservedAuthorizationParam,
 } from "./provider.ts";
 
 /**
- * The host protocol this framework speaks and its wire schemas. A later protocol replaces this
- * re-export; released protocol modules stay unchanged for host adapters.
+ * The host protocol this framework speaks and its wire schemas, from `protocols/current.ts`. The
+ * released protocol modules are frozen records that host adapters read.
  */
 export { frameworkProtocol } from "./protocol-version.ts";
 export { protocol1 } from "./protocols/1.ts";
@@ -74,10 +81,19 @@ export { protocol3 } from "./protocols/3.ts";
 export { protocol4 } from "./protocols/4.ts";
 export { protocol5 } from "./protocols/5.ts";
 export { protocol6 } from "./protocols/6.ts";
-export { protocol7, AccountCheckCommand, CredentialHost } from "./protocols/7.ts";
+export { protocol7 } from "./protocols/7.ts";
 export { protocol8 } from "./protocols/8.ts";
 export { protocol9 } from "./protocols/9.ts";
-export { protocol10, MigrateCommand, MigrateResult } from "./protocols/10.ts";
+export { protocol10 } from "./protocols/10.ts";
+export { protocol11 } from "./protocols/11.ts";
+export { protocol12 } from "./protocols/12.ts";
+export {
+  current as protocol13,
+  AccountCheckCommand,
+  CredentialHost,
+  MigrateCommand,
+  MigrateResult,
+} from "./protocols/current.ts";
 export { AccountCheckResult, AccountInfo } from "./provider.ts";
 import {
   HostAccountsInvalid,
@@ -97,21 +113,25 @@ import {
   SkillLoadFailed,
   SkillSources,
   type InvocationDeadline,
+  ResolvedAccount,
   ResolvedAccounts,
   type SkillCatalogResponse,
   type TrustedToolApproval,
-} from "./protocols/10.ts";
-export { DeclaredRequirements, HostRequest } from "./protocols/10.ts";
+} from "./protocols/current.ts";
+export { DeclaredRequirements, HostRequest } from "./protocols/current.ts";
 /**
  * The MCP and skill loader failures as they cross the host boundary. Apps throw the author-facing
  * classes from `apps/mcp` and `apps/skills`.
  */
-export { McpError, SkillLoadFailed } from "./protocols/10.ts";
+export { McpError, SkillLoadFailed } from "./protocols/current.ts";
 export {
   DeclaredAuthMethod,
   DeclaredProvider,
+  DeclaredAccountSlot,
+  DeclaredAccountSlots,
   ResolvedAccount,
   ResolvedAccounts,
+  ResolvedAccountSlots,
   TrustedToolApproval,
   InvocationDeadline,
   HostedTool,
@@ -140,9 +160,47 @@ export {
   HostError,
   HostResponse,
   HostInvocation,
-} from "./protocols/10.ts";
+} from "./protocols/current.ts";
 /** Raw host inputs; the host boundary parses and redacts these immediately. */
 export type ResolvedAccountsInput = typeof ResolvedAccounts.Encoded;
+
+/**
+ * An account as the host sends it to the runner. `managed` marks a credential issued to the
+ * instance operator's own OAuth client: the runner seals every one of its strings, whatever the
+ * method exposes, so that only the operator's placement can send it. The runner removes the mark;
+ * a bundle reads a `ResolvedAccount`. Not part of any host protocol.
+ */
+export const HostAccount = Schema.Struct({
+  ...ResolvedAccount.fields,
+  managed: Schema.optionalKey(Schema.Literal(true)),
+});
+export type HostAccount = typeof HostAccount.Type;
+
+/** One scope's accounts as the host sends them to the runner; see `HostAccount`. */
+export const HostAccountSlots = Schema.Record(
+  Schema.NonEmptyString,
+  Schema.Union([HostAccount, Schema.Array(HostAccount)]),
+);
+export type HostAccountSlots = typeof HostAccountSlots.Type;
+
+/**
+ * An invocation's accounts by scope as the host sends them to the runner; see `HostAccount`.
+ * `user` is absent for work without a caller, as in `ResolvedAccounts`.
+ */
+export const HostAccounts = Schema.Struct({
+  app: HostAccountSlots,
+  user: Schema.optionalKey(HostAccountSlots),
+});
+export type HostAccounts = typeof HostAccounts.Type;
+
+/** Each requirement's accounts across both scopes; requirement names are unique across them. */
+export const scopedSlots = <Slot>(accounts: {
+  readonly app: Readonly<Record<string, Slot>>;
+  readonly user?: Readonly<Record<string, Slot>>;
+}): ReadonlyArray<readonly [string, Slot]> => [
+  ...Object.entries(accounts.app),
+  ...Object.entries(accounts.user ?? {}),
+];
 
 /** Trusted invocation context, supplied separately from the Request. */
 export interface HostContext {
@@ -165,7 +223,8 @@ export interface HostContext {
   readonly approval?: TrustedToolApproval;
   /** The data facet's SQLite storage, for apps that declare `sql`. Never exposed to app code. */
   readonly storage?: AppSqlStorage;
-  readonly accounts: Redacted.Redacted<ResolvedAccounts>;
+  /** The invocation's accounts as the host resolved them; see `HostAccount`. */
+  readonly accounts: Redacted.Redacted<HostAccounts>;
 }
 
 /** Skill commands. Send sources only to builds that declare skillSources. */
@@ -254,6 +313,32 @@ export const HostDataError = HostCallError;
 export const ToolResultObservation = Context.Reference<{ readonly failed: () => void }>(
   "apps/ToolResultObservation",
   { defaultValue: () => ({ failed: () => {} }) },
+);
+
+/**
+ * One tool invocation's own timing, on the isolate's clock: how long it ran, and how much of that
+ * it waited on upstream providers, waited on elicitation answers and ran the app's authored code.
+ * Each instant counts once, so the rest is Executor's own time. The isolated handler returns it
+ * beside the result so the host can add the other isolates' parts.
+ */
+export const InvocationTiming = Schema.Struct({
+  elapsedMs: Schema.Finite,
+  upstreamMs: Schema.Finite,
+  elicitationMs: Schema.Finite,
+  authoredMs: Schema.Finite,
+  /** Waiting on another call that holds the lease to load a cache entry this call needs. */
+  leaseMs: Schema.optionalKey(Schema.Finite),
+  /**
+   * How long background work, such as a stale cache entry's refresh, ran within the invocation.
+   * It runs beside the invocation, so it is not part of the division above.
+   */
+  backgroundMs: Schema.optionalKey(Schema.Finite),
+});
+export type InvocationTiming = typeof InvocationTiming.Type;
+/** Receives the invocation's timing once it is over; hosts that do not return it ignore it. */
+export const InvocationTimingSink = Context.Reference<(timing: InvocationTiming) => void>(
+  "apps/InvocationTimingSink",
+  { defaultValue: () => () => {} },
 );
 
 /** Native handler; context comes from host authority, never from request content. */

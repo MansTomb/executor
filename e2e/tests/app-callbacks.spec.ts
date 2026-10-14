@@ -4,7 +4,6 @@
  * three seconds, and a mutation that waits before writing. The app verifies its own callback, so
  * the scenario needs no outside service and runs on deployed Cloudflare.
  */
-import { createProfile } from "../support/profiles.ts";
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Fiber, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -14,6 +13,15 @@ import { Actors } from "../support/actors.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { Target } from "../support/platform.ts";
+import { targetHosts } from "../support/role-hosts.ts";
+import { connectionsPath, unlinkAccount } from "../support/app-accounts.ts";
+import {
+  removeAppWhenStopped,
+  settleWebhookSources,
+  settleWebhookSubscriptions,
+  sourcesAre,
+} from "../support/webhook-sources.ts";
 
 const files = [
   {
@@ -23,10 +31,10 @@ const files = [
 const service = defineProvider({ name: "Callback fixture", auth: {
   key: secrets({ label: "Key", fields: object({ token: string() }) })
 } });
-const requirements = { accounts: { service } };
+const requirements = { user: { accounts: { service } } };
 const empty = object({});
 const interactions = {
-  account: "service", config: empty, state: empty,
+  account: { user: "service" }, config: empty, state: empty,
   async register(ctx, { callbackUrl }) {
     const response = await ctx.fetch(callbackUrl, {
       method: "POST", headers: { "content-type": "application/json", "x-verify": "synthetic-ping" },
@@ -61,12 +69,6 @@ export default defineApp(requirements, { tools: router({ slow, events }), webhoo
   appsManifest,
 ];
 
-const Profile = Schema.Struct({
-  status: Schema.String,
-  failure: Schema.NullOr(Schema.String),
-  reconciledDeployment: Schema.NullOr(Schema.String),
-});
-const Subscription = Schema.Struct({ callbackUrl: Schema.String, status: Schema.String });
 const Kinds = Schema.Array(Schema.String);
 
 layer(HostedLive, { excludeTestServices: true })("App calls during outside waits", (it) => {
@@ -75,20 +77,21 @@ layer(HostedLive, { excludeTestServices: true })("App calls during outside waits
       context,
       Effect.gen(function* () {
         const api = yield* Api,
-          actors = yield* Actors;
+          actors = yield* Actors,
+          target = yield* Target;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const name = `Callbacks ${randomUUID().slice(0, 8)}`;
-        const created: { app?: string; account?: string; profile?: string } = {};
+        const created: { app?: string; account?: string } = {};
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
-            if (created.profile)
-              yield* api.request(
-                actors.owner,
-                "DELETE",
-                `${prefix}/apps/${created.app}/profiles/${created.profile}`,
+            const path = `${prefix}/apps/${created.app}`;
+            if (created.app && created.account) {
+              yield* unlinkAccount(actors.owner, path, "service", created.account);
+              yield* settleWebhookSubscriptions(actors.owner, path, (subscriptions) =>
+                subscriptions.every((subscription) => subscription.status === "stopped"),
               );
-            if (created.app)
-              yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${created.app}`);
+            }
+            if (created.app) yield* removeAppWhenStopped(actors.owner, path);
             if (created.account)
               yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${created.account}`);
           }).pipe(Effect.orDie),
@@ -100,16 +103,13 @@ layer(HostedLive, { excludeTestServices: true })("App calls during outside waits
         expect(deployed.status).toBe(200);
         const app = (yield* body(App, deployed)).id;
         created.app = app;
-        const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app}`);
-        created.profile = profile.id;
+        const path = `${prefix}/apps/${app}`;
+        // Connecting from the app links the account to it, so calls need no choice.
         const connection = yield* api.request(
           actors.owner,
           "POST",
-          `${prefix}/apps/${app}/connections`,
-          {
-            requirement: "service",
-            profile: profile.id,
-          },
+          connectionsPath(path, "user", "service"),
+          {},
         );
         expect(connection.status).toBe(200);
         const saved = yield* api.request(
@@ -119,41 +119,31 @@ layer(HostedLive, { excludeTestServices: true })("App calls during outside waits
           { method: "key", label: name, fields: { token: "synthetic-callbacks" } },
         );
         expect(saved.status).toBe(200);
-        created.account = (yield* body(Resource, saved)).id;
+        const account = (yield* body(Resource, saved)).id;
+        created.account = account;
 
-        // Setup registers the webhook; the provider verifies the callback while register waits.
-        const deadline = (yield* Clock.currentTimeMillis) + 30_000;
-        let current: typeof Profile.Type;
-        for (;;) {
-          const response = yield* api.request(
-            actors.owner,
-            "POST",
-            `${prefix}/apps/${app}/profiles/${profile.id}/reconcile`,
-          );
-          expect(response.status).toBe(200);
-          current = yield* body(Profile, response);
-          if (current.status === "ready" || current.status === "failed") break;
-          expect(yield* Clock.currentTimeMillis, JSON.stringify(current)).toBeLessThan(deadline);
-          yield* Effect.sleep("200 millis");
-        }
-        expect(current).toMatchObject({ status: "ready", failure: null });
-        const subscriptions = yield* body(
-          Schema.Array(Subscription),
-          yield* api.request(
-            actors.owner,
-            "GET",
-            `${prefix}/apps/${app}/webhooks?profile=${profile.id}`,
-          ),
+        // Linking registers the webhook; the provider verifies the callback while register waits.
+        yield* settleWebhookSources(
+          actors.owner,
+          path,
+          sourcesAre({ [account]: { status: "ready", failure: null } }),
+        );
+        const subscriptions = yield* settleWebhookSubscriptions(
+          actors.owner,
+          path,
+          (subscriptions) => subscriptions.length > 0,
         );
         expect(subscriptions.map((subscription) => subscription.status)).toEqual(["active"]);
+        // A new subscription registers on the canonical API origin (Cloud's `api.`).
+        expect(
+          subscriptions.map((subscription) => new URL(subscription.callbackUrl).origin),
+        ).toEqual([targetHosts(target).api]);
+        expect(new URL(subscriptions[0]?.callbackUrl ?? "").pathname).toMatch(
+          new RegExp(`^/api/webhooks/${app}/[^/]+$`),
+        );
 
         const call = (tool: "slow" | "events", kind: "mutation" | "query") =>
-          api.request(actors.owner, "POST", `${prefix}/apps/${app}/tools/call`, {
-            profile: profile.id,
-            tool,
-            kind,
-            input: {},
-          });
+          api.request(actors.owner, "POST", `${path}/tools/call`, { tool, kind, input: {} });
         // A call that waits for eight seconds must not hold the app's other calls. Each query
         // returns well before the slow call finishes, and the first sees its committed write.
         const slow = yield* Effect.forkChild(call("slow", "mutation"));

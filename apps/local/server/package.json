@@ -21,6 +21,7 @@
   "dependencies": {
     "@effect/platform-node": "4.0.1",
     "@effect/sql-pglite": "4.0.1",
+    "@electric-sql/pglite": "0.5.8",
     "@executor-js/app-management": "workspace:*",
     "@executor-js/app-source": "workspace:*",
     "@executor-js/app-templates": "workspace:*",
@@ -40,7 +41,7 @@
     "proper-lockfile": "4.1.2"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@types/proper-lockfile": "4.1.4",
     "graphql": "16.11.0",
     "vite": "npm:@voidzero-dev/vite-plus-core@0.3.3"

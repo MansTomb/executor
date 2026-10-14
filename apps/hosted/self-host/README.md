@@ -63,9 +63,18 @@ The health endpoint is [http://localhost:4400/health](http://localhost:4400/heal
 The Docker build produces a standalone server bundle. It prepares the trusted
 Worker host and framework once; authored apps still compile inside workerd.
 The image retains PGlite, one native workerd binary, the dashboard, and a small native host for Git, keys, locks, and HTTP. Executor,
-authored apps, workflows, and Motel share one workerd executable. Neither Bun nor
+authored apps, workflows, and Motel share one workerd executable. Motel runs as
+its own workerd process, so its indexing no longer blocks the product's JavaScript
+thread; the two still share the container's CPU, memory and disk. Neither Bun nor
 Node ships in the runtime image. Build tools
 and the workspace dependency tree stay in the build stage.
+
+The image runs Executor's build of workerd from
+[UsefulSoftwareCo/workerd](https://github.com/UsefulSoftwareCo/workerd), pinned by
+release and SHA-256 in `workerd.json`; packaging downloads it and fails on any other
+digest. It adds idle-isolate and memory-pressure garbage collection and TCMalloc
+memory release, set by `memory` in the generated `workerd.capnp`. Cloud and local
+development keep upstream workerd.
 
 The runtime uses Debian 12 distroless with Git's native commands and HTTP backend,
 their shared libraries, and the small set of tools used to prepare data volumes.
@@ -74,7 +83,9 @@ separate build stage. `/usr/share/runtime-system-packages.txt` records the copie
 system package versions; their license notices remain under `/usr/share`.
 
 Effect composes product services inside workerd. The native host forwards public
-HTTP to a private Worker socket. Outbound requests use the shared URL policy and
+HTTP to a private Worker socket and compresses text responses with brotli or gzip,
+as each client accepts. Event streams stay unencoded, and a reverse proxy in front
+sees encoded responses and does not compress them again. Outbound requests use the shared URL policy and
 workerd's network services, which check resolved destinations before connecting.
 HTTP Host and TLS server names are retained. Protocol adapters check each redirect.
 

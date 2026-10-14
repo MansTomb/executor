@@ -1,4 +1,4 @@
-import type { McpTarget, McpTargetInput } from "./targets.ts";
+import type { McpAppAccounts, McpTargetInput } from "./targets.ts";
 import type {
   App,
   Executor,
@@ -6,14 +6,38 @@ import type {
   ToolPending,
   ToolResumeResult,
   ToolPage,
-  ToolIndex,
+  SearchableTools,
+  ToolSearchPage,
   ToolInvocationOptions,
   ToolListOptions,
+  CatalogReadOptions,
   ElicitationFailed,
   AppSkillCatalog,
   AppSkillDocument,
+  AppEventDefinition,
+  AppId,
+  EventCallbackFailed,
+  EventDefinitionChanged,
+  EventNotFound,
+  EventSubscription,
+  EventSubscriptionGrant,
+  EventSubscriptionInvalid,
+  EventSubscriptionKey,
+  EventsUnavailable,
+  SubscribeEvent,
 } from "@executor-js/sdk/core";
 import type { Effect } from "effect";
+
+/** A subscription key without its principal: the product binds that to the caller. */
+export type McpEventKey = Omit<EventSubscriptionKey, "principal">;
+
+/** Why a subscription was refused, beside the host's own errors. */
+export type McpEventError =
+  | EventNotFound
+  | EventDefinitionChanged
+  | EventSubscriptionInvalid
+  | EventCallbackFailed
+  | EventsUnavailable;
 
 /**
  * The catalog and calls available to one authenticated caller. Products own
@@ -24,9 +48,10 @@ import type { Effect } from "effect";
  * messages, fields and causes remain private.
  */
 export interface McpBackend<E extends Error> {
-  /** Authorize app and profile access before evaluating skill metadata. */
+  /** Authorize app and account access before evaluating skill metadata. */
   readonly listSkills: (
     input: Parameters<Executor["skills"]["list"]>[0],
+    options?: CatalogReadOptions,
   ) => Effect.Effect<AppSkillCatalog, E>;
   /** Reauthorize each document/reference read, including previous deployments. */
   readonly readSkill: (
@@ -34,40 +59,67 @@ export interface McpBackend<E extends Error> {
   ) => Effect.Effect<AppSkillDocument, E>;
   /** Reauthorize input delivery using the current request before releasing a running tool. */
   readonly authorizeElicitation: (
-    input: Pick<
-      Parameters<Executor["tools"]["call"]>[0],
-      "app" | "tool" | "profile" | "expectedProfileRevision"
-    >,
+    input: Pick<Parameters<Executor["tools"]["call"]>[0], "app" | "tool" | "accounts">,
   ) => Effect.Effect<void, ElicitationFailed>;
   /** Apply IDs in storage before loading app metadata. [] selects none; omitted IDs add no restriction.
    * Hosts still enforce owner access; this filter is never an authorization grant.
    */
   readonly listApps: (
-    input?: Pick<NonNullable<Parameters<Executor["apps"]["list"]>[0]>, "ids">,
-  ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug">>, E>;
-  /** Enumerate only the caller's execution targets; skills use the same app and account authority. */
-  readonly listTargets: (input: McpTargetInput) => Effect.Effect<readonly McpTarget[], E>;
+    input?: Pick<NonNullable<Parameters<Executor["apps"]["list"]>[0]>, "ids"> & {
+      /** Restrict the inventory to apps whose tools this caller may reach. */
+      readonly toolsOnly?: boolean;
+    },
+  ) => Effect.Effect<ReadonlyArray<Pick<App, "id" | "name" | "slug" | "activeDeployment">>, E>;
   /**
-   * The live catalog's names and descriptions, without schemas. Authorize the app and its
-   * selected accounts before reading it; bounded discovery may reuse an authorized listing.
+   * The caller's linked accounts for the app, by user requirement; skills use the same authority.
+   * App requirements are not listed: operations name `{ app: {}, user }` and the backend fills the
+   * app requirements from the app links.
    */
-  readonly indexTools: (
-    input: Parameters<Executor["tools"]["index"]>[0],
-    options?: ToolListOptions,
-  ) => Effect.Effect<ToolIndex, E>;
-  /**
-   * Authorize the app and its selected accounts before evaluating each catalog page. A `tools`
-   * filter evaluates only those tools' schemas, live; the `live` option evaluates every tool live.
-   */
+  readonly listAccounts: (input: McpTargetInput) => Effect.Effect<McpAppAccounts, E>;
+  /** Authorize the app and its selected accounts before evaluating each catalog page. */
   readonly listTools: (
     input: Parameters<Executor["tools"]["list"]>[0],
     options?: ToolListOptions,
   ) => Effect.Effect<ToolPage, E>;
+  /**
+   * Authorize the app and its selected accounts as for `listTools`, then keep the target's current
+   * listing as search rows. Only failed routers the caller may discover are returned.
+   */
+  readonly searchableTools: (
+    input: Parameters<Executor["tools"]["searchable"]>[0],
+    options?: ToolListOptions,
+  ) => Effect.Effect<SearchableTools, E>;
+  /**
+   * Rank the tools of listings `searchableTools` returned to this backend. Narrow each target's
+   * scopes to the tools the caller may discover, as `listTools` filters them, before ranking, so
+   * pages and counts never include hidden tools; never widen them.
+   */
+  readonly searchTools: (
+    input: Parameters<Executor["tools"]["search"]>[0],
+  ) => Effect.Effect<ToolSearchPage, E>;
   /** Check execution permission again; prior discovery does not authorize this call. */
   readonly callTool: (
     input: Parameters<Executor["tools"]["call"]>[0],
     options?: ToolInvocationOptions,
   ) => Effect.Effect<ToolCallResult, E>;
+  /** Authorize the app, then list the events its active deployment declares. */
+  readonly eventDefinitions: (input: {
+    readonly app: AppId;
+  }) => Effect.Effect<readonly AppEventDefinition[], E>;
+  /** This caller's saved subscription with the key, if any. Reveals nothing of other callers. */
+  readonly findEventSubscription: (key: McpEventKey) => Effect.Effect<EventSubscription | null, E>;
+  /** Authorize the target app's events for this caller, then subscribe or refresh as the caller. */
+  readonly subscribeEvent: (
+    input: Omit<SubscribeEvent, "key" | "subject" | "target"> & {
+      readonly key: McpEventKey;
+      readonly target: NonNullable<SubscribeEvent["target"]>;
+    },
+  ) => Effect.Effect<EventSubscriptionGrant, E | McpEventError>;
+  /** Stop this caller's subscription with the key. Its app is authorized as for subscribing. */
+  readonly unsubscribeEvent: (input: {
+    readonly app: AppId;
+    readonly key: McpEventKey;
+  }) => Effect.Effect<void, E>;
   /** Reauthorize the reviewed app/accounts and current caller before consuming this exact SDK request. */
   readonly resumeInvocation: (
     request: typeof ToolPending.Type,

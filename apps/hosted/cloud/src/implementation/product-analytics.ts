@@ -1,6 +1,6 @@
 /** Request-owned analytics and explicitly submitted feedback sent to PostHog. */
-import { heroPreviewCookie, readHeroVisitor } from "@executor-js/marketing/experiments";
-import { evaluateHeroFlag } from "./hero-experiment.ts";
+import { readSiteVisitor, siteVisitorCookie } from "@executor-js/marketing/site-visitor";
+import { recordRoute } from "@executor-js/telemetry";
 import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
 import {
   ProductAnalytics,
@@ -52,10 +52,9 @@ const Analytics = Context.Reference<{
 export const recordCloudSignup = (userId: string) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const cookies = request.headers.cookie ?? "";
-    const preview = cookies.split(";").some((part) => part.trim() === `${heroPreviewCookie}=1`);
-    const visitor = preview ? undefined : readHeroVisitor(cookies);
+    const visitor = readSiteVisitor(request.headers.cookie ?? "");
     const analytics = yield* Analytics;
+    // Link the site visit that led here, so marketing attribution reaches the new account.
     if (visitor !== undefined)
       analytics.add({
         event: "$identify",
@@ -70,6 +69,27 @@ export const recordCloudSignup = (userId: string) =>
       properties: {},
     });
   });
+
+/** Prevent a later user on a shared browser from inheriting an identified site visitor. */
+export const clearSiteVisitorOnSignOut =
+  (cookieDomain?: string) => (response: HttpServerResponse.HttpServerResponse) =>
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      if (
+        request.method !== "POST" ||
+        new URL(request.url, "http://localhost").pathname !== "/api/auth/sign-out" ||
+        response.status < 200 ||
+        response.status >= 300
+      )
+        return response;
+      return yield* response.pipe(
+        HttpServerResponse.expireCookie(siteVisitorCookie, {
+          path: "/",
+          ...(cookieDomain === undefined ? {} : { domain: cookieDomain }),
+        }),
+        Effect.orDie,
+      );
+    });
 
 /** Count successful session creation without recording login credentials or callback URLs. */
 export const recordCloudLogin = (userId: string) =>
@@ -224,20 +244,36 @@ export const recordBackgroundUsage = (
     });
   });
 
+/**
+ * The PostHog SDK endpoints the proxy forwards, each with the route its span records. The
+ * `array`, `static` and `s` endpoints take a project key and file names in the rest of the path.
+ */
+const postHogEndpoints: ReadonlyArray<readonly [RegExp, `/${string}`]> = [
+  [/^\/push$/, "/api/:channel/push"],
+  [/^\/e\/?$/, "/api/:channel/e"],
+  [/^\/i\/v0\/e\/?$/, "/api/:channel/i/v0/e"],
+  [/^\/batch\/?$/, "/api/:channel/batch"],
+  [/^\/flags\/?$/, "/api/:channel/flags"],
+  [/^\/decide\/?$/, "/api/:channel/decide"],
+  [/^\/array\/.*$/, "/api/:channel/array/*"],
+  [/^\/static\/.*$/, "/api/:channel/static/*"],
+  [/^\/surveys\/?$/, "/api/:channel/surveys"],
+  [/^\/capture\/?$/, "/api/:channel/capture"],
+  [/^\/s\/.*$/, "/api/:channel/s/*"],
+];
+
 /** Fixed upstreams and an explicit header allowlist prevent forwarding product credentials. */
 export const postHogUpstream = (
   request: HttpServerRequest.HttpServerRequest,
   config: Pick<Settings, "host" | "path">,
-): HttpClientRequest.HttpClientRequest | undefined => {
+):
+  | { readonly request: HttpClientRequest.HttpClientRequest; readonly route: `/${string}` }
+  | undefined => {
   const url = new URL(request.url, "https://posthog.internal");
   if (!url.pathname.startsWith(`${config.path}/`)) return undefined;
   const path = url.pathname.slice(config.path.length);
-  if (
-    !/^\/(?:push|e\/?|i\/v0\/e\/?|batch\/?|flags\/?|decide\/?|array\/.*|static\/.*|surveys\/?|capture\/?|s\/.*)$/.test(
-      path,
-    )
-  )
-    return undefined;
+  const endpoint = postHogEndpoints.find(([pattern]) => pattern.test(path));
+  if (endpoint === undefined) return undefined;
   const upstream = new URL(config.host);
   if (path.startsWith("/static/"))
     upstream.hostname = upstream.hostname.replace(".i.posthog.com", "-assets.i.posthog.com");
@@ -248,12 +284,15 @@ export const postHogUpstream = (
     const value = request.headers[name];
     if (value !== undefined) headers[name] = value;
   }
-  return HttpClientRequest.make(request.method)(upstream, {
-    headers,
-    ...(request.method === "POST"
-      ? { body: HttpBody.stream(request.stream, headers["content-type"]) }
-      : {}),
-  });
+  return {
+    request: HttpClientRequest.make(request.method)(upstream, {
+      headers,
+      ...(request.method === "POST"
+        ? { body: HttpBody.stream(request.stream, headers["content-type"]) }
+        : {}),
+    }),
+    route: endpoint[1],
+  };
 };
 
 /** Serve the public SDK endpoints through the managed first-party path shared by both browser builds. */
@@ -266,7 +305,8 @@ const postHogProxy = (settings: Effect.Effect<Settings | undefined>) =>
       return HttpServerResponse.empty({ status: 405 });
     const upstream = postHogUpstream(request, config);
     if (!upstream) return HttpServerResponse.empty({ status: 404 });
-    const response = yield* HttpClient.execute(upstream).pipe(
+    yield* recordRoute(upstream.route);
+    const response = yield* HttpClient.execute(upstream.request).pipe(
       // PostHog is a third party: no client span or trace headers leave with the request.
       Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
       Effect.provideService(HttpClient.TracerPropagationEnabled, false),
@@ -289,10 +329,6 @@ export const cloudAnalytics = Effect.gen(function* () {
   );
   return {
     proxy: postHogProxy(settings),
-    hero: (visitor: string) =>
-      Effect.flatMap(settings, (config) =>
-        config === undefined ? Effect.succeed(undefined) : evaluateHeroFlag(config, visitor),
-      ),
     wrap: <A, E, R>(handler: Effect.Effect<A, E, R>) => withProductAnalytics(handler, settings),
   };
 });

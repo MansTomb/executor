@@ -1,6 +1,5 @@
 import type { AuthContext } from "@better-auth/core";
 import type { Principal } from "../contracts/auth.ts";
-import { type Profile } from "@executor-js/sdk/core";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import {
   CurrentUsage,
@@ -21,6 +20,7 @@ import { currentResourceAuthority, visibleAccountsAs, visibleAppsAs } from "./re
 import { readOrganizationIconUpload } from "./organization-icons.ts";
 import { OrganizationTombstones } from "../contracts/organization-removal.ts";
 import { requireOrganizationAdmin } from "./access.ts";
+import { callerLinkedAccounts } from "./app-accounts.ts";
 import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import { APIError } from "better-auth/api";
 import { ErrorReporter, Effect, Layer, Schema } from "effect";
@@ -47,6 +47,7 @@ import {
   OrganizationRole,
   RequireOrganization,
   organizationOwner,
+  publishingScope,
 } from "../contracts/organization.ts";
 
 /** Read current membership once after native session verification; never retain roles between requests. */
@@ -122,6 +123,9 @@ export const withOrganizationRequest = <E, R>(
       if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
         return yield* new Forbidden();
       const grant = yield* api.authenticate(headers, reference);
+      // The request's span records the organization's opaque ID, never the route's reference,
+      // which can be its slug.
+      yield* Effect.annotateCurrentSpan("executor.organization.id", grant.access.organization);
       yield* refuseRemoved(grant.access.organization);
       if (!permitsAction(grant.policy, action)) return yield* new OrganizationForbidden();
       if (params.app !== undefined) {
@@ -135,11 +139,12 @@ export const withOrganizationRequest = <E, R>(
           "executor.api_key.id": grant.key.id,
           "executor.user.id": grant.userId,
         });
-      return (yield* response(Effect.succeed(grant.organizationSlug)).pipe(
+      const scope = Effect.succeed(publishingScope(grant.organizationSlug));
+      return (yield* response(scope).pipe(
         Effect.tapCause(ErrorReporter.report),
         Effect.provideService(CurrentAuthorization, grant.policy),
         Effect.provideService(CurrentOrganization, grant.access),
-        Effect.provideService(CurrentOrganizationNamespace, Effect.succeed(grant.organizationSlug)),
+        Effect.provideService(CurrentOrganizationNamespace, scope),
         Effect.provideService(CurrentUserId, grant.userId),
         Effect.provideService(CurrentUsage, { source: "api" }),
       )).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
@@ -153,6 +158,7 @@ export const withOrganizationRequest = <E, R>(
     const principal = yield* auth.current(headers);
     if (principal === null) return yield* new Unauthorized();
     const organization = yield* auth.organization(reference);
+    yield* Effect.annotateCurrentSpan("executor.organization.id", organization);
     // Removal is reported before membership. The reads run one after the other: on Cloud they
     // share the event's one SQL connection, and overlapping them would open a second one, a TLS
     // login that costs far more than the few milliseconds the second read waits.
@@ -163,13 +169,11 @@ export const withOrganizationRequest = <E, R>(
       owner: organizationOwner(organization),
       role: membership.role,
     };
-    return (yield* response(auth.organizationSlug(headers, organization)).pipe(
+    const scope = auth.organizationSlug(headers, organization).pipe(Effect.map(publishingScope));
+    return (yield* response(scope).pipe(
       Effect.tapCause(ErrorReporter.report),
       Effect.provideService(CurrentOrganization, access),
-      Effect.provideService(
-        CurrentOrganizationNamespace,
-        auth.organizationSlug(headers, organization),
-      ),
+      Effect.provideService(CurrentOrganizationNamespace, scope),
       Effect.provideService(CurrentUserId, principal.userId),
       Effect.provideService(CurrentUsage, { source: "dashboard" }),
       Effect.provideService(CurrentPrincipal, principal),
@@ -183,6 +187,7 @@ export const requireOrganizationLive = Layer.effect(
   Effect.gen(function* () {
     const auth = yield* Authentication;
     const api = yield* ApiAuthentication;
+    const tombstones = yield* OrganizationTombstones;
     return (response, { endpoint, group }) =>
       withOrganizationRequest(
         () => {
@@ -203,8 +208,14 @@ export const requireOrganizationLive = Layer.effect(
       ).pipe(
         Effect.provideService(Authentication, auth),
         Effect.provideService(ApiAuthentication, api),
+        Effect.provideService(OrganizationTombstones, tombstones),
       );
   }),
+);
+
+/** A host that cannot remove organizations, such as self-host: every organization it serves is live. */
+export const noOrganizationRemovals = Layer.succeed(OrganizationTombstones, () =>
+  Effect.succeed(false),
 );
 
 /** List organization metadata through the SDK without evaluating app code. */
@@ -221,45 +232,30 @@ export const inventory = (owner: OwnerId) =>
           .list({ owner })
           .pipe(Effect.flatMap((listed) => visibleAccountsAs(actor, listed)))
       : [];
-    const user = yield* CurrentUserId;
-    if (user === undefined) return yield* new OrganizationForbidden();
-    const listedProfiles = yield* executor.apps.profiles.listMany({
-      apps: apps.map((app) => app.id),
-      owner,
-      subject: user,
-    });
-    // Keep inventory's app-first ordering while reading all profile rows together.
-    const byApp = new Map<AppId, Profile[]>();
-    for (const profile of listedProfiles) {
-      const existing = byApp.get(profile.app);
-      if (existing === undefined) byApp.set(profile.app, [profile]);
-      else existing.push(profile);
-    }
-    const profiles = apps.flatMap((app) => byApp.get(app.id) ?? []);
-    const listed = new Set(apps.map((app) => app.id));
+    const linked = yield* callerLinkedAccounts(apps.map((app) => app.id));
+    // An account linked to several requirements of one app is listed once for it.
+    const links = [
+      ...new Map(
+        linked.map((link) => [`${link.app}\u0000${link.id}`, { app: link.app, account: link.id }]),
+      ).values(),
+    ];
+    // Checks are reported for the apps the caller linked each account to.
     const health = new Map(
-      (accounts.length === 0 ? [] : yield* executor.accounts.listHealth({ owner })).map((entry) => [
-        entry.account,
-        { ...entry, apps: entry.apps.filter((check) => listed.has(check.app)) },
-      ]),
+      (accounts.length === 0 ? [] : yield* executor.accounts.listHealth({ owner, links })).map(
+        (entry) => [entry.account, entry],
+      ),
     );
     const withHealth = (listedAccounts: typeof accounts) =>
       listedAccounts.map((account) => {
         const checks = health.get(account.id);
         return checks === undefined ? account : { ...account, health: checks };
       });
-    if (policy.tools.kind === "all") return { apps, accounts: withHealth(accounts), profiles };
-    const selected = new Set(
-      profiles.flatMap((profile) =>
-        Object.values(profile.accounts).flatMap((value) =>
-          typeof value === "string" ? [value] : value,
-        ),
-      ),
-    );
+    if (policy.tools.kind === "all") return { apps, accounts: withHealth(accounts), links };
+    const selected = new Set(links.map((link) => link.account));
     return {
       apps,
       accounts: withHealth(accounts.filter((account) => selected.has(account.id))),
-      profiles,
+      links,
     };
   });
 /** Organization routes do not own app/account operations. */

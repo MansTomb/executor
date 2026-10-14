@@ -1,6 +1,6 @@
 /** The hosted product's cloud services: policy, defaults and plumbing over one executor. */
 import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
-import { AppManagementHost } from "@executor-js/app-management";
+import { AppGitOrigins, AppManagementHost } from "@executor-js/app-management";
 import {
   ScheduledAuthority,
   makeScheduledAuthority,
@@ -11,6 +11,7 @@ import {
   OrganizationRemovals,
   OrganizationRemovalUnavailable,
   OrganizationTombstones,
+  withDeploySetupWake,
   withExecutorAnalytics,
 } from "@executor-js/hosted-server";
 import type { HostedApiDocument } from "@executor-js/hosted-server/contracts";
@@ -20,10 +21,12 @@ import { RuntimeContext } from "alchemy";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Layer } from "effect";
 import { AppDomainDatabase } from "../implementation/app-domain-records.ts";
+import { V1ImportDatabase, V1ImportUnavailable } from "../contracts/v1-import.ts";
 import { UiFailed } from "apps/ui/contracts";
 import type { ArtifactsTokens } from "@executor-js/app-source/cloudflare";
 import { cloudProductServices } from "./product-services.ts";
 import { cloudAppSources } from "./source.ts";
+import { cloudHosts } from "./stage.ts";
 import type { AppDataSupervisor } from "./app-data.ts";
 
 /**
@@ -35,10 +38,13 @@ export const cloudProduct = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
   tokens: ArtifactsTokens,
 ) {
-  const { origin, blobs, sdk, sql, withDatabase, services } = yield* cloudProductServices(
+  const { blobs, sdk, sql, withDatabase, services } = yield* cloudProductServices(
     databases,
     yield* cloudAppSources(tokens),
   );
+  const hosts = yield* cloudHosts.pipe(Effect.orDie);
+  // The default Executor app calls this deployment's API, an OAuth resource, at its canonical origin.
+  const apiOrigin = hosts.resourceOrigins.api[0];
   const access = yield* makeExecutionMemo(
     withDatabase(hostedAppCapabilities).pipe(Effect.mapError(() => new StorageError())),
   );
@@ -60,8 +66,8 @@ export const cloudProduct = Effect.fn(function* (
       return yield* withDatabase(
         defaultApp(
           yield* sdk,
-          origin,
-          Effect.sync(() => (document ??= executorCloudApiDocument(origin))),
+          apiOrigin,
+          Effect.sync(() => (document ??= executorCloudApiDocument(apiOrigin))),
         ),
       );
     }).pipe(
@@ -78,10 +84,14 @@ export const cloudProduct = Effect.fn(function* (
     services,
     Layer.succeed(
       AppManagementHost,
-      Effect.all({ executor: sdk.pipe(Effect.map(withExecutorAnalytics)), access }).pipe(
-        Effect.provide(RuntimeContext.phantom),
-      ),
+      Effect.all({
+        executor: sdk.pipe(
+          Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor))),
+        ),
+        access,
+      }).pipe(Effect.provide(RuntimeContext.phantom)),
     ),
+    Layer.succeed(AppGitOrigins, () => hosts.gitOrigins),
     Layer.succeed(ScheduledAuthority, (target) =>
       scheduleAuthority.pipe(
         Effect.flatMap((authority) => authority(target)),
@@ -99,6 +109,7 @@ export const cloudProduct = Effect.fn(function* (
       sql.pipe(Effect.mapError(() => new UiFailed({ reason: "unavailable" }))),
     ),
     Layer.succeed(OrganizationIcons, makeOrganizationIcons(blobs)),
+    Layer.succeed(V1ImportDatabase, sql.pipe(Effect.mapError(() => new V1ImportUnavailable()))),
     Layer.succeed(
       OrganizationDefaults,
       OrganizationDefaults.of((organization, user) =>

@@ -1,25 +1,26 @@
 /** Serve real npm archives through a scoped local registry boundary; no npm publication is needed. */
-import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { Effect, FileSystem, Path, Schema } from "effect";
-import { HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { lockedArchive } from "./npm-registry.ts";
 
 /**
- * Published apps versions, exactly as npm serves them. beta.0 and beta.1 speak host protocol 1,
- * beta.4 protocol 2 and beta.5 protocol 3.
+ * Published apps versions, pinned with their npm integrity in e2e/npm-packages.json. beta.0 and
+ * beta.1 speak host protocol 1, beta.4 protocol 2, beta.5 protocol 3, beta.14 protocol 5, beta.22
+ * protocol 7, beta.33 protocol 8 and beta.59 protocol 11.
  */
-const releases = {
-  "0.0.1-beta.0":
-    "sha512-Rt8WY1dx0NlBEkAsy+72p5Q0ODt/bk6PnuFsZCzZY0mvESqepZrSe86H66cmzSNGjiAlLO4U7rU1LJQWU8tGZQ==",
-  "0.0.1-beta.1":
-    "sha512-2a6R4JU9TAb0MaS38pjBQPAE5c/T/nOT+YF1d5xZ34t35z5KSI2j8DrTyrJIK06eTYAhu28P16m+mBHnomnhzg==",
-  "0.0.1-beta.4":
-    "sha512-EeEOQNvUyUKyuKBXiK4cnZd4U6o4HwduPFsaGBTEqO5VorXyxWBPwmJU0Opt+3eCK4kIfmmmzBKql7SXm8j9ng==",
-  "0.0.1-beta.5":
-    "sha512-d9tAdBVDtm8j8ubXcqPWLEEOBwz4hDPXxMg93hxqFWjeGAfdu+5T9HHrJ4FlVhenrzeyqB/hvD8p+9D+ZNFEFw==",
-} as const;
-type Release = keyof typeof releases;
+const releases = [
+  "0.0.1-beta.0",
+  "0.0.1-beta.1",
+  "0.0.1-beta.4",
+  "0.0.1-beta.5",
+  "0.0.1-beta.14",
+  "0.0.1-beta.22",
+  "0.0.1-beta.33",
+  "0.0.1-beta.59",
+] as const;
+/** A published `apps` release this suite serves. */
+export type Release = (typeof releases)[number];
 const RuntimePackage = Schema.Record(Schema.String, Schema.Unknown);
 const Packed = Schema.NonEmptyArray(Schema.Struct({ filename: Schema.String }));
 class PackageFixtureFailed extends Schema.TaggedError<PackageFixtureFailed>()(
@@ -27,18 +28,8 @@ class PackageFixtureFailed extends Schema.TaggedError<PackageFixtureFailed>()(
   { reason: Schema.String },
 ) {}
 
-/** Download a published archive and refuse any bytes that do not match its registry integrity. */
-const publishedArchive = (version: Release = "0.0.1-beta.0") =>
-  Effect.gen(function* () {
-    const response = yield* HttpClient.get(`https://registry.npmjs.org/apps/-/apps-${version}.tgz`);
-    if (response.status !== 200)
-      return yield* new PackageFixtureFailed({ reason: `npm returned ${response.status}` });
-    const bytes = new Uint8Array(yield* response.arrayBuffer);
-    const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
-    if (integrity !== releases[version])
-      return yield* new PackageFixtureFailed({ reason: `apps@${version} integrity mismatch` });
-    return bytes;
-  }).pipe(Effect.scoped);
+/** A published archive as `e2e:prepare` downloaded it, refused unless it matches its integrity. */
+const publishedArchive = (version: Release = "0.0.1-beta.0") => lockedArchive("apps", version);
 
 /** Serve archives on loopback for the scope, counting each request path. */
 const loopbackArchives = Effect.gen(function* () {
@@ -106,7 +97,7 @@ const packDirectory = (source: string, destination: string) =>
   });
 
 /**
- * The published `apps@0.0.1-beta.0`, and a copy whose `runtime.json` declares protocol 9. The real
+ * The published `apps@0.0.1-beta.0`, and a copy whose `runtime.json` declares protocol 99. The real
  * archive predates exports the host added later, so linking only current exports would fail.
  */
 export const appPackageFixture = Effect.gen(function* () {

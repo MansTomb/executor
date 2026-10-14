@@ -172,7 +172,7 @@ const source = (origin: string) => [
   {
     path: "index.ts",
     content: `import { defineApp, dynamicRouter, query, object, string, number } from "apps";
-export default defineApp({ accounts: {} }, {
+export default defineApp({}, {
   tools: dynamicRouter({
       list: async () => read("list"),
       resolve: async name => {

@@ -8,10 +8,11 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { oauthMcpAppFiles } from "../support/authored-templates.ts";
+import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 /** The service's own words: an RFC 6749 error response, or the text of any other error body. */
@@ -58,7 +59,7 @@ const resourceAppFiles = (name: string, origin: string) => [
     path: "index.ts",
     content: `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
 const service = defineProvider({ name: ${JSON.stringify(name)}, auth: { oauth: oauth2({ discover: ${JSON.stringify(origin)}, scopes: ["openid", "read"] }) } });
-export default defineApp({ accounts: { service } }, async ({ accounts }) => ({ tools: router({
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({ tools: router({
    read: query({ input: object({}) }, async ({ fetch }) => {
   const result = await fetch(${JSON.stringify(`${origin}/resource`)}, { headers: { authorization: "Bearer " + accounts.service.fields.access_token } });
   return result.json();
@@ -110,7 +111,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           scopes: ["read"],
           includeIdToken: false,
           idTokenAlgorithms: ["ES256"],
+          openidAlgorithms: null,
           idTokenAlgorithm: "ES256",
+          idTokenIssuer: null,
+          invalidNonce: false,
           tokenError: null,
           authorizeError: null,
           callbackIssuer: null,
@@ -137,13 +141,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             yield* Effect.addFinalizer(() =>
               api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
             );
-            const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
             const connection = yield* body(
               Resource,
-              yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-                requirement: "service",
-                profile: profile.id,
-              }),
+              yield* api.request(
+                actors.owner,
+                "POST",
+                connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+                {},
+              ),
             );
             const started = yield* api.request(
               actors.owner,
@@ -180,7 +185,6 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             }
             return {
               app,
-              profile,
               connection,
               completed,
               failure: yield* body(Failure, completed),
@@ -423,8 +427,10 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
         }
 
         // Registration refused for Executor's callback: the service's own error is returned and
-        // recorded on the connection, beside the stage and status.
+        // recorded on the connection, beside the stage and status. A client the organization
+        // registered earlier for this server would serve this app, so it is removed first.
         {
+          yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
           const serviceError = {
             error: "invalid_redirect_uri",
             description: "Redirect URIs must be on a host this service has approved",
@@ -444,13 +450,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           yield* Effect.addFinalizer(() =>
             api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
           );
-          const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
           const connection = yield* body(
             Resource,
-            yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-              requirement: "service",
-              profile: profile.id,
-            }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {},
+            ),
           );
           const started = yield* api.request(
             actors.owner,
@@ -537,27 +544,68 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
           });
         }
 
-        // An unsigned ID token is rejected even when the service advertises `none`.
-        {
-          const [files, name] = mcp("Unsigned ID token");
-          const result = yield* signIn(files, name, {
-            scopes: ["openid", "read"],
-            includeIdToken: true,
+        // Executor uses only the access token. It sends no `nonce` even with `openid`, never reads
+        // OpenID metadata for ID token algorithms, and drops any ID token unchecked, so none of
+        // these can fail a sign-in. Miro signs HS256 without a nonce and lists HS256 only in its
+        // OpenID metadata. Readwise signs HS256 with a secret public clients lack and names an
+        // issuer its metadata does not.
+        for (const scenario of [
+          {
+            name: "Unsigned ID token",
             idTokenAlgorithms: ["ES256", "none"],
             idTokenAlgorithm: "none",
+          },
+          {
+            name: "Miro-like ID token",
+            idTokenAlgorithms: null,
+            openidAlgorithms: ["HS256"],
+            idTokenAlgorithm: "HS256",
+          },
+          {
+            name: "Readwise-like ID token",
+            idTokenAlgorithm: "HS256",
+            idTokenIssuer: "https://readwise.example/",
+          },
+          {
+            name: "Unlisted ID token algorithm",
+            idTokenAlgorithms: null,
+            idTokenAlgorithm: "HS256",
+          },
+          { name: "ID token with a foreign nonce", invalidNonce: true },
+        ] as const) {
+          const unique = `${scenario.name} ${randomUUID().slice(0, 8)}`;
+          const requests = (yield* issuer.metrics).discoveryRequests.length;
+          const result = yield* signIn(resourceAppFiles(unique, issuer.origin), unique, {
+            ...scenario,
+            scopes: ["openid", "read"],
+            includeIdToken: true,
           });
-          expect(result.completed.status, JSON.stringify(result.failure)).toBe(400);
-          expect(result.failure).toMatchObject({
-            _tag: "OAuthCompletionFailed",
-            reason: "incompatible_response",
-          });
-          expect(result.failure.recovery?.instructions).toContain("response field jwt_alg");
+          expect(
+            result.completed.status,
+            `${scenario.name}: ${JSON.stringify(result.failure)}`,
+          ).toBe(200);
+          const metrics = yield* issuer.metrics;
+          expect(metrics.authorizationScope, scenario.name).toBe("openid read");
+          expect(metrics.nonceRequested, scenario.name).toBe(false);
+          expect(metrics.discoveryRequests.slice(requests), scenario.name).not.toContain(
+            "/.well-known/openid-configuration",
+          );
+          const read = yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/apps/${result.app.id}/tools/call`,
+            { tool: "read", kind: "query", input: {} },
+          );
+          expect(read.status, `${scenario.name}: ${JSON.stringify(read.body)}`).toBe(200);
+          expect((yield* body(Echo, read)).authorization, scenario.name).toBe(
+            "Bearer synthetic-access-token",
+          );
         }
 
-        // A refreshed ID token must keep the subject the first one identified.
+        // Renewals never compare ID token subjects: one naming another subject still renews.
         for (const scenario of [
-          { name: "Same subject", subject: "synthetic-subject", renewed: true },
-          { name: "Different subject", subject: "synthetic-other-subject", renewed: false },
+          { name: "Same subject", subject: "synthetic-subject" },
+          { name: "Different subject", subject: "synthetic-other-subject" },
         ]) {
           const unique = `${scenario.name} ${randomUUID().slice(0, 8)}`;
           const result = yield* signIn(resourceAppFiles(unique, issuer.origin), unique, {
@@ -576,18 +624,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error responses", (it) =
             actors.owner,
             "POST",
             `${prefix}/apps/${result.app.id}/tools/call`,
-            { profile: result.profile.id, tool: "read", kind: "query", input: {} },
+            { tool: "read", kind: "query", input: {} },
           );
           expect((yield* issuer.metrics).refreshes, scenario.name).toBe(refreshes + 1);
-          if (scenario.renewed) {
-            expect(read.status, JSON.stringify(read.body)).toBe(200);
-            expect((yield* body(Echo, read)).authorization).toMatch(
-              /^Bearer synthetic-refreshed-token-\d+$/,
-            );
-          } else {
-            expect(read.status, JSON.stringify(read.body)).not.toBe(200);
-            expect(JSON.stringify(read.body)).toContain("OAuthReconnectRequired");
-          }
+          expect(read.status, `${scenario.name}: ${JSON.stringify(read.body)}`).toBe(200);
+          expect((yield* body(Echo, read)).authorization, scenario.name).toMatch(
+            /^Bearer synthetic-refreshed-token-\d+$/,
+          );
         }
       }),
     ),

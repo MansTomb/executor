@@ -2,14 +2,18 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import {
   AppProviderFailed,
   Json,
-  type AccountId,
-  type SelectedAccounts,
+  type ApprovalRequestId,
   type Tool,
+  type ToolResumeResultReceived,
 } from "@executor-js/sdk";
-import { Cause, Exit, Option, Schema } from "effect";
+import type { BrowserToolRun } from "@executor-js/mcp/browser";
+import { Cause, Exit, Match, Option, Schema } from "effect";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { useCallback, useState, type ComponentType } from "react";
-import type { FailureProps, Query } from "../../contracts/dashboard.ts";
+import type { ToolRunApprovalAtoms } from "../../contracts/browser-approval.ts";
+import type { AccountSummary, FailureProps, Query } from "../../contracts/dashboard.ts";
+import type { RequirementAccounts } from "../../contracts/app-accounts.ts";
+import { BrowserApprovalCard } from "./browser-approval.tsx";
 import { Button } from "../components/button.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs.tsx";
@@ -79,56 +83,105 @@ const initialDraft = (tool: Tool | undefined): Draft => {
     : { mode: "json", text: JSON.stringify(value, null, 2) };
 };
 
-/** Who a call acts as: the page's selected profile and the accounts it binds. */
-export interface ToolRunContext {
-  readonly profile: string;
-  readonly accounts: readonly string[];
-}
-
-/** Name the selected profile's accounts for the runner's read-only context line. */
-export function toolRunContext(
-  profile: string,
-  selection: SelectedAccounts,
-  accounts: readonly {
-    readonly id: AccountId;
-    readonly label: string;
-    readonly providerName?: string | undefined;
-  }[],
-): ToolRunContext {
-  const selected = new Set(
-    Object.values(selection).flatMap((ids) => (Array.isArray(ids) ? ids : [ids])),
+/** The accounts a call runs with, named with their provider, for the runner's context line. */
+export const runningAs = <A extends AccountSummary>(
+  requirements: readonly RequirementAccounts<A>[],
+): readonly string[] => {
+  const accounts = new Map(
+    requirements.flatMap((entry) => entry.using.map((account) => [account.id, account] as const)),
   );
-  return {
-    profile,
-    accounts: accounts
-      .filter((account) => selected.has(account.id))
-      .map((account) =>
-        account.providerName === undefined || account.providerName === account.label
-          ? account.label
-          : `${account.label} (${account.providerName})`,
-      ),
-  };
+  return [...accounts.values()].map((account) =>
+    account.providerName === undefined || account.providerName === account.label
+      ? account.label || "Unnamed account"
+      : `${account.label || "Unnamed account"} (${account.providerName})`,
+  );
+};
+
+/**
+ * What happened after the person answered their own call's review. App code reported that the call
+ * needs approval and may already have made changes, so this states only what Executor did with the
+ * saved call: never that the tool did not run.
+ */
+const answered = (result: ToolResumeResultReceived) =>
+  Match.value(result).pipe(
+    Match.discriminatorsExhaustive("status")({
+      completed: ({ toolError }) =>
+        toolError === true
+          ? "Approved. The tool ran and reported an error, shown below."
+          : "Approved. The tool ran, and its result is below.",
+      denied: () => "Declined. Executor will not resume this saved call.",
+      cancelled: () => "Cancelled. Executor will not resume this saved call.",
+      failed: (failed) =>
+        Match.value(failed).pipe(
+          Match.when(
+            { reason: "context-changed" },
+            () =>
+              "The app or its accounts changed since this call was saved, so Executor did not resume it. Run it again to review the current call.",
+          ),
+          Match.when(
+            { reason: "execution-failed", context: "unconfirmed" },
+            () =>
+              "Executor could not read the app or its accounts to confirm they match the call you reviewed, because its storage failed, so it did not resume it. Run it again in a moment to review it.",
+          ),
+          Match.when(
+            { reason: "execution-failed" },
+            () =>
+              "The tool failed after you approved it. It may have already made changes. Check before running it again.",
+          ),
+          Match.when(
+            { reason: "expired" },
+            () => "This request expired, so Executor will not resume this saved call.",
+          ),
+          Match.exhaustive,
+        ),
+      "already-consumed": () => "This request was already answered.",
+    }),
+  );
+
+/** The person reviews their own call; approving runs the saved call and shows its result here. */
+function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
+  const answer = useAtomValue(atoms.answer);
+  const result =
+    AsyncResult.isSuccess(answer) && answer.value.status === "answered"
+      ? answer.value.result
+      : undefined;
+  return (
+    <>
+      <BrowserApprovalCard
+        atoms={atoms}
+        completion={result === undefined ? undefined : answered(result)}
+      />
+      {result?.status === "completed" && (
+        <section aria-label="Tool result">
+          <Code code={JSON.stringify(result.value, null, 2)} copyable copyLabel="Copy result" />
+        </section>
+      )}
+    </>
+  );
 }
 
 /**
- * Run one tool with a form or JSON draft. The product binds the call to its exact app, profile
- * revision and deployment, and renders its own failures; provider failures keep the shared account
- * recovery.
+ * Run one tool with a form or JSON draft. The product binds the call to its exact app and
+ * deployment, and renders its own failures; the call runs with the accounts the caller linked to
+ * the app. Provider failures keep the shared account recovery. A call that needs approval waits for the person's review of the saved call.
  */
 export function ToolRunner<E>({
   tool,
   call,
+  approval,
   detail,
   Failure,
-  context,
+  accounts,
 }: {
   readonly tool: string;
-  readonly call: Atom.AtomResultFn<Json, Json, E>;
+  readonly call: Atom.AtomResultFn<Json, BrowserToolRun, E>;
+  /** The product's review of one pending call, read from the server rather than the draft. */
+  readonly approval: (requestId: ApprovalRequestId) => ToolRunApprovalAtoms;
   /** The selected tool's schemas seed the draft with its required inputs. */
   readonly detail: Query<Tool | undefined, unknown>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
-  /** The profile the page selected; calls always run with its bindings. */
-  readonly context?: ToolRunContext | undefined;
+  /** The accounts the call runs with, from `runningAs`. */
+  readonly accounts?: readonly string[] | undefined;
 }) {
   const run = useAtomSet(call, { mode: "promiseExit" });
   const schema = useAtomValue(detail);
@@ -139,6 +192,7 @@ export function ToolRunner<E>({
   // Form fields whose text does not parse, so the draft still holds their last good value.
   const [invalid, setInvalid] = useState<ReadonlySet<string>>(new Set());
   const [output, setOutput] = useState<string>();
+  const [review, setReview] = useState<ApprovalRequestId>();
   const [error, setError] = useState<"json" | "object" | Cause.Cause<E>>();
   const onInvalidChange = useCallback(
     (path: string, broken: boolean) =>
@@ -213,10 +267,12 @@ export function ToolRunner<E>({
           }
           setPending(true);
           setOutput(undefined);
+          setReview(undefined);
           const result = await run(input);
           setPending(false);
           if (Exit.isFailure(result)) setError(result.cause);
-          else setOutput(JSON.stringify(result.value, null, 2));
+          else if (result.value.status === "approval-required") setReview(result.value.requestId);
+          else setOutput(JSON.stringify(result.value.value, null, 2));
         }}
       >
         {/* No tab is selected until the schema decides between the form and JSON. */}
@@ -234,11 +290,11 @@ export function ToolRunner<E>({
               </TabsList>
             )}
           </div>
-          {context !== undefined && (
-            <p className="text-xs text-muted-foreground wrap-anywhere">
-              Running as <span className="font-medium text-foreground">{context.profile}</span>
-              {context.accounts.length > 0 && ` · ${context.accounts.join(", ")}`}
-            </p>
+          {accounts !== undefined && accounts.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 text-xs text-muted-foreground wrap-anywhere">
+              Running as
+              <span className="font-medium text-foreground">{accounts.join(", ")}</span>
+            </div>
           )}
           {loading ? (
             <Skeleton role="status" aria-label="Loading input" className="h-40" />
@@ -288,6 +344,7 @@ export function ToolRunner<E>({
       ) : (
         error !== undefined && <Failure cause={error} />
       )}
+      {review !== undefined && <ToolRunReview key={review} atoms={approval(review)} />}
       {output !== undefined && (
         <section aria-label="Tool result">
           <Code code={output} copyable copyLabel="Copy result" />

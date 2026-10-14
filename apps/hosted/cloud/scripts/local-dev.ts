@@ -10,7 +10,7 @@
 import { randomBytes } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Console, Effect, FileSystem, Path, Schema } from "effect";
+import { Clock, Config, Console, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { freePort as freeLoopbackPort } from "../../../../scripts/dev-host.ts";
 import {
@@ -36,7 +36,9 @@ const freePort = Effect.tryPromise({
   catch: () => new LocalDevelopmentFailed({ reason: "No free loopback port" }),
 });
 
+/** A cached fixture from an older shape lacks services the Worker requires; it is recreated. */
 const EmulatorFixture = Schema.Struct({
+  version: Schema.Literal(4),
   origin: Schema.String,
   services: Schema.Unknown,
 });
@@ -159,7 +161,7 @@ const main = Effect.scoped(
       CI: "true",
       ALCHEMY_HOME: localDevelopmentFiles.alchemyHome,
       NODE_ENV: "development",
-      // Local Worker and R2 need an account-shaped ID, never a real account.
+      // Local Worker, R2 and Hyperdrive need an account-shaped ID, never a real account.
       CLOUDFLARE_ACCOUNT_ID: "00000000000000000000000000000000",
       BETTER_AUTH_URL: origin,
       BETTER_AUTH_SECRET: secrets.betterAuthSecret,
@@ -172,6 +174,9 @@ const main = Effect.scoped(
       CLOUD_DEV_APP_UI_PORT: String(appUiPort),
       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${appUiPort}`,
       EXECUTOR_EMULATORS: JSON.stringify(emulators.services),
+      // The emulated v1 check runs only with a v1 database (V1_DATABASE_URL), which local
+      // development does not start. When one is set, accounts from earlier sessions skip it.
+      V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
     });
 
     yield* fs.writeFileString(

@@ -66,16 +66,23 @@ export const appSpanNames: ReadonlySet<string> = new Set([
   "app.catalog.read",
   "app.skills.load",
   "app.skills.routers",
+  "app.tool.resolve",
   "app.tool.approval",
   "app.tool.elicitation",
+  "app.elicitation.wait",
+  "app.workflow.control",
   "app.operation.execute",
   "app.sql.migrate",
+  "app.code",
+  "app.cache.call",
   "app.cache.get",
   "app.cache.load",
   "app.cache.command",
   "app.cache.publish",
   "app.cache.flush",
   "app.cache.lease.renew",
+  "app.cache.lease.wait",
+  "app.cache.refresh",
   "provider.http.request",
   "provider.http.response.read",
   "provider.openapi.call",
@@ -233,6 +240,13 @@ const status: Kept = (value) => {
   const found = integer(value);
   return found !== undefined && found >= 100 && found <= 599 ? { intValue: found } : undefined;
 };
+/** Milliseconds the framework measured; Effect writes whole values as integers. */
+const duration: Kept = (value) => {
+  const found = typeof value["doubleValue"] === "number" ? value["doubleValue"] : integer(value);
+  return found !== undefined && Number.isFinite(found) && found >= 0
+    ? { doubleValue: found }
+    : undefined;
+};
 
 /** Every span attribute the host keeps, with the values it accepts. */
 const spanAttributes: Readonly<Record<string, Kept>> = {
@@ -274,6 +288,29 @@ const spanAttributes: Readonly<Record<string, Kept>> = {
   "span.label": oneOf("⚠︎ Interrupted"),
   "status.interrupted": flag,
   "executor.milestone.reached": flag,
+  "executor.owner": oneOf("executor", "app", "upstream", "person", "lease", "background"),
+  "executor.app.code": oneOf(
+    "factory",
+    "router",
+    "approval",
+    "handler",
+    "loader",
+    "cache",
+    "webhook",
+    "check",
+    "skills",
+    "elicitation",
+    "workflow",
+    "step",
+  ),
+  "executor.workflow.operation": oneOf("start", "get", "list", "terminate"),
+  "cache.method": oneOf("get", "revalidate", "read", "readMany", "write", "invalidate"),
+  "executor.upstream.wait_ms": duration,
+  "executor.elicitation.wait_ms": duration,
+  "executor.authored_ms": duration,
+  "executor.lease.wait_ms": duration,
+  "executor.background_ms": duration,
+  "executor.overhead_ms": duration,
 };
 export const appSpanAttributeKeys: ReadonlySet<string> = new Set(Object.keys(spanAttributes));
 /**
@@ -284,6 +321,9 @@ export const droppedAppAttributeKeys: ReadonlySet<string> = new Set([
   "executor.tool.name",
   "mcp.tool.name",
   "server.address",
+  // A request's path and route in an app's isolate are the app's.
+  "url.path",
+  "http.route",
 ]);
 
 /** The framework's own log messages. Any other log body is the app's text. */

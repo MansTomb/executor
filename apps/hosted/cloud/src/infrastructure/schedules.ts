@@ -6,17 +6,17 @@ import { cloudAnalytics, recordBackgroundUsage } from "../implementation/product
 import { ScheduleObservation } from "@executor-js/sdk/scheduling";
 import { previewLifetime } from "./test-stage-expiry.ts";
 import { EventCleanup } from "./event-cleanup.ts";
-import { ProfileHost } from "@executor-js/sdk/core";
+import { WebhookSourceHost } from "@executor-js/sdk/core";
 import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
 /** Native alarms wake one coordinator; authoritative schedule/run state remains in Postgres. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Config, Clock, Effect, Exit, Layer, Schema, Semaphore } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/http";
 import { HostedExecutor, ScheduledAuthority, ScheduleWakeup } from "@executor-js/hosted-server";
 import { defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
 import { cloudProduct } from "./product.ts";
+import { lookupColo } from "./colo.ts";
 import { appDataSupervisors } from "./app-data.ts";
 import { cloudAuthDatabase } from "./auth-database.ts";
 import { cloudBackgroundJobs } from "./background-jobs.ts";
@@ -47,15 +47,6 @@ const restoreKey = "restore";
 
 /** Who asked for a wake: a change in a placed request, or the `schedule-wake` job. */
 type WakeSource = "change" | "job";
-
-/** The data center this instance runs in, recorded on its dispatches. */
-const lookupColo = HttpClient.get("https://cloudflare.com/cdn-cgi/trace").pipe(
-  Effect.flatMap((response) => response.text),
-  Effect.map((trace) => /^colo=([A-Z]+)$/m.exec(trace)?.[1] ?? "unknown"),
-  Effect.timeout("5 seconds"),
-  Effect.catchCause(() => Effect.succeed("unknown")),
-  Effect.provide(FetchHttpClient.layer),
-);
 
 const makePlacedScheduleCoordinator = Effect.gen(function* () {
   const analytics = yield* cloudAnalytics;
@@ -147,15 +138,26 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
       provide(
         Effect.gen(function* () {
           const executor = yield* Effect.flatten(HostedExecutor);
-          const next = yield* executor.scheduler.nextWake;
-          // Requested profile setup keeps its wake: deleting it would leave the change to the
-          // cron heartbeat, up to a minute later.
+          // Event deliveries due for a retry wake this coordinator too.
+          const [schedule, delivery] = yield* Effect.all([
+            executor.scheduler.nextWake,
+            executor.events.nextWake,
+          ]);
+          const next =
+            schedule === null || delivery === null
+              ? (schedule ?? delivery)
+              : schedule < delivery
+                ? schedule
+                : delivery;
+          // A requested webhook source pass keeps its wake: deleting it, or moving it to a later
+          // schedule, would leave the change to that schedule or the minute heartbeat.
           const soonest =
             (yield* Clock.currentTimeMillis) + defaultScheduleWorkerOptions.pollMilliseconds;
-          const planned =
-            next === null && !(yield* dispatch.requested)
+          const planned = (yield* dispatch.requested)
+            ? soonest
+            : next === null
               ? undefined
-              : Math.max(next?.getTime() ?? 0, soonest);
+              : Math.max(next.getTime(), soonest);
           // A pending re-arm of the retired heartbeat keeps an alarm for its retry.
           const stored = yield* state.storage.get<number>(restoreKey);
           const retry = stored === undefined ? undefined : Math.max(stored, soonest);
@@ -191,7 +193,7 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
             );
             // Alarm callbacks own this work through waitUntil; new wakes can discover other due apps meanwhile.
             yield* dispatch.run(
-              executor[ProfileHost].tick(concurrency),
+              executor[WebhookSourceHost].tick(concurrency),
               executor.scheduler.tick({
                 runner: "cloud",
                 maxCandidates: concurrency,
@@ -199,6 +201,11 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
                 execute: (operation) =>
                   pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),
               }),
+            );
+            // Each emit attempts its deliveries at once; this retries the ones still due.
+            yield* executor.events.deliver({ maxDeliveries: 64 }).pipe(
+              Effect.withSpan("events.dispatch"),
+              Effect.catch(() => Effect.logError("Cloud event delivery failed")),
             );
             yield* arm;
           }),
@@ -240,11 +247,15 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
           yield* restore;
           yield* alarms.withPermits(1)(
             Effect.gen(function* () {
-              // Profile changes wake the coordinator; the request outlives a pass already running.
+              // Webhook source changes wake the coordinator; the request outlives a pass already running.
               yield* dispatch.request;
-              yield* state.storage.setAlarm(
-                (yield* Clock.currentTimeMillis) + defaultScheduleWorkerOptions.pollMilliseconds,
-              );
+              // A wake only brings the alarm in. Wakes arrive from every write in every
+              // organization; when each one moved the alarm a second out, wakes under a second
+              // apart kept it from ever firing, and due runs waited up to a minute for a lull.
+              const due =
+                (yield* Clock.currentTimeMillis) + defaultScheduleWorkerOptions.pollMilliseconds;
+              const pending = yield* state.storage.getAlarm();
+              if (pending === null || pending > due) yield* state.storage.setAlarm(due);
             }),
           );
         }),
@@ -392,7 +403,7 @@ export const cloudSchedules = Effect.gen(function* () {
   // A request answers once its change is committed, and wakes the coordinator after the
   // response, once per event however many of its writes ask. A busy coordinator answers wakes
   // late: while many new organizations were set up at once, waiting for it held a connection
-  // submit for 12 s, and a profile write past its client's minute.
+  // submit for 12 s, and another write past its client's minute.
   const afterResponse = yield* makeExecutionMemo(
     Effect.gen(function* () {
       const deadline = yield* cleanup.deadline;

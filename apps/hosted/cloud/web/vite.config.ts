@@ -12,8 +12,6 @@ export default mergeConfig(
     port: 4412,
   }),
   {
-    // Cloud's IaC serves documentation beside the dashboard on every stage.
-    define: { "import.meta.env.VITE_EXECUTOR_DOCS_BASE_URL": JSON.stringify("/docs/") },
     environments: {
       ssr: {
         define: Object.fromEntries(
@@ -32,6 +30,14 @@ export default mergeConfig(
         ? [
             sentryVitePlugin({
               telemetry: false,
+              // The plugin only logs a failed release or source map upload unless this throws. A
+              // deploy must stop instead: production errors would arrive without readable stacks.
+              errorHandler: (error) => {
+                throw error;
+              },
+              // Naming the release in every file would rename every file on every deploy. Events
+              // carry the release from the document, and source maps match by debug ID.
+              release: { inject: false },
               sourcemaps: { filesToDeleteAfterUpload: ["./dist/**/*.map"] },
             }),
           ]

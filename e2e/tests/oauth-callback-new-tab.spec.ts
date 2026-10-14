@@ -11,10 +11,12 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthInteropIssuer } from "../support/oauth-interop-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
+/** React reports a server/browser markup difference with one of these messages or codes. */
+const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const Connection = Schema.Struct({
   state: Schema.Struct({
@@ -40,7 +42,7 @@ const pendingSignIn = Effect.gen(function* () {
         path: "index.ts",
         content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Link service",auth:{oauth:oauth2({discover:${JSON.stringify(`${issuer.origin}/mcp`)}})}});
-export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
       },
       appsManifest,
     ],
@@ -50,13 +52,14 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
   yield* Effect.addFinalizer(() =>
     api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
   );
-  const profile = yield* createProfile(actors.owner, `${prefix}/apps/${app.id}`);
   const connection = yield* body(
     Resource,
-    yield* api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/connections`, {
-      requirement: "service",
-      profile: profile.id,
-    }),
+    yield* api.request(
+      actors.owner,
+      "POST",
+      connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+      {},
+    ),
   );
   const started = yield* api.request(
     actors.owner,
@@ -118,6 +121,30 @@ layer(HostedLive, { excludeTestServices: true })("OAuth callback in a new tab", 
         yield* browser.omitNetworkTrace;
         // A fresh browser context: it shares the session cookie but nothing from the start.
         yield* browser.login(actors.owner);
+        // The server renders the callback page itself. A page that throws while the server
+        // renders it is sent as the router's loading placeholder and only appears after the
+        // browser renders it again. Rendering reads nothing, so the link still works afterwards.
+        const html = yield* browser.use("Request the sign-in link's document", (page) =>
+          page
+            .context()
+            .request.get(`${signIn.callbackUrl.pathname}${signIn.callbackUrl.search}`, {
+              headers: { accept: "text/html" },
+            })
+            .then((document) => document.text()),
+        );
+        expect(html).toContain("Connecting account…");
+        expect(html).toContain("Finishing sign-in…");
+        const failures: string[] = [];
+        yield* browser.use("Watch hydration", (page) => {
+          page.on("console", (message) => {
+            if (message.type() === "error" && hydrationFailure.test(message.text()))
+              failures.push(message.text());
+          });
+          page.on("pageerror", (error) => {
+            if (hydrationFailure.test(String(error))) failures.push(String(error));
+          });
+          return Promise.resolve();
+        });
         const outcome = yield* openLink(
           "Open the emailed sign-in link in a new tab",
           signIn.callbackUrl,
@@ -125,6 +152,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth callback in a new tab", 
           signIn.app,
         );
         expect(outcome).toEqual({ connected: true, alert: null });
+        expect(failures).toEqual([]);
         const completed = yield* signIn.read;
         expect(completed.state.status).toBe("completed");
         if (completed.state.account !== undefined)

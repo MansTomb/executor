@@ -1,9 +1,14 @@
 import { hostedAnalyticsHandlers } from "./analytics.ts";
-import { hostedProfileHandlers } from "./profiles.ts";
-import { appManagementHandlers, frameworkHandlers } from "@executor-js/app-management";
+import { hostedAppAccountHandlers } from "./app-account-links.ts";
+import {
+  AppGitOrigins,
+  appManagementHandlers,
+  frameworkHandlers,
+} from "@executor-js/app-management";
 import { HostedAppManagementApi, HostedFrameworkApi } from "../contracts/app-management.ts";
 import { hostedAppAccess } from "../app-management.ts";
 import { hostedResourceAccessHandlers } from "./resource-access.ts";
+import { hostedOAuthClientHandlers } from "./oauth-clients.ts";
 import { hostedScheduleHandlers } from "./schedules.ts";
 /** Shared hosted handlers. No Cloudflare, Node, or local-product dependencies. */
 import { Effect, Layer } from "effect";
@@ -49,6 +54,7 @@ const apiContext = HttpApiBuilder.group(HostedApi, "context", (handlers) =>
           organization: grant.access.organization,
           slug: grant.organizationSlug,
           role: grant.access.role,
+          gitOrigins: (yield* AppGitOrigins)(request),
         };
       }),
     );
@@ -62,7 +68,7 @@ export const hostedHandlers = Layer.mergeAll(
   ),
   // Each host provides FrameworkDocumentation from its packaged authoring assets.
   frameworkHandlers(HostedFrameworkApi, HostedApi.identifier).pipe(Layer.provide(hostedAppAccess)),
-  hostedProfileHandlers,
+  hostedAppAccountHandlers,
   hostedScheduleHandlers,
   health,
   catalog,
@@ -70,6 +76,7 @@ export const hostedHandlers = Layer.mergeAll(
   hostedOrganizationHandlers,
   hostedGroupHandlers,
   hostedResourceAccessHandlers,
+  hostedOAuthClientHandlers,
   hostedWebhookSetupHandlers,
   hostedWebhookHandlers,
   hostedWorkflowHandlers,

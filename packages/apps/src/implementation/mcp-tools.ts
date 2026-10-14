@@ -9,6 +9,7 @@ import type { NetworkRefused } from "../contracts/network.ts";
 import { ToolResultObservation } from "../contracts/host.ts";
 /** Adapt any MCP transport into ordinary tools with shared validation behavior. */
 import { Effect, JsonPointer, Schema } from "effect";
+import { fromPromise } from "./authoring.ts";
 import { McpError, type McpTools, type McpToolMetadata } from "../contracts/mcp.ts";
 import { JsonObject, type JsonValue, jsonSchemaDecoder } from "../effect.ts";
 import type { McpClient } from "./mcp-client.ts";
@@ -194,18 +195,18 @@ export const adaptMcpOperation = (
       ? client.call(tool.name, input, context)
       : Effect.gen(function* () {
           const runtime = yield* Effect.context<never>();
-          const result = yield* Effect.tryPromise({
-            try: () =>
-              intercept({
-                tool,
-                context,
-                input,
-                next: () =>
-                  Effect.runPromiseWith(runtime)(client.call(tool.name, input, context), {
-                    signal: context.signal,
-                  }),
+          // The interceptor is the app's code; the upstream call it makes through `next` is not.
+          const result = yield* fromPromise(
+            intercept,
+            "handler",
+          )({
+            tool,
+            context,
+            input,
+            next: () =>
+              Effect.runPromiseWith(runtime)(client.call(tool.name, input, context), {
+                signal: context.signal,
               }),
-            catch: (error) => error,
           });
           return yield* Schema.decodeUnknownEffect(McpToolResult)(result).pipe(
             Effect.mapError(() => new McpError({ phase: "call", reason: "invalid_response" })),

@@ -5,13 +5,57 @@ import { readExecutorSkills } from "@executor-js/app-templates/executor";
 import { bundleWorkerdHost } from "@executor-js/sdk/node/build";
 import { build } from "esbuild";
 import { Effect, FileSystem, Path, Schema } from "effect";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { readFile } from "node:fs/promises";
+import { gunzipSync } from "node:zlib";
 
 const InternalWorker = Schema.Struct({
   main: Schema.String,
   modules: Schema.Record(Schema.String, Schema.String),
 });
+/**
+ * The self-host image runs Executor's build of workerd (UsefulSoftwareCo/workerd), pinned by
+ * release and SHA-256 in `workerd.json`. It adds idle-isolate garbage collection, TCMalloc
+ * release and Worker loader idle unloading, configured by `memory` in the generated config.
+ */
+const WorkerdPin = Schema.Struct({
+  repository: Schema.String,
+  release: Schema.String,
+  assets: Schema.Struct({
+    "linux-64": Schema.Struct({ name: Schema.String, sha256: Schema.String }),
+    "linux-arm64": Schema.Struct({ name: Schema.String, sha256: Schema.String }),
+  }),
+});
+
+/** Downloads the pinned Linux workerd for this machine's architecture and verifies its digest. */
+const pinnedWorkerd = (pinFile: string) =>
+  Effect.gen(function* () {
+    const pin = Schema.decodeUnknownSync(Schema.fromJsonString(WorkerdPin))(
+      yield* Effect.promise(() => readFile(pinFile, "utf8")),
+    );
+    const architecture =
+      process.arch === "x64" ? "linux-64" : process.arch === "arm64" ? "linux-arm64" : undefined;
+    if (architecture === undefined)
+      return yield* Effect.die(new Error(`No pinned workerd for architecture ${process.arch}`));
+    const asset = pin.assets[architecture];
+    const url = `https://github.com/${pin.repository}/releases/download/${pin.release}/${asset.name}`;
+    const archive = yield* (yield* HttpClient.HttpClient).get(url).pipe(
+      Effect.flatMap(HttpClientResponse.filterStatusOk),
+      Effect.flatMap((response) => response.arrayBuffer),
+      Effect.map((bytes) => new Uint8Array(bytes)),
+      Effect.orDie,
+    );
+    const digest = createHash("sha256").update(archive).digest("hex");
+    if (digest !== asset.sha256)
+      return yield* Effect.die(
+        new Error(`${url} has SHA-256 ${digest}; workerd.json pins ${asset.sha256}`),
+      );
+    return { release: pin.release, binary: gunzipSync(archive) };
+  });
+
 const packageRuntime = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem,
     path = yield* Path.Path;
@@ -160,14 +204,15 @@ const packageRuntime = Effect.gen(function* () {
     path.join(output, "workflow-binding.mjs"),
     Schema.decodeUnknownSync(Schema.String)(wrapped.modules[wrapped.main]),
   );
-  yield* fs.copyFile(alchemyResolve.resolve("workerd/bin/workerd"), path.join(output, "workerd"));
+  const workerd = yield* pinnedWorkerd(path.join(root, "apps/hosted/self-host/workerd.json"));
+  yield* fs.writeFile(path.join(output, "workerd"), workerd.binary);
   yield* fs.chmod(path.join(output, "workerd"), 0o755);
   yield* fs.copy(web, path.join(output, "web"), { overwrite: true });
   yield* fs.copy(path.join(root, "packages/telemetry/dist/motel"), path.join(output, "motel"), {
     overwrite: true,
   });
-  // The collector shares the product's process and memory limit. Bound what it holds for
-  // exports in flight (4 x 16 MiB) and what it stores; beyond either it refuses and counts.
+  // The collector shares the container's memory limit. Bound what it holds for exports in
+  // flight (4 x 16 MiB) and what it stores; beyond either it refuses and counts.
   const motelBounds = Object.entries({
     MOTEL_OTEL_MAX_PENDING_INGEST: 4,
     MOTEL_OTEL_MAX_INGEST_BYTES: 16 * 1024 * 1024,
@@ -185,20 +230,55 @@ const packageRuntime = Effect.gen(function* () {
   // resume from durable alarms, so a finished engine leaves memory, and so could a waiting one,
   // but the host's reconciliation reads every open run every few seconds, which keeps it loaded.
   const workflowEngines = `(className="Engine",uniqueKey="executor-app-workflows",enableSql=true)`;
+  // Memory settings of Executor's workerd build (see workerd.json). Upstream workerd never shrinks
+  // an idle isolate's heap and never returns freed malloc memory to the OS, so self-host memory
+  // only rises. These settings:
+  // - when the container's working set (cgroup memory.current minus reclaimable page cache)
+  //   passes 60% of its cgroup limit (the native host fills in the threshold; there is none
+  //   without a limit), run a full GC in each isolate that has run since its last one. Busy
+  //   isolates never go idle, so this is what bounds memory under steady load. These collections
+  //   block requests, so a pass spends at most 100 ms per second, starts 10 s after the previous
+  //   one ended, and waits up to 16 times longer while passes leave usage above the threshold;
+  // - after 10 s without JavaScript activity, send the isolate a moderate memory pressure
+  //   notification and run its pending V8 tasks for 30 s, so the memory reducer can finish;
+  // - let TCMalloc return up to 8 MiB/s of free memory in the background, and all of it after
+  //   those collections.
+  // The build can also unload idle Worker Loader entries (workerLoaderIdleTtlMs). That stays off:
+  // the runner's app Worker residency decides which app Workers stay loaded, and it knows about
+  // calls, elicitations and workflows that workerd does not.
+  const memory = [
+    "maintenanceIntervalMs=1000",
+    "idleIsolateGcDelayMs=10000",
+    "idleIsolateGcMode=moderate",
+    "idleTaskPumpMs=30000",
+    "pressureThresholdMb=@@MEMORY_PRESSURE_MB@@",
+    "pressureCooldownMs=10000",
+    "pressureGcBudgetMs=100",
+    `tcmallocBackgroundReleaseBytesPerSecond=${8 * 1024 * 1024}`,
+    "releaseMemoryAfterGc=true",
+  ].join(",");
+  // `gc` lets each app bridge collect its isolate's garbage after a call; see worker-bridge.ts.
+  // workerd signals memory pressure whenever it creates an isolate, and V8 then drops the Liftoff
+  // code of every WebAssembly module in the process: the product's PGlite and the runner's esbuild.
+  // Each module compiles that code again on its next use into new code pages, while the dropped
+  // code's pages stay resident. Every deployment and every cold app load creates an isolate, so the
+  // process grew by about 9 MB for each app installed and never shrank. Keeping the code is bounded
+  // by the modules' size.
   const config = `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
- v8Flags=["--gc-global"],
+ memory=(${memory}),
+ v8Flags=["--gc-global","--expose-gc","--no-flush-liftoff-code"],
  extensions=[(modules=[(name="cloudflare-runtime:workflows-wrapped-binding",internal=true,esModule=embed "@@RUNTIME@@/workflow-binding.mjs")])],
  services=[
   (name="product",worker=(
    compatibilityDate="2026-09-01",compatibilityFlags=["nodejs_compat"],
    modules=[(name="product.mjs",esModule=embed "@@RUNTIME@@/product.mjs"),(name="executor:pglite.wasm",wasm=embed "@@RUNTIME@@/pglite.wasm"),(name="executor:initdb.wasm",wasm=embed "@@RUNTIME@@/initdb.wasm"),(name="executor:pglite.data",data=embed "@@RUNTIME@@/pglite.data")],
-   bindings=[(name="PRODUCT",durableObjectNamespace="ExecutorProduct"),(name="NATIVE",service="native"),(name="LEGACY_DATABASE",service="legacy-data"),(name="BLOBS",service="builds"),(name="DASHBOARD",service="dashboard"),(name="PUBLIC_FETCH",service="public"),(name="PRIVATE_FETCH",service="internet"),(name="SELF",service=(name="product",entrypoint="SelfOrigin")),(name="APPS",service="apps"),(name="UNSAFE_EVAL",unsafeEval=void)],
+   bindings=[(name="PRODUCT",durableObjectNamespace="ExecutorProduct"),(name="NATIVE",service="native"),(name="LEGACY_DATABASE",service="legacy-data"),(name="BLOBS",service="builds"),(name="DASHBOARD",service="dashboard"),(name="PUBLIC_FETCH",service="public"),(name="PRIVATE_FETCH",service="internet"),(name="MOTEL",service="motel"),(name="SELF",service=(name="product",entrypoint="SelfOrigin")),(name="APPS",service="apps"),(name="UNSAFE_EVAL",unsafeEval=void)],
    durableObjectNamespaces=[(className="ExecutorProduct",uniqueKey="executor-product",enableSql=true,preventEviction=true)],durableObjectStorage=(localDisk="product-data")
   )),
   (name="apps",worker=(
    compatibilityDate="2026-07-30",compatibilityFlags=["nodejs_compat"],modules=[${moduleConfig.join(",")}],
-   bindings=[(name="LOADER",workerLoader=()),(name="DATA",durableObjectNamespace="AppDataSupervisor"),(name="AUTH",text="service-binding"),(name="APPS_PRIVATE_FETCH",json="@@APPS_PRIVATE_FETCH@@"),(name="APP_WORKERS",json="@@APP_WORKERS@@"),(name="PUBLIC_FETCH",service="public"),(name="SELF_ORIGIN",text=@@SELF_ORIGIN@@),(name="NPM_REGISTRY",text=@@NPM_REGISTRY@@),(name="SELF",service=(name="product",entrypoint="SelfOrigin")),(name="HOST",service=(name="product",entrypoint="WorkflowCallbacks")),(name="RUNS",wrapped=(moduleName="cloudflare-runtime:workflows-wrapped-binding",innerBindings=[(name="binding",service=(name="workflows",entrypoint="WorkflowBinding"))]))],
+   bindings=[(name="LOADER",workerLoader=()),(name="DATA",durableObjectNamespace="AppDataSupervisor"),(name="AUTH",text="service-binding"),(name="CREDENTIAL_SECRET",fromEnvironment="EXECUTOR_CREDENTIAL_HANDLE_SECRET"),(name="APPS_PRIVATE_FETCH",json="@@APPS_PRIVATE_FETCH@@"),(name="APP_WORKERS",json="@@APP_WORKERS@@"),(name="APP_WORKER_IDLE_SECONDS",json="@@APP_WORKER_IDLE_SECONDS@@"),(name="PUBLIC_FETCH",service="public"),(name="SELF_ORIGIN",text=@@SELF_ORIGIN@@),(name="NPM_REGISTRY",text=@@NPM_REGISTRY@@),(name="SELF",service=(name="product",entrypoint="SelfOrigin")),(name="HOST",service=(name="product",entrypoint="WorkflowCallbacks")),(name="RUNS",wrapped=(moduleName="cloudflare-runtime:workflows-wrapped-binding",innerBindings=[(name="binding",service=(name="workflows",entrypoint="WorkflowBinding"))]))],
    durableObjectNamespaces=[(className="AppDataSupervisor",uniqueKey="executor-app-data",enableSql=true)],durableObjectStorage=(localDisk="app-data")
   )),
   (name="workflows",worker=(
@@ -206,31 +286,41 @@ const config :Workerd.Config = (
    bindings=[(name="ENGINE",durableObjectNamespace="Engine"),(name="USER_WORKFLOW",service=(name="apps",entrypoint="AppWorkflows")),(name="BINDING_NAME",json=${JSON.stringify(JSON.stringify("executor-app-workflows"))}),(name="WORKFLOW_NAME",json=${JSON.stringify(JSON.stringify("executor-app-workflows"))})],
    durableObjectNamespaces=[${workflowEngines}],durableObjectStorage=(localDisk="workflow-data")
   )),
+  (name="native",external=(address="unix:/tmp/executor-native.sock",http=())),
+  (name="motel",external=(address="unix:/tmp/executor-motel.sock",http=())),
+  (name="public",network=(allow=["public"],tlsOptions=(trustBrowserCas=true,trustedCertificates=[@@EXTRA_CA_CERTIFICATES@@]))),
+  (name="internet",network=(allow=["public","private","local"],tlsOptions=(trustBrowserCas=true,trustedCertificates=[@@EXTRA_CA_CERTIFICATES@@]))),
+  (name="dashboard",disk=(path="@@RUNTIME@@/web")),
+  (name="product-data",disk=(path="/app/data/product",writable=true,allowDotfiles=true)),
+  (name="legacy-data",disk=(path="/app/data/hosted.pglite",allowDotfiles=true)),
+  (name="app-data",disk=(path="/app/data/workerd",writable=true,allowDotfiles=true)),
+  (name="workflow-data",disk=(path="/app/data/workerd/workflows",writable=true,allowDotfiles=true)),
+  (name="builds",disk=(path="/app/data/builds",writable=true))
+ ],
+ sockets=[(name="http",address="0.0.0.0:4400",http=(),service=@@PRODUCT_SERVICE@@)]
+);
+`;
+  // workerd runs a process's JavaScript on one thread. The collector indexes every span it stores,
+  // about a thousand per catalog-wide search, so in the product's process that work delayed MCP
+  // requests by seconds. It runs in its own workerd process and listens only on a private Unix
+  // socket, which the host passes to it and to the product's MOTEL binding. With no TCP listener,
+  // an app's fetch cannot reach its ingest or query routes even when private fetch is allowed.
+  const motelConfig = `using Workerd = import "/workerd/workerd.capnp";
+const config :Workerd.Config = (
+ services=[
   (name="motel",worker=(
    compatibilityDate="2026-09-01",compatibilityFlags=["nodejs_compat"],modules=[(name="motel.mjs",esModule=embed "@@RUNTIME@@/motel/motel.mjs")],
    bindings=[(name="STORE",durableObjectNamespace="MotelCollector"),(name="ASSETS",service="motel-assets"),${motelBounds}],
    durableObjectNamespaces=[(className="MotelCollector",uniqueKey="motel",enableSql=true)],durableObjectStorage=(localDisk="motel-data")
   )),
-  (name="native",external=(address="unix:/tmp/executor-native.sock",http=())),
-  (name="public",network=(allow=["public"],tlsOptions=(trustBrowserCas=true,trustedCertificates=[@@EXTRA_CA_CERTIFICATES@@]))),
-  (name="internet",network=(allow=["public","private","local"],tlsOptions=(trustBrowserCas=true,trustedCertificates=[@@EXTRA_CA_CERTIFICATES@@]))),
-  (name="dashboard",disk=(path="@@RUNTIME@@/web")),(name="motel-assets",disk=(path="@@RUNTIME@@/motel/web/dist")),
-  (name="product-data",disk=(path="/app/data/product",writable=true,allowDotfiles=true)),
-  (name="legacy-data",disk=(path="/app/data/hosted.pglite",allowDotfiles=true)),
-  (name="app-data",disk=(path="/app/data/workerd",writable=true,allowDotfiles=true)),
-  (name="workflow-data",disk=(path="/app/data/workerd/workflows",writable=true,allowDotfiles=true)),
-  (name="builds",disk=(path="/app/data/builds",writable=true)),
+  (name="motel-assets",disk=(path="@@RUNTIME@@/motel/web/dist")),
   (name="motel-data",disk=(path="/app/motel-data",writable=true,allowDotfiles=true))
  ],
- sockets=[(name="http",address="0.0.0.0:4400",http=(),service=@@PRODUCT_SERVICE@@),(name="motel",address="127.0.0.1:4318",http=(),service="motel")]
+ sockets=[(name="motel",address="unix:/tmp/executor-motel.sock",http=(),service="motel")]
 );
 `;
   // Retain dependency notices with the executable image, including the embedded engines.
-  const packageDirectories = new Set<string>([
-    pg + "/..",
-    alchemyRoot,
-    path.dirname(alchemyResolve.resolve("workerd/package.json")),
-  ]);
+  const packageDirectories = new Set<string>([pg + "/..", alchemyRoot]);
   for (const input of Object.keys(product.metafile.inputs)) {
     if (input.startsWith("(disabled):")) continue;
     const absolute = path.resolve(root, input),
@@ -267,11 +357,21 @@ const config :Workerd.Config = (
       if (/^(licen[sc]e|notice|copying|copyright|third.party)([._-]|$)/i.test(name))
         yield* fs.copy(path.join(directory, name), path.join(destination, name));
   }
+  // The fork keeps upstream workerd's license; take its notices from the npm package of the
+  // upstream release it is built from.
+  inventory.push(`workerd@${workerd.release}`);
+  const workerdNotices = path.dirname(alchemyResolve.resolve("workerd/package.json")),
+    workerdLicenses = path.join(output, "licenses", `workerd@${workerd.release}`);
+  yield* fs.makeDirectory(workerdLicenses, { recursive: true });
+  for (const name of yield* fs.readDirectory(workerdNotices))
+    if (/^(licen[sc]e|notice|copying|copyright|third.party)([._-]|$)/i.test(name))
+      yield* fs.copy(path.join(workerdNotices, name), path.join(workerdLicenses, name));
   yield* fs.writeFileString(
     path.join(output, "runtime-packages.txt"),
     inventory.sort().join("\n") + "\n",
   );
   yield* fs.writeFileString(path.join(output, "workerd.capnp"), config);
+  yield* fs.writeFileString(path.join(output, "motel.capnp"), motelConfig);
   // Count real files once, including native assets, and reject any link back to
   // the build tree. This budget covers both supported Linux architectures.
   const runtimeRoot = yield* fs.realPath(output);
@@ -316,4 +416,6 @@ const config :Workerd.Config = (
   );
   yield* Effect.logInfo(`Built workerd runtime at ${output}`);
 });
-NodeRuntime.runMain(Effect.scoped(packageRuntime).pipe(Effect.provide(NodeServices.layer)));
+NodeRuntime.runMain(
+  Effect.scoped(packageRuntime).pipe(Effect.provide([NodeServices.layer, FetchHttpClient.layer])),
+);

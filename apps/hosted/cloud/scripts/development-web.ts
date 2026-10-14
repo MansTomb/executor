@@ -14,6 +14,7 @@ import { cloudSessionCookiePrefix } from "../src/contracts/browser.ts";
 import { homepageResponse } from "../src/implementation/homepage-response.ts";
 import { marketingFiles } from "../src/implementation/marketing.ts";
 import { developmentDashboard } from "../src/implementation/development-web.ts";
+import { resourceOriginsAt } from "../src/infrastructure/stage.ts";
 import { cloudDevtools } from "@executor-js/hosted-testing/cloud";
 import { dashboardPageRoutes } from "../src/implementation/dashboard.ts";
 
@@ -28,7 +29,7 @@ export const developmentRoutes = (
     HttpRouter.add(
       "GET",
       "/",
-      homepageResponse(cookiePrefix, marketing.experiment, dashboard.document(null)),
+      homepageResponse(cookiePrefix, marketing.document, dashboard.document(null)),
     ),
     ...(["login", "login/sso", "create"] as const).map((page) =>
       HttpRouter.add(
@@ -100,6 +101,13 @@ const main = Effect.scoped(
       hmrSocket,
       proxied ? new URL(`http://${listenHost}`) : origin,
       apiOrigin,
+      // The development renderer serves the dashboard on its own origin.
+      {
+        resourceOrigins: yield* resourceOriginsAt(origin.origin),
+        formerPasskeyHost: null,
+        // The development dashboard proxies documentation to the Worker on its own origin.
+        documentation: new URL("/docs/", origin).href,
+      },
     );
     const marketing = yield* marketingFiles(path.join(marketingRoot, "dist"));
     const routes = Layer.mergeAll(

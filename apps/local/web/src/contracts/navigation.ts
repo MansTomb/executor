@@ -1,6 +1,5 @@
-import { ProfileId } from "@executor-js/sdk";
 import { AppView } from "@executor-js/ui/contracts/dashboard";
-import { AccountId, AppId, ProviderId } from "@executor-js/sdk";
+import { AccountId } from "@executor-js/sdk";
 import { Option, Schema } from "effect";
 
 /** Dashboard areas used by route metadata to highlight the sidebar. */
@@ -10,27 +9,11 @@ export type NavigationSection = "apps" | "accounts" | "connect" | "approvals";
 export interface AppSearch {
   readonly view?: AppView | undefined;
   readonly tool?: string | undefined;
-  readonly profile?: ProfileId | undefined;
-}
-
-/** Account creation can return to the originating app requirement. */
-export interface AddAccountSearch {
-  readonly provider?: ProviderId | undefined;
-  readonly app?: AppId | undefined;
-  readonly slot?: string | undefined;
-  readonly profile?: ProfileId | undefined;
 }
 
 /** The account list marks a linked account, which has no page of its own. */
 export interface AccountsSearch {
   readonly account?: AccountId | undefined;
-}
-
-/** Setup offers a newly connected account, then validates its compatibility. */
-export interface SetupSearch {
-  readonly selected?: AccountId | undefined;
-  readonly slot?: string | undefined;
-  readonly profile?: ProfileId | undefined;
 }
 
 const text = Schema.decodeUnknownOption(Schema.NonEmptyString);
@@ -40,22 +23,8 @@ export function parseAppSearch(search: Record<string, unknown>): AppSearch {
   const view = Schema.decodeUnknownOption(AppView)(search.view);
   const tool = text(search.tool);
   return {
-    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
     view: Option.getOrUndefined(view),
     tool: Option.getOrUndefined(tool),
-  };
-}
-
-/** Parse optional provider and app identities at the URL boundary. */
-export function parseAddAccountSearch(search: Record<string, unknown>): AddAccountSearch {
-  const provider = Schema.decodeUnknownOption(ProviderId)(search.provider);
-  const app = Schema.decodeUnknownOption(AppId)(search.app);
-  const slot = text(search.slot);
-  return {
-    provider: Option.getOrUndefined(provider),
-    app: Option.getOrUndefined(app),
-    slot: Option.getOrUndefined(slot),
-    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
   };
 }
 
@@ -63,17 +32,6 @@ export function parseAddAccountSearch(search: Record<string, unknown>): AddAccou
 export function parseAccountsSearch(search: Record<string, unknown>): AccountsSearch {
   return {
     account: Option.getOrUndefined(Schema.decodeUnknownOption(AccountId)(search.account)),
-  };
-}
-
-/** Parse the account candidate without granting it access to the app. */
-export function parseSetupSearch(search: Record<string, unknown>): SetupSearch {
-  const selected = Schema.decodeUnknownOption(AccountId)(search.selected);
-  const slot = text(search.slot);
-  return {
-    selected: Option.getOrUndefined(selected),
-    slot: Option.getOrUndefined(slot),
-    profile: Option.getOrUndefined(Schema.decodeUnknownOption(ProfileId)(search.profile)),
   };
 }
 
@@ -99,13 +57,9 @@ export function localPageTitle(pathname: string): string {
   if (section === "apps") {
     if (item === "add") return action === "custom" ? "Add custom app" : "Add app";
     if (action === "delete") return "Delete app";
-    if (action === "setup") return "Choose accounts";
+    if (action === "setup") return "Accounts";
     return item ? "App" : "Apps";
   }
-  if (section === "accounts") {
-    if (item === "add") return "Connect account";
-    if (action === "credentials") return "Update credentials";
-    return "Accounts";
-  }
+  if (section === "accounts") return "Accounts";
   return "Dashboard";
 }

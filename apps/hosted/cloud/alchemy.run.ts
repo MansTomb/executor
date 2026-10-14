@@ -7,16 +7,21 @@ import * as Planetscale from "alchemy/Planetscale";
 import * as Neon from "alchemy/Neon";
 import * as Docker from "alchemy/Docker";
 import { AlchemyContext } from "alchemy/AlchemyContext";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import AppPages from "./src/app-ui.ts";
 import { cloudAppUiBase } from "./src/contracts/app-ui.ts";
 import ApiLive, { Api } from "./src/main.ts";
 import AppCompilerLive from "./src/compiler.ts";
 import DashboardLive from "./src/dashboard.ts";
 import FormatterLive from "./src/formatter.ts";
+import AuthoringLive from "./src/authoring.ts";
 import AppDataLive from "./src/app-data.ts";
 import ArtifactsCredentialsLive from "./src/artifacts-credentials.ts";
 import McpServerLive from "./src/mcp-server.ts";
+import EdgeLive from "./src/edge.ts";
+import MarketingLive from "./src/marketing.ts";
+import { Marketing } from "./src/infrastructure/marketing-worker.ts";
+import { Edge } from "./src/infrastructure/edge-worker.ts";
 import { McpServer } from "./src/infrastructure/mcp-server-worker.ts";
 import { mcpSessionRetirementGate } from "./src/infrastructure/mcp-session-release.ts";
 import AppDomainControllerLive from "./src/app-domains.ts";
@@ -34,7 +39,10 @@ import {
   ResumeAppDomains,
 } from "./src/infrastructure/app-domain-lifecycle.ts";
 import { appDomainControlSecret } from "./src/infrastructure/app-domain-control.ts";
-import { cloudOrigin } from "./src/infrastructure/stage.ts";
+import { cloudOrigin, productionStage, stageName } from "./src/infrastructure/stage.ts";
+import { AppCatalog } from "./src/infrastructure/app-catalog.ts";
+import { productionOAuthProxyCheck } from "./src/infrastructure/deploy-settings.ts";
+import { testStageEdge, testStageRoleHostRecords } from "./src/infrastructure/role-hosts.ts";
 
 /** Every Worker the stack deploys. `scripts/worker-sizes.ts` builds the same layers. */
 export const cloudWorkers = Layer.mergeAll(
@@ -42,11 +50,14 @@ export const cloudWorkers = Layer.mergeAll(
   AppCompilerLive,
   DashboardLive,
   FormatterLive,
+  AuthoringLive,
   AppDataLive,
   ArtifactsCredentialsLive,
   McpServerLive,
   AppDomainControllerLive,
   InvocationTelemetryLive,
+  EdgeLive,
+  MarketingLive,
 );
 
 export default Alchemy.Stack(
@@ -71,6 +82,8 @@ export default Alchemy.Stack(
     state: stackState,
   },
   Effect.gen(function* () {
+    // Stops the deploy before anything changes when a setting would stop the Worker at startup.
+    yield* productionOAuthProxyCheck.pipe(Effect.orDie);
     // Stops the deploy before anything changes when the release before this one is not live.
     yield* mcpSessionRetirementGate.pipe(Effect.orDie);
     // Provisioning settings resolve outside Worker initialization and are not bound into it.
@@ -78,6 +91,14 @@ export default Alchemy.Stack(
     if (!(yield* AlchemyContext).dev) yield* previewPoolSize;
     yield* authEmailInfrastructure.pipe(Effect.orDie);
     const api = yield* Api;
+    if (!(yield* AlchemyContext).dev) {
+      yield* Marketing;
+      yield* testStageRoleHostRecords;
+      // Production serves the official app feed every deployed stage reads.
+      if (Option.getOrUndefined(yield* stageName) === productionStage) yield* AppCatalog;
+      // A test stage plays v1's edge itself; production's edge is v1's.
+      if (Option.isSome(yield* testStageEdge)) yield* Edge;
+    }
     const appBase = yield* cloudAppUiBase.pipe(Effect.orDie);
     if (appBase !== undefined) {
       const pages = yield* AppPages;

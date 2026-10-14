@@ -1,5 +1,5 @@
 import type { McpCallGuard } from "./mcp-client.ts";
-import { measureAnalytics } from "@executor-js/telemetry";
+import { measureAnalytics, owned } from "@executor-js/telemetry";
 import type { ProviderError } from "../contracts/provider-error.ts";
 import type { NetworkRefused } from "../contracts/network.ts";
 /** One upstream call, with form requests forwarded to the invocation's existing elicitation capability. */
@@ -82,6 +82,7 @@ export const mcpCall = (
       const lifetime = yield* Effect.acquireRelease(
         Effect.sync(() => new AbortController()),
         (controller) =>
+          // oxlint-disable-next-line executor/authored-code-through-adapter -- the MCP SDK's elicitation callbacks
           Effect.promise(async () => {
             controller.abort();
             client.removeRequestHandler("elicitation/create");
@@ -99,7 +100,10 @@ export const mcpCall = (
           if (deliver === undefined) return yield* new ElicitationFailed({ reason: "unavailable" });
           const answer = yield* budget
             .waitForInput(
-              fromPromise(deliver)(form.request).pipe(
+              fromPromise(
+                deliver,
+                "elicitation",
+              )(form.request).pipe(
                 Effect.mapError((error) =>
                   Option.getOrElse(
                     Schema.decodeUnknownOption(ElicitationFailed)(error),
@@ -122,6 +126,7 @@ export const mcpCall = (
             ),
           );
         }).pipe(Effect.tapError((error) => Deferred.fail(failed, error)));
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's elicitation, whose app callback enters through fromPromise
         const callback = Effect.runPromiseWith(runtime)(interaction, { signal }).catch(() => {
           if (!lifetime.signal.aborted)
             Effect.runSync(Deferred.fail(failed, new ElicitationFailed({ reason: "transport" })));
@@ -129,11 +134,13 @@ export const mcpCall = (
           throw new ProtocolError(ErrorCode.InternalError, "User input could not be delivered");
         });
         callbacks.add(callback);
+        // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's elicitation
         return callback.finally(() => callbacks.delete(callback));
       });
       return yield* measureAnalytics(
         { event: "upstream_request", operation: name, transport: "mcp", purpose: "tool" },
         guard(
+          // oxlint-disable-next-line executor/authored-code-through-adapter -- MCP SDK
           Effect.tryPromise({
             try: (signal) =>
               client.callTool({ name, arguments: input }, undefined, {
@@ -158,7 +165,7 @@ export const mcpCall = (
       );
     }),
   ).pipe(
-    Effect.withSpan("provider.mcp.request", {
+    owned("upstream", "provider.mcp.request", {
       kind: "client",
       attributes: {
         "rpc.system.name": "jsonrpc",

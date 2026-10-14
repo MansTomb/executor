@@ -10,6 +10,7 @@ import { Effect, Schema } from "effect";
 import {
   migrationsDirectory,
   reservedTablePrefix,
+  sqlBindingsLimit,
   type AppSqlStorage,
   type Sql,
   type SqlCursor,
@@ -18,10 +19,12 @@ import {
   type SqlValue,
 } from "../contracts/sql.ts";
 import type { SkillFile } from "../contracts/skills.ts";
-import type { MigrateResult } from "../contracts/protocols/10.ts";
+import type { MigrateResult } from "../contracts/protocols/current.ts";
 
 /** The receipt table of workflow step mutations. */
 const receipts = `${reservedTablePrefix}step_receipts`;
+/** The events a step's transaction emitted, restored when a retry replays its receipt. */
+const stepEvents = `${reservedTablePrefix}step_events`;
 /** Applied migrations: their order, file name and content hash. */
 const migrationsTable = `${reservedTablePrefix}migrations`;
 /**
@@ -121,6 +124,11 @@ export const authorSql = (
   options: {
     readonly signal: AbortSignal;
     readonly step?: StepReplay;
+    /**
+     * The invocation's emitted events. A transaction that rolls back also discards the events its
+     * callback emitted, so subscribers never hear of writes that did not commit.
+     */
+    readonly emitted?: unknown[];
   },
 ) => {
   let closed = false;
@@ -167,6 +175,12 @@ export const authorSql = (
     mode: "read" | "write",
   ): SqlCursor<Row> => {
     live();
+    if (bindings.length > sqlBindingsLimit)
+      throw refuse(
+        new Error(
+          `A statement can bind at most ${sqlBindingsLimit} values, but this one binds ${bindings.length}. Pass a long list as one JSON array and read it with json_each(?), or split the work into batches.`,
+        ),
+      );
     if (mode === "write") {
       const statement = () => {
         const cursor = materialize<Row>(storage.sql.exec(query, ...bindings));
@@ -242,7 +256,12 @@ export const authorSql = (
     transactions += 1;
     violation = undefined;
     const handle = transactionHandle();
-    return storage.transactionSync(() => {
+    const emittedBefore = options.emitted?.length;
+    const discardEmitted = () => {
+      if (options.emitted !== undefined && emittedBefore !== undefined)
+        options.emitted.length = emittedBefore;
+    };
+    const body = () => {
       open = true;
       try {
         const complete = () => {
@@ -264,13 +283,29 @@ export const authorSql = (
         const saved = storage.sql
           .exec(`SELECT fingerprint, result FROM ${receipts} WHERE id = ?`, step.key)
           .toArray()[0];
+        storage.sql.exec(
+          `CREATE TABLE IF NOT EXISTS ${stepEvents} (id TEXT PRIMARY KEY, events TEXT NOT NULL) WITHOUT ROWID`,
+        );
         if (saved !== undefined) {
           if (saved.fingerprint !== step.fingerprint)
             throw new Error("This workflow step already ran with different input.");
+          // A retry after its events could not be saved emits them again, with their IDs.
+          const replayed = storage.sql
+            .exec(`SELECT events FROM ${stepEvents} WHERE id = ?`, step.key)
+            .toArray()[0];
+          if (replayed !== undefined && options.emitted !== undefined)
+            options.emitted.push(...(JSON.parse(String(replayed.events)) as unknown[]));
           // SAFETY: the receipt holds what this transaction returned, encoded below.
           return JSON.parse(String(saved.result)) as T;
         }
         const encoded = JSON.stringify(complete() ?? null);
+        const emitted = options.emitted?.slice(emittedBefore ?? 0) ?? [];
+        if (emitted.length > 0)
+          storage.sql.exec(
+            `INSERT INTO ${stepEvents} (id, events) VALUES (?, ?)`,
+            step.key,
+            JSON.stringify(emitted),
+          );
         storage.sql.exec(
           `INSERT INTO ${receipts} (id, fingerprint, result) VALUES (?, ?, ?)`,
           step.key,
@@ -284,7 +319,14 @@ export const authorSql = (
         open = false;
         handle.end();
       }
-    });
+    };
+    // A failure anywhere, including at commit, rolls back the writes and the events with them.
+    try {
+      return storage.transactionSync(body);
+    } catch (error) {
+      discardEmitted();
+      throw error;
+    }
   };
   const writer: Sql = {
     // A step's writes go through its one transaction, which also records its receipt.
@@ -341,11 +383,61 @@ interface Migration {
 }
 
 const sha256 = (text: string) =>
+  // oxlint-disable-next-line executor/authored-code-through-adapter -- Web Crypto
   Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(text))).pipe(
     Effect.map((digest) =>
       Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""),
     ),
   );
+
+/**
+ * A script up to the end of its last statement. Durable Object SQLite refuses a script whose last
+ * statement is followed by a comment ("SQL code did not contain a statement"), so the comments and
+ * whitespace after it are not run. Quoted text and identifiers may contain `--` and `/*`.
+ */
+const statementsOf = (script: string) => {
+  let end = 0;
+  let index = 0;
+  while (index < script.length) {
+    const char = script[index];
+    const next = script[index + 1];
+    if (char === "-" && next === "-") {
+      const newline = script.indexOf("\n", index);
+      index = newline === -1 ? script.length : newline + 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      const close = script.indexOf("*/", index + 2);
+      index = close === -1 ? script.length : close + 2;
+      continue;
+    }
+    const closing =
+      char === "'" || char === '"' || char === "`" ? char : char === "[" ? "]" : undefined;
+    if (closing !== undefined) {
+      // A doubled quote is an escaped quote; an unterminated one runs to the end, as SQLite reads it.
+      let after = index + 1;
+      while (true) {
+        const found = script.indexOf(closing, after);
+        if (found === -1) {
+          after = script.length;
+          break;
+        }
+        if (closing !== "]" && script[found + 1] === closing) {
+          after = found + 2;
+          continue;
+        }
+        after = found + 1;
+        break;
+      }
+      index = after;
+      end = index;
+      continue;
+    }
+    index += 1;
+    if (char !== undefined && !/\s/u.test(char)) end = index;
+  }
+  return script.slice(0, end);
+};
 
 /** Whether a build's files give the app a database: any `.sql` file in `migrations/`. */
 export const hasMigrations = (files: readonly { readonly path: string }[]) =>
@@ -439,8 +531,11 @@ export const migrate = (storage: AppSqlStorage, files: readonly SkillFile[]) =>
         const pending = migrations.slice(history.length);
         const appliedAt = new Date().toISOString();
         for (const [offset, migration] of pending.entries()) {
+          // The hash covers the whole file; only the statements run. A file of only comments
+          // runs nothing.
+          const statements = statementsOf(migration.content);
           try {
-            storage.sql.exec(migration.content);
+            if (statements !== "") storage.sql.exec(statements);
           } catch (error) {
             // Throwing rolls back every migration of this run.
             throw new MigrationFailed({

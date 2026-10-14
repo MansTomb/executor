@@ -2,7 +2,7 @@
  * App source written the way the app-authoring skill tells an agent to write it. The product
  * deploys and runs it through the ordinary deployment API; nothing here imports product code.
  */
-import { withApps } from "./apps-release.ts";
+import { withApps, mcpSdkVersion } from "./apps-release.ts";
 
 export type AuthoredKind = "openapi" | "mcp" | "graphql";
 
@@ -56,10 +56,10 @@ import { liveOpenapiRouter } from "apps/openapi";
 ${authenticated ? 'import { provider } from "./provider.ts";\n' : ""}
 const configuration = ${serialize(configuration)} as const;
 
-export default defineApp({ accounts: ${authenticated ? "{ service: provider.many() }" : "{}"} }, async ({ accounts, cache, fetch, signal }) => ({
+export default defineApp(${authenticated ? "{ user: { accounts: { service: provider.many() } } }" : "{}"}, async ({ ${authenticated ? "user, " : ""}cache, fetch, signal }) => ({
   tools: ${
     authenticated
-      ? "await accountRouter(accounts.service, async (account) => liveOpenapiRouter({ ...configuration, cache, fetch, signal, account }), { signal })"
+      ? "await accountRouter(user?.accounts.service ?? [], async (account) => liveOpenapiRouter({ ...configuration, cache, fetch, signal, account }), { signal })"
       : "liveOpenapiRouter({ ...configuration, cache, fetch, signal })"
   },
 }));
@@ -83,7 +83,7 @@ export const authoredAppFiles = (
   const authenticated = access === "apiKey";
   const wrap = (call: string) =>
     authenticated
-      ? `accountRouter(accounts.service, async (account) => ${call}, { signal })`
+      ? `accountRouter(user?.accounts.service ?? [], async (account) => ${call}, { signal })`
       : call;
   const imports = (helper: string, path: string) =>
     [
@@ -91,7 +91,9 @@ export const authoredAppFiles = (
       `import { ${helper} } from "${path}";`,
       ...(authenticated ? ['import { provider } from "./provider.ts";'] : []),
     ].join("\n");
-  const accountsDeclaration = authenticated ? "{ service: provider.many() }" : "{}";
+  const requirements = authenticated
+    ? "{ user: { accounts: { service: provider.many() } } }"
+    : "{}";
   const headers = authenticated
     ? `headers: { Authorization: "Bearer " + account.fields.token },`
     : "";
@@ -110,7 +112,7 @@ export const authoredAppFiles = (
         const helper = kind === "mcp" ? "mcpRouter" : "graphqlRouter";
         return `${imports(helper, `apps/${kind}`)}
 
-export default defineApp({ accounts: ${accountsDeclaration} }, async ({ accounts, cache, signal }) => ({
+export default defineApp(${requirements}, async ({ ${authenticated ? "user, " : ""}cache, signal }) => ({
   tools: await ${wrap(`${helper}({
     url: ${serialize(`${origin}/${kind}`)},
     cache,
@@ -128,7 +130,7 @@ export default defineApp({ accounts: ${accountsDeclaration} }, async ({ accounts
     ...(authenticated ? [{ path: "provider.ts", content: provider(name) }] : []),
     packageFile(
       kind === "mcp"
-        ? { "@modelcontextprotocol/sdk": "1.30.0" }
+        ? { "@modelcontextprotocol/sdk": mcpSdkVersion }
         : kind === "graphql"
           ? { graphql: "16.11.0" }
           : {},
@@ -147,8 +149,8 @@ export const oauthMcpAppFiles = (name: string, url: string) => [
 import { mcpRouter } from "apps/mcp";
 import { provider } from "./provider.ts";
 
-export default defineApp({ accounts: { service: provider.many() } }, async ({ accounts, cache, signal }) => ({
-  tools: await accountRouter(accounts.service, async (account) => mcpRouter({
+export default defineApp({ user: { accounts: { service: provider.many() } } }, async ({ user, cache, signal }) => ({
+  tools: await accountRouter(user?.accounts.service ?? [], async (account) => mcpRouter({
     url: ${serialize(url)},
     account,
     cache,
@@ -169,5 +171,5 @@ export const provider = defineProvider({
 });
 `,
   },
-  packageFile({ "@modelcontextprotocol/sdk": "1.30.0" }),
+  packageFile({ "@modelcontextprotocol/sdk": mcpSdkVersion }),
 ];

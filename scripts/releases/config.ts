@@ -16,12 +16,19 @@ export {
 /** Conservative compressed archive budget, checked before npm receives any upload. */
 export const npmArchiveBudgetBytes = 180 * 1024 * 1024;
 
-/** Native platforms supported by the packaged runtime. */
+/**
+ * Native platforms supported by the packaged runtime. The full CLI suite runs against the packaged
+ * archive on linux x64 and on Windows, which no other workflow tests; CI runs it from source on
+ * every push to main. The other targets run only the checks specific to them: the OS credential
+ * store and the desktop app. Intel macOS builds under Rosetta on an Apple Silicon runner and gets
+ * a start-up smoke test, since GitHub's Intel runners take most of an hour for the suite.
+ */
 export const platforms = [
   {
     platform: "darwin",
     arch: "arm64",
-    cliWorkers: 4,
+    cliWorkers: 0,
+    packagedTests: true,
     runner: "blacksmith-6vcpu-macos-15",
     desktopOs: "mac",
     extension: "dmg",
@@ -29,9 +36,9 @@ export const platforms = [
   {
     platform: "darwin",
     arch: "x64",
-    runner: "macos-15-intel",
-    // Two cold PGlite processes starve each other on the native Intel runner.
-    cliWorkers: 1,
+    cliWorkers: 0,
+    packagedTests: false,
+    runner: "blacksmith-6vcpu-macos-15",
     desktopOs: "mac",
     extension: "dmg",
   },
@@ -39,6 +46,7 @@ export const platforms = [
     platform: "linux",
     arch: "x64",
     cliWorkers: 4,
+    packagedTests: true,
     runner: "blacksmith-16vcpu-ubuntu-2404",
     desktopOs: "linux",
     extension: "AppImage",
@@ -46,7 +54,8 @@ export const platforms = [
   {
     platform: "linux",
     arch: "arm64",
-    cliWorkers: 4,
+    cliWorkers: 0,
+    packagedTests: true,
     runner: "blacksmith-16vcpu-ubuntu-2404-arm",
     desktopOs: "linux",
     extension: "AppImage",
@@ -55,6 +64,7 @@ export const platforms = [
     platform: "win32",
     arch: "x64",
     cliWorkers: 4,
+    packagedTests: true,
     runner: "blacksmith-16vcpu-windows-2025",
     desktopOs: "win",
     extension: "exe",

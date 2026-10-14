@@ -8,6 +8,9 @@ import appsPackage from "../../packages/apps/package.json" with { type: "json" }
 /** The version in `packages/apps/package.json`, imported as data from the checkout the suite runs in. */
 export const appsVersion: string = appsPackage.version;
 
+/** The `@modelcontextprotocol/sdk` version that `apps` is built with, which quick add pins. */
+export const mcpSdkVersion: string = appsPackage.devDependencies["@modelcontextprotocol/sdk"];
+
 /** A `package.json` that declares only the host's `apps` release. */
 export const appsManifest = {
   path: "package.json",
@@ -45,3 +48,14 @@ export const declaredApps = (
         Option.getOrUndefined,
       );
 };
+
+/**
+ * A fixture's source as an `apps` release before host protocol 13 reads it: the caller's accounts
+ * without a scope, `{ accounts: { mail } }` and `ctx.accounts`. Fixtures that build one app for
+ * several releases write the current syntax and convert it for the older ones.
+ */
+export const unscopedAccounts = (source: string) =>
+  source
+    .replace(/\{ user: \{ accounts: (\{[^{}]*\}) \} \}/g, "{ accounts: $1 }")
+    .replace(/\{ user: \{ accounts \} \}/g, "{ accounts }")
+    .replace(/\.user\.accounts\b/g, ".accounts");

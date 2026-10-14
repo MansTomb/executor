@@ -18,6 +18,9 @@ import {
   nameAccountDialog,
   nameConnectedAccount,
 } from "../support/name-account.ts";
+import { removeRegisteredClients } from "../support/registered-oauth-clients.ts";
+import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
+import { linkedChoice, linkedLabels } from "../support/account-choices.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -69,7 +72,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
                   path: "index.ts",
                   content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2({discover:${JSON.stringify(issuer.origin)},scopes:["reports:read","offline_access"]})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
                 },
                 appsManifest,
               ],
@@ -89,6 +92,13 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         const ready = (name: string) =>
           browser.use(`Wait for ${name}`, (page) =>
             page.getByRole("button", { name, exact: true }).waitFor({ state: "visible" }),
+          );
+        const chooseClient = (name: string) =>
+          browser.use(`Choose ${name}`, (page) =>
+            page
+              .getByRole("combobox", { name: "OAuth client" })
+              .click()
+              .then(() => page.getByRole("option", { name, exact: true }).click()),
           );
         const click = (name: string) =>
           browser.use(`Click ${name}`, (page) =>
@@ -363,9 +373,10 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           nameConnectedAccount(page, "Work reports"),
         );
         yield* browser.use("Wait for the saved account", (page) =>
-          page.getByRole("radio", { name: "Work reports", exact: true, checked: true }).waitFor(),
+          linkedChoice(page, "Sample service", "Work reports").waitFor({ state: "visible" }),
         );
         yield* capture("Account-connected");
+        // With an account linked, connecting another from the list would replace it.
         yield* click("Connect new account");
         yield* ready("Connect Sample service");
         expect(
@@ -374,14 +385,17 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           ),
         ).toBe(0);
         yield* capture("Replace-account-entry");
-        yield* browser.use("Open saved-client options", (page) =>
+        yield* browser.use("Open client options", (page) =>
           page.getByText("Advanced", { exact: true }).click(),
         );
-        yield* browser.use("Wait for the saved OAuth client", (page) =>
-          page.getByText("Using a saved client", { exact: true }).waitFor(),
+        yield* browser.use("A new account signs in with the automatic client", (page) =>
+          page
+            .getByRole("combobox", { name: "OAuth client" })
+            .filter({ hasText: "Automatic" })
+            .waitFor(),
         );
-        yield* capture("New-account-with-saved-client");
-        yield* click("Change OAuth client");
+        yield* capture("New-account-client-options");
+        yield* chooseClient("Enter client details");
         yield* capture("Manual-client-dialog");
         yield* click("Close");
         const accountId = (yield* body(
@@ -391,16 +405,35 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
         )).accounts.find((account) => account.label === "Work reports")?.id;
         if (accountId === undefined) return yield* Effect.die("The saved account is missing");
-        const accountsPath = `/org/${actors.organization.slug}/accounts`;
+        // Connecting from the app linked the account to it. Credentials are replaced only through
+        // an app the account is linked to.
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toContain(
+          accountId,
+        );
         const onAccount = (url: URL) =>
-          url.pathname === accountsPath && url.searchParams.get("account") === accountId;
+          url.pathname === `/org/${actors.organization.slug}/apps/${app.id}` &&
+          url.searchParams.get("view") === "accounts";
         yield* Effect.addFinalizer(() =>
           api.request(actors.owner, "DELETE", `${prefix}/accounts/${accountId}`).pipe(Effect.orDie),
         );
-        const reconnect = yield* body(
-          Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/accounts/${accountId}/connections`),
-        );
+        const reconnectAccount = () =>
+          Effect.flatMap(
+            api.request(
+              actors.owner,
+              "POST",
+              connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
+              {
+                account: accountId,
+              },
+            ),
+            (response) => body(Resource, response),
+          );
+        const reconnect = yield* reconnectAccount();
+        // There is no reconnect outside an app.
+        expect(
+          (yield* api.request(actors.owner, "POST", `${prefix}/accounts/${accountId}/connections`))
+            .status,
+        ).toBe(404);
         const connectionUrl = `/org/${actors.organization.slug}/connections/${reconnect.id}`;
         const connectionLoading = yield* holdQuery(
           paths(`/connections/${reconnect.id}`),
@@ -416,7 +449,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         yield* capture("Connection-link-loading");
         yield* connectionLoading.release;
         yield* ready("Reconnect Sample service");
-        yield* browser.use("A direct reconnect link opens over its saved account", (page) =>
+        yield* browser.use("A reconnect link opens over its app's accounts", (page) =>
           page.waitForURL(
             (url) => onAccount(url) && url.searchParams.get("connection") === reconnect.id,
           ),
@@ -431,24 +464,35 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         yield* browser.use("Close the direct-link modal", (page) =>
           page.getByRole("dialog").press("Escape"),
         );
-        yield* browser.use("Closing a direct link returns to the saved account", (page) =>
+        yield* browser.use("Closing a reconnect link stays on the app's accounts", (page) =>
           page.waitForURL((url) => onAccount(url) && !url.searchParams.has("connection")),
         );
         expect(
-          yield* browser.use("The account list has no remaining modal", (page) =>
+          yield* browser.use("The app's accounts have no remaining modal", (page) =>
             page.getByRole("dialog").count(),
           ),
         ).toBe(0);
         yield* browser.use("Reopen the same connection link", (page) => page.goto(connectionUrl));
         yield* ready("Reconnect Sample service");
-        yield* browser.use("Open saved-client reconnect options", (page) =>
-          page.getByText("Advanced", { exact: true }).click(),
+        // A reconnect keeps its account's client without asking; replacing it is under Advanced.
+        expect(
+          yield* browser.use("A reconnect offers no client choice up front", (page) =>
+            page.getByRole("combobox", { name: "OAuth client" }).count(),
+          ),
+        ).toBe(0);
+        yield* browser.use("A reconnect keeps its account's client", (page) =>
+          page
+            .getByText("Advanced", { exact: true })
+            .click()
+            .then(() =>
+              page
+                .getByRole("combobox", { name: "OAuth client" })
+                .filter({ hasText: "Current client" })
+                .waitFor(),
+            ),
         );
-        yield* browser.use("Wait for saved-client setup", (page) =>
-          page.getByText("Using a saved client", { exact: true }).waitFor(),
-        );
-        yield* capture("Reconnect-saved-client");
-        yield* click("Change OAuth client");
+        yield* capture("Reconnect-current-client");
+        yield* chooseClient("Enter client details");
         yield* capture("Manual-client-details");
         yield* browser.use("Show the form on mobile", (page) =>
           page.setViewportSize({ width: 390, height: 844 }),
@@ -504,10 +548,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
           page.getByRole("dialog").getByText("Account connected.", { exact: true }).waitFor(),
         );
         yield* capture("Completed-connection-link");
-        const cancelled = yield* body(
-          Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/accounts/${accountId}/connections`),
-        );
+        const cancelled = yield* reconnectAccount();
         yield* browser.use("Open a cancellable attempt", (page) =>
           page.goto(`/org/${actors.organization.slug}/connections/${cancelled.id}`),
         );
@@ -523,13 +564,19 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
         yield* heading("Account not connected");
         yield* capture("Expired-or-other-tab");
         yield* issuer.configure({ registration: false });
+        // The organization's client registered for this server would serve another of its apps.
+        yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
         const manual = yield* deploy("Manual service");
         yield* browser.use("Open a provider without automatic registration", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${manual.id}?view=accounts`),
         );
         yield* click("Connect new account");
-        yield* browser.use("Wait for mandatory manual setup", (page) =>
-          page.getByLabel("Client secret", { exact: true }).waitFor(),
+        // No client is registered, so the administrator is told so and offered registration.
+        yield* browser.use("Wait for the missing client notice", (page) =>
+          page
+            .getByRole("dialog")
+            .getByRole("button", { name: "Register OAuth client", exact: true })
+            .waitFor(),
         );
         yield* capture("Client-required-first-connection");
         yield* evidence.json("oauth-protocol-observations.json", yield* issuer.observations);
@@ -555,7 +602,7 @@ export default defineApp({accounts:{service}},async()=>({tools: router({})}));`,
               path: "index.ts",
               content: `import { defineApp, defineProvider, oauth2, router } from "apps";
 const service=defineProvider({name:"Sample service",auth:{oauth:oauth2({discover:${JSON.stringify(issuer.origin)},scopes:["reports:read"]})}});
-export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
+export default defineApp({user: { accounts:{service} }},async()=>({tools:router({})}));`,
             },
             appsManifest,
           ],
@@ -584,7 +631,10 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
             )).account.label;
           });
         const appPath = `/org/${actors.organization.slug}/apps/${app.id}`;
-        /** Connect from the app's Accounts tab and return with the naming dialog open. */
+        /**
+         * Connect from the app's Accounts tab and return with the naming dialog open. With an
+         * account linked, connecting another replaces it.
+         */
         const connect = () =>
           Effect.gen(function* () {
             yield* browser.use("Connect a new account from the list", (page) =>
@@ -647,7 +697,7 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
         expect(afterClose.url.pathname).toBe(appPath);
         expect(afterClose.url.searchParams.get("view")).toBe("accounts");
         yield* browser.use("The account keeps its default name in the app", (page) =>
-          page.getByRole("radio", { name: "Default", exact: true }).waitFor(),
+          linkedChoice(page, "Sample service", "Default").waitFor({ state: "visible" }),
         );
         expect(yield* label(first)).toBe("Default");
 
@@ -661,18 +711,23 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
         expect(afterSave.count).toBe(0);
         expect(afterSave.url.pathname).toBe(appPath);
         yield* browser.use("The app shows the saved name", (page) =>
-          page.getByRole("radio", { name: "Work reports", exact: true }).waitFor(),
+          linkedChoice(page, "Sample service", "Work reports").waitFor({ state: "visible" }),
         );
+        expect(
+          yield* browser.use("The second account replaced the first", (page) =>
+            linkedLabels(page, "Sample service"),
+          ),
+        ).toEqual(["Work reports"]);
         expect(yield* label(second)).toBe("Work reports");
         expect(yield* label(first)).toBe("Default");
         yield* browser.checkpoint("Named OAuth account in the app");
 
-        const reconnect = yield* body(
-          Resource,
-          yield* api.request(actors.owner, "POST", `${prefix}/accounts/${second}/connections`),
+        // Credentials are replaced from the app that selects the account, through its menu.
+        yield* browser.use("Open the selected account's menu", (page) =>
+          page.getByRole("button", { name: "Manage Work reports", exact: true }).click(),
         );
-        yield* browser.use("Open the reconnect link", (page) =>
-          page.goto(`/org/${actors.organization.slug}/connections/${reconnect.id}`),
+        yield* browser.use("Choose Reconnect", (page) =>
+          page.getByRole("menuitem", { name: "Reconnect", exact: true }).click(),
         );
         yield* browser.use("Reconnect the named account", (page) =>
           page
@@ -680,15 +735,23 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
             .getByRole("button", { name: "Reconnect Sample service", exact: true })
             .click(),
         );
-        yield* browser.use("Allow access again", (page) =>
-          page.getByRole("button", { name: "Allow access", exact: true }).click(),
+        const reconnected = yield* browser.use("Allow access again", (page) =>
+          Promise.all([
+            page.waitForResponse(
+              (response) =>
+                response.request().method() === "POST" &&
+                /\/connections\/[^/]+\/oauth\/complete$/.test(new URL(response.url()).pathname),
+            ),
+            page.getByRole("button", { name: "Allow access", exact: true }).click(),
+          ]).then(([response]) => response.json() as Promise<unknown>),
         );
-        yield* browser.use("A reconnect returns to its account", (page) =>
+        expect(
+          (yield* Schema.decodeUnknownEffect(Schema.Struct({ id: Schema.String }))(reconnected)).id,
+        ).toBe(second);
+        yield* browser.use("A reconnect returns to the app's accounts", (page) =>
           page
             .waitForURL(
-              (url) =>
-                url.pathname === `/org/${actors.organization.slug}/accounts` &&
-                url.searchParams.get("account") === second,
+              (url) => url.pathname === appPath && url.searchParams.get("view") === "accounts",
             )
             .then(() =>
               page.getByRole("button", { name: "Manage Work reports", exact: true }).waitFor(),
@@ -701,6 +764,22 @@ export default defineApp({accounts:{service}},async()=>({tools:router({})}));`,
         ).toBe(0);
         expect(yield* label(second)).toBe("Work reports");
         yield* browser.checkpoint("Reconnected account keeps its name");
+        // The Accounts page manages saved accounts but never takes credentials.
+        yield* browser.use("Open the account's menu on Accounts", (page) =>
+          page
+            .goto(`/org/${actors.organization.slug}/accounts`)
+            .then(() =>
+              page.getByRole("button", { name: "Manage Work reports", exact: true }).click(),
+            )
+            .then(() =>
+              page.getByRole("menuitem", { name: "Edit details", exact: true }).waitFor(),
+            ),
+        );
+        expect(
+          yield* browser.use("Accounts offers no reconnect", (page) =>
+            page.getByRole("menuitem", { name: /^(Reconnect|Update credentials)$/ }).count(),
+          ),
+        ).toBe(0);
       }),
     ),
   );

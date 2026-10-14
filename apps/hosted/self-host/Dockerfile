@@ -6,6 +6,7 @@ ENV EXECUTOR_BUILD_VERSION=$EXECUTOR_BUILD_VERSION EXECUTOR_ENVIRONMENT=self-hos
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates python3 make g++ && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY package.json bun.lock ./
+COPY .gitignore ./
 COPY patches ./patches
 COPY tsconfig.json ./
 COPY packages ./packages
@@ -20,8 +21,12 @@ RUN bun run --cwd apps/hosted/self-host package:runtime
 
 FROM golang:1.26.4-bookworm AS native
 WORKDIR /build
+COPY apps/hosted/self-host/native/go.mod apps/hosted/self-host/native/go.sum ./
+RUN go mod download
 COPY apps/hosted/self-host/native ./
 RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /executor-host .
+# Retain the notices of the Go modules compiled into the host.
+RUN go list -deps -f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Dir}}{{end}}{{end}}' . | sort -u | while read -r module directory; do mkdir -p "/licenses/$module" && cp "$directory"/LICENSE* "/licenses/$module/"; done
 
 FROM debian:bookworm-slim AS system
 RUN apt-get update && apt-get install -y --no-install-recommends git gosu && rm -rf /var/lib/apt/lists/*
@@ -40,6 +45,7 @@ WORKDIR /app
 COPY --from=build --chown=1000:1000 /build/apps/hosted/self-host/dist/workerd ./
 COPY --from=native /executor-host /usr/local/bin/executor-host
 COPY --from=native /usr/local/go/LICENSE /usr/share/doc/golang/LICENSE
+COPY --from=native /licenses/ /usr/share/doc/executor-host/
 VOLUME /app/data
 COPY --chmod=755 apps/hosted/self-host/entrypoint.sh /usr/local/bin/executor-entrypoint
 ENTRYPOINT ["executor-entrypoint"]

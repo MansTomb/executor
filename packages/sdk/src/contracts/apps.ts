@@ -1,10 +1,10 @@
-import { UserFacingError } from "@executor-js/utils/user-facing-error";
+import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
 import { ApiError } from "@executor-js/utils/api-error";
 import { DeclaredRequirements } from "apps/contracts";
 import { AppSlug } from "./app-slug.ts";
 export { AppSlug, appSlug } from "./app-slug.ts";
-/** Apps own deployed code and declared requirements. Profiles hold account selections. */
-import { Schema } from "effect";
+/** Apps own deployed code and declared requirements. Callers choose accounts for each operation. */
+import { Effect, Schema } from "effect";
 import { StorageError } from "./shared.ts";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AccountId, AppCodeId, AppId, DeploymentId, OwnerId, ProviderId } from "./shared.ts";
@@ -35,10 +35,20 @@ import {
 } from "./deployment.ts";
 
 /**
+ * Whose accounts fill a requirement. An `app` requirement is filled by the app links, which the
+ * app's managers make for every caller and for the app's background work; a `user` requirement by
+ * each caller's own links. A requirement name is used in one scope only.
+ */
+export const AccountScope = Schema.Literals(["app", "user"]);
+export type AccountScope = typeof AccountScope.Type;
+
+/**
  * A host-resolved account requirement. Available before accounts are selected
  * and before the dynamic factory runs. Provider metadata is data, not JS code.
  */
 export const AccountRequirement = Schema.Struct({
+  /** Recorded at deploy. Deployments saved before scopes declared only user requirements. */
+  scope: AccountScope.pipe(Schema.withDecodingDefaultKey(Effect.succeed("user" as const))),
   provider: ProviderId,
   definition: ProviderDefinition,
   cardinality: Schema.Literals(["one", "many"]),
@@ -55,6 +65,10 @@ export const AppRequirements = Schema.Struct({
   database: DeclaredRequirements.fields.database,
   sql: DeclaredRequirements.fields.sql,
   accounts: Schema.Record(Schema.NonEmptyString, AccountRequirement),
+  /** The events the app emits, read without evaluating it. */
+  events: DeclaredRequirements.fields.events,
+  /** The icons the app declares on `defineApp`, recorded at build without evaluating it. */
+  icons: DeclaredRequirements.fields.icons,
 });
 
 export type AppRequirements = typeof AppRequirements.Type;
@@ -63,13 +77,76 @@ export type AppRequirements = typeof AppRequirements.Type;
 export const ownsDatabase = (requirements: Pick<AppRequirements, "database" | "sql">) =>
   requirements.sql === true || requirements.database !== undefined;
 
-/** Saved slot -> account ID or account IDs. Empty arrays explicitly select zero for many(). */
+/** A retained deployment's build metadata and the requirements its code declares. */
+export const RetainedDeployment = Schema.Struct({
+  ...DeploymentMetadata.fields,
+  requirements: AppRequirements,
+});
+export type RetainedDeployment = typeof RetainedDeployment.Type;
+
+/**
+ * Requirement name -> one account ID for a plain requirement, or account IDs for many(). The
+ * shape that captured background work stores, matching the requirement's cardinality.
+ */
 export const SelectedAccounts = Schema.Record(
   Schema.NonEmptyString,
   Schema.Union([AccountId, Schema.Array(AccountId)]),
 );
 
 export type SelectedAccounts = typeof SelectedAccounts.Type;
+
+/** One scope's accounts: requirement name -> account IDs. */
+export const ScopeAccounts = Schema.Record(Schema.NonEmptyString, Schema.Array(AccountId));
+export type ScopeAccounts = typeof ScopeAccounts.Type;
+
+/**
+ * The accounts an operation runs with, by scope: requirement name -> account IDs. Products resolve
+ * `app` from the app links and `user` from the caller's user links; callers never choose
+ * them. Every declared requirement is named in its scope. A plain requirement takes exactly one
+ * account; many() takes zero or more. Without `user` the operation runs without a caller, as app
+ * schedules and app-account webhooks do: with the app's accounts only, and a context without
+ * `user`.
+ */
+export const AppAccounts = Schema.Struct({
+  app: ScopeAccounts,
+  user: Schema.optionalKey(ScopeAccounts),
+});
+
+export type AppAccounts = typeof AppAccounts.Type;
+
+/** Each requirement an invocation names with its accounts, across both scopes. */
+export const invocationEntries = (
+  accounts: AppAccounts,
+): ReadonlyArray<readonly [string, ReadonlyArray<AccountId>]> => [
+  ...Object.entries(accounts.app),
+  ...Object.entries(accounts.user ?? {}),
+];
+/**
+ * The same scope and the same accounts for each requirement, in any order; requirements without
+ * accounts name none.
+ */
+export const sameAccounts = (left: AppAccounts, right: AppAccounts) => {
+  const named = (accounts: AppAccounts) =>
+    new Map(
+      invocationEntries(accounts)
+        .filter(([, ids]) => ids.length > 0)
+        .map(([slot, ids]) => [slot, new Set(ids)] as const),
+    );
+  const a = named(left);
+  const b = named(right);
+  return (
+    (left.user === undefined) === (right.user === undefined) &&
+    a.size === b.size &&
+    [...a].every(([slot, ids]) => {
+      const other = b.get(slot);
+      return (
+        other !== undefined && other.size === ids.size && [...ids].every((id) => other.has(id))
+      );
+    })
+  );
+};
+/** AppAccounts in a GET query: JSON text, so an empty requirement survives as []. */
+export const AppAccountsQuery = Schema.optional(Schema.fromJsonString(AppAccounts));
 
 /** Display names are nonblank and bounded; they do not replace stable app identities. */
 export const AppName = Schema.String.check(
@@ -202,7 +279,7 @@ export const AppSlugTaken = ApiError.define({
 });
 export type AppSlugTaken = typeof AppSlugTaken.Type;
 
-/** A saved selection does not match the app's declared provider or cardinality. */
+/** A selection does not match the app's declared provider or cardinality. Each reason has its own recovery. */
 export const AccountSelectionInvalid = UserFacingError.define({
   tag: "AccountSelectionInvalid",
   status: 422,
@@ -217,32 +294,121 @@ export const AccountSelectionInvalid = UserFacingError.define({
       "duplicate_account",
     ]),
   },
-  title: "Account selection needs attention",
-  description: "The selected accounts do not match this app’s requirements.",
-  recovery: {
-    action: "Open Accounts and review the selected profile’s account choices.",
-    instructions:
-      "Compare the current app requirements with the selected profile’s saved account bindings. Identify the missing slot, wrong provider, duplicate account, or incorrect number of accounts. Ask for the intended account choice when it is unclear; never substitute another identity automatically. Verify tool discovery with the corrected selection.",
-  },
+  recorded: ({ reason }) => `Account selection does not match the app's requirements: ${reason}`,
+  // Every reason except unknown_slot names a slot the app's current deployment declares, so the
+  // slot is the app's own requirement name, not a value the caller chose.
+  presentation: ({ slot, reason }) =>
+    (
+      ({
+        unknown_slot: {
+          title: "Account requirement not found",
+          description:
+            "The app’s current deployment doesn’t declare the account requirement that was selected.",
+          recovery: {
+            action: "Open Accounts and choose accounts for the requirements this app declares now.",
+            instructions:
+              "Read the app’s current account requirements; a redeploy may have renamed or removed one. Use a requirement name the app declares now, and drop saved choices for requirements it no longer declares. Never move an account to another requirement without the user’s choice. Verify tool discovery with the corrected selection.",
+          },
+        },
+        expected_one: {
+          title: "Choose one account",
+          description: `The “${slot}” requirement takes one account, but a list was selected.`,
+          recovery: {
+            action: "Open Accounts and choose one account for this requirement.",
+            instructions:
+              "The app declares this requirement with one account. Select a single account ID, not a list. Ask the user which account to keep when it is unclear; never pick one automatically. Verify tool discovery with the corrected selection.",
+          },
+        },
+        expected_many: {
+          title: "Choose a list of accounts",
+          description: `The “${slot}” requirement takes a list of accounts, but a single account was selected.`,
+          recovery: {
+            action: "Open Accounts and review the accounts selected for this requirement.",
+            instructions:
+              "The app declares this requirement with several accounts. Select the account IDs as a list, even when there is one. Keep the user’s existing choices. Verify tool discovery with the corrected selection.",
+          },
+        },
+        provider_mismatch: {
+          title: "Account belongs to another provider",
+          description: `The account was connected for a different provider definition than the one this app now declares for “${slot}”. Changing a provider’s name, labels, fields or OAuth scopes makes it a new provider, and accounts connected for the old one don’t fit it.`,
+          recovery: {
+            action: "Open Accounts and connect a new account for this requirement.",
+            instructions:
+              "This account can’t be selected or reconnected for this requirement. Start a new connection for it without `account` (with the Executor app, appAccounts.userConnect or appAccounts.appConnect for the requirement, without `account`), and give the user the returned URL. If the provider change was unintended, restore the previous definition and redeploy instead. Keep the old account; never substitute another identity automatically. Verify tool discovery once the new account is selected.",
+          },
+        },
+        duplicate_account: {
+          title: "Account selected twice",
+          description: `The same account is selected more than once for “${slot}”.`,
+          recovery: {
+            action: "Open Accounts and remove the repeated account.",
+            instructions:
+              "Select each account ID once in this requirement’s list. Keep the user’s other choices. Verify tool discovery with the corrected selection.",
+          },
+        },
+      }) satisfies Record<typeof reason, ErrorPresentation>
+    )[reason],
 });
 /** Parsed invalid account selection. */
 export type AccountSelectionInvalid = typeof AccountSelectionInvalid.Type;
 
-/** A required account selection is missing; a new app can be configured before it can run. */
+/**
+ * A plain requirement has no linked account: a user requirement none the caller linked, an app
+ * requirement no app link. A new app can be set up before it can run. Only people who can edit the
+ * app link an app requirement's account, so the recovery names who can fix it.
+ */
 export const AccountRequired = UserFacingError.define({
   tag: "AccountRequired",
   status: 409,
-  fields: { app: AppId, deployment: DeploymentId, slot: Schema.String },
-  title: "Choose an account to continue",
-  description: "This app needs an account that has not been selected yet.",
+  fields: { app: AppId, deployment: DeploymentId, slot: Schema.String, scope: AccountScope },
+  presentation: ({ slot, scope }) =>
+    scope === "app"
+      ? {
+          title: "Someone who can edit this app needs to link an account",
+          description: `This app needs its own “${slot}” account, which someone who can edit the app links for everyone who uses it. None is linked yet.`,
+          recovery: {
+            action: "Ask someone who can edit this app to link an account on its Accounts tab.",
+            instructions:
+              "This is an app account requirement: it is linked for everyone, and only people who can edit the app link it. If the user can edit the app, guide them to link an account they can use for this requirement, or connect a new one for it (with the Executor app, appAccounts.appGet lists the accounts they could link, then appAccounts.appLink or appAccounts.appConnect). Otherwise tell the user that someone who can edit the app must link it. Verify tool discovery once it is linked.",
+          },
+        }
+      : {
+          title: "Link an account to continue",
+          description: "This app needs an account that is not linked to it yet.",
+          recovery: {
+            action:
+              "Open the app's Accounts tab and connect or link an account for each requirement.",
+            instructions:
+              "Read the current app’s account requirements and the accounts linked to it (with the Executor app, appAccounts.userGet lists the accounts the user could link for a requirement). Guide the user to connect or link the intended account for each missing requirement (appAccounts.userLink or appAccounts.userConnect). Keep the accounts already linked and verify tool discovery when every requirement has an account.",
+          },
+        },
+});
+/** A plain requirement with no linked account. */
+export type AccountRequired = typeof AccountRequired.Type;
+
+/** A linked account, named by its saved label. */
+export const AccountChoice = Schema.Struct({ id: AccountId, label: Schema.String });
+export type AccountChoice = typeof AccountChoice.Type;
+
+/**
+ * A caller named accounts for one call, such as `$accounts` on an MCP tool input. Calls no longer
+ * choose accounts: each runs with the accounts the caller linked to the app.
+ */
+export const AccountChoiceUnsupported = UserFacingError.define({
+  tag: "AccountChoiceUnsupported",
+  status: 400,
+  fields: { app: AppId },
+  title: "Accounts are not chosen per call",
+  description:
+    "Accounts are not chosen per call. Each app uses the accounts you linked to it: one for each plain requirement, and every linked account for a many() requirement.",
   recovery: {
-    action: "Open Accounts and connect or select an account for each requirement.",
+    action: "Call again without choosing accounts. Change the app's accounts in its Accounts tab.",
     instructions:
-      "Read the current app’s account requirements and selected profile. Guide the user to connect or select the intended account for each missing requirement. Preserve existing choices and verify tool discovery when the selection is complete.",
+      "Remove the account choice from the call and call again. To use a different account, ask the user to link it in the app's Accounts tab; linking another account for a plain requirement replaces the one linked before.",
   },
 });
-/** Parsed missing account selection. */
-export type AccountRequired = typeof AccountRequired.Type;
+/** A call that tried to choose its accounts. */
+export type AccountChoiceUnsupported = typeof AccountChoiceUnsupported.Type;
 
 /** Stop and clean up webhook subscriptions before deleting their configured app. */
 export const AppWebhooksActive = ApiError.define({
@@ -296,7 +462,6 @@ export const AppInputs = {
     ids: Schema.optional(Schema.Array(AppId)),
     name: Schema.optional(AppName),
     slug: Schema.optional(AppSlug),
-    account: Schema.optional(AccountId),
   }),
   activate: Schema.Struct({
     app: AppId,
@@ -367,7 +532,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       error: [StorageError, ...sourceErrors, AppNotFound],
     }).annotate(
       OpenApi.Description,
-      "Save a complete file list as a commit on the working branch without deploying it. Omitted files are deleted. Returns the new revision; the files are not echoed.",
+      "Save a complete file list as a commit on the working branch without deploying it. Omitted files are deleted. Returns the new revision and `removed`: how many files this save deleted and the first of their paths; the files are not echoed. A deleted file stays at the `expected` revision (`GET /v1/apps/:app/revisions/:commit`): to keep it, commit again against the new revision with it before deploying. A file path cannot also be a folder (`a` and `a/b`); such a save fails with SourcePathConflict and saves nothing. Paths must be valid Unicode; a lone surrogate fails with SourcePathNotUnicode.",
     ),
     HttpApiEndpoint.get("history", "/v1/apps/:app/history", {
       params: appParams,
@@ -424,10 +589,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       query: ownerQuery,
       success: App,
       error: [StorageError, AppNotFound],
-    }).annotate(
-      OpenApi.Description,
-      "Inspect an app and its account requirements. Read profiles for saved selections.",
-    ),
+    }).annotate(OpenApi.Description, "Inspect an app and its account requirements."),
   )
   .add(
     HttpApiEndpoint.get("list", "/v1/apps", {
@@ -435,7 +597,6 @@ export const AppsGroup = HttpApiGroup.make("apps")
         owner: AppInputs.list.fields.owner,
         name: AppInputs.list.fields.name,
         slug: AppInputs.list.fields.slug,
-        account: AppInputs.list.fields.account,
         // A JSON query value preserves [] instead of dropping it as an absent query parameter.
         ids: Schema.optional(Schema.fromJsonString(Schema.Array(AppId))),
       },
@@ -455,7 +616,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       error: [StorageError, AppWebhooksActive, AppWorkflowsActive],
     }).annotate(
       OpenApi.Description,
-      "Delete one app and its profiles. Saved accounts, retained deployments and other copies are kept. Repeating removal is safe.",
+      "Delete one app, its schedules and its webhook sources. Saved accounts, retained deployments and other copies are kept. Repeating removal is safe.",
     ),
   )
   .add(
@@ -481,7 +642,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
         expectedDeployment: AppInputs.activate.fields.expectedDeployment,
       }),
       success: App,
-      // Same code lineage only. Profile setup becomes pending; selections remain unchanged.
+      // Same code lineage only. Managed webhooks re-register for the new deployment.
       error: [
         StorageError,
         AppNotFound,
@@ -493,7 +654,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
       ],
     }).annotate(
       OpenApi.Description,
-      "Activate a retained deployment in the same code lineage. Profile setup becomes pending; calls validate selections against the active requirements. expectedDeployment rejects a concurrent activation.",
+      "Activate a retained deployment in the same code lineage. Managed webhooks re-register for it; calls validate their accounts against the active requirements. expectedDeployment rejects a concurrent activation.",
     ),
   )
   .add(
@@ -515,9 +676,12 @@ export const AppsGroup = HttpApiGroup.make("apps")
         deploymentOwner: AppInputs.source.fields.deploymentOwner,
         deployment: AppInputs.source.fields.deployment,
       },
-      success: DeploymentMetadata,
+      success: RetainedDeployment,
       error: [StorageError, AppNotFound, AppNotDeployed, DeploymentNotFound],
-    }).annotate(OpenApi.Description, "Read retained build metadata without fetching source files."),
+    }).annotate(
+      OpenApi.Description,
+      "Read a retained deployment's build metadata and account requirements without fetching source files.",
+    ),
   )
   .add(
     HttpApiEndpoint.get("source", "/v1/apps/:app/source", {

@@ -4,7 +4,7 @@ import { passkeyClient } from "@better-auth/passkey/client";
 import { createAuthClient } from "better-auth/client";
 import { dashboardAuthClientOptions } from "@executor-js/ui/contracts/http";
 import { emailOTPClient } from "better-auth/client/plugins";
-import { authRequest } from "@executor-js/hosted-web/contracts/auth";
+import { AuthFailed, authRequest, sessionAtom } from "@executor-js/hosted-web/contracts/auth";
 import { Effect, Schema } from "effect";
 import { Atom } from "effect/reactivity";
 import { acknowledge, acknowledgedQuery, invalidate } from "@executor-js/ui/contracts/mutations";
@@ -50,6 +50,14 @@ export const verifyCodeAtom = BrowserAtoms.fn(
       Effect.tap(() => Effect.sync(() => finishCloudSignIn(input.redirect))),
       Effect.asVoid,
     ),
+);
+/**
+ * The host whose passkeys stopped working when the dashboard moved off it, sent with each
+ * server-rendered document. Null where the dashboard has not moved.
+ */
+export const formerPasskeyHostAtom = Atom.make<string | null>(null).pipe(
+  Atom.serializable({ key: "cloud:former-passkey-host", schema: Schema.NullOr(Schema.String) }),
+  Atom.keepAlive,
 );
 /** Start the browser's WebAuthn ceremony only after an explicit click. */
 export const passkeySignInAtom = BrowserAtoms.fn((redirect: string) =>
@@ -100,4 +108,47 @@ export const deletePasskeyAtom = Atom.family((id: string) =>
       Effect.asVoid,
     ),
   ),
+);
+/** SSO users' addresses belong to their identity provider; the server refuses to change them. */
+const emailChangeFailure = (error: AuthFailed) =>
+  error.code === "SSO_MANAGED_EMAIL"
+    ? new AuthFailed({
+        code: error.code,
+        message:
+          "Your organization's SSO connection manages your email. Ask an administrator to change it.",
+      })
+    : error;
+/** An email change starts with a code to the current address, which must approve it. */
+export const sendEmailChangeApprovalAtom = BrowserAtoms.fn((email: string) =>
+  authRequest((options) =>
+    cloudAuthClient.emailOtp.sendVerificationOtp({ email, type: "email-verification" }, options),
+  ).pipe(Effect.withSpan("ui.auth.sendEmailChangeApproval"), Effect.asVoid),
+);
+/** The approval code unlocks a code to the new address; nothing changes until that one is used. */
+export const requestEmailChangeAtom = BrowserAtoms.fn(
+  (input: { readonly newEmail: string; readonly otp: string }) =>
+    authRequest((options) => cloudAuthClient.emailOtp.requestEmailChange(input, options)).pipe(
+      Effect.mapError(emailChangeFailure),
+      Effect.withSpan("ui.auth.requestEmailChange"),
+      Effect.asVoid,
+    ),
+);
+/** The new address's code moves the account, then the session shows the new address. */
+export const changeEmailAtom = BrowserAtoms.fn(
+  (input: { readonly newEmail: string; readonly otp: string }, get) =>
+    authRequest((options) => cloudAuthClient.emailOtp.changeEmail(input, options)).pipe(
+      (work) => observeBrowserUsage("auth", "change_email", work),
+      Effect.mapError(emailChangeFailure),
+      Effect.tap(() =>
+        Effect.sync(() =>
+          acknowledge(get, sessionAtom, (current) =>
+            current === null
+              ? current
+              : { ...current, user: { ...current.user, email: input.newEmail.toLowerCase() } },
+          ),
+        ),
+      ),
+      Effect.withSpan("ui.auth.changeEmail"),
+      Effect.asVoid,
+    ),
 );

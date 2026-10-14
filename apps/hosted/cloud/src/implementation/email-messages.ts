@@ -9,9 +9,16 @@ const purposes = {
     heading: "Your sign-in code",
     instruction: "Copy and paste this code into Executor to sign in.",
   },
+  /** A sign-in code for an email with no account yet; verifying it creates the account. */
+  "sign-up": {
+    heading: "Your sign-up code",
+    instruction: "Copy and paste this code into Executor to create your account.",
+  },
+  /** Sent to the current address; an email change needs this code before the new address gets one. */
   "email-verification": {
-    heading: "Verify your email address",
-    instruction: "Copy and paste this code into Executor to verify your email address.",
+    heading: "Approve your email change",
+    instruction:
+      "Someone asked to change the email address of your Executor account. Copy and paste this code into Executor to approve the change.",
   },
   "forget-password": {
     heading: "Your password reset code",
@@ -91,39 +98,46 @@ export const invitationEmailMessage = ({
 };
 
 /**
- * A personal, all-lowercase welcome with matching text and HTML; recipient names are
- * escaped, never markup. It carries one starter prompt with the deployment's MCP URL and
- * the docs link, and the unsubscribe link is an ordinary sentence rather than a footer.
+ * The docs live on the site origin, the edge when the deployment has role hosts; the MCP
+ * endpoint is on the canonical MCP origin.
+ */
+export interface WelcomeEmailOrigins {
+  readonly site: string;
+  readonly resourceOrigin: string;
+}
+
+/**
+ * A personal welcome with matching text and HTML; recipient names are escaped, never
+ * markup. It carries one starter prompt with the deployment's MCP URL and the docs link.
+ * The body reads as a direct note, so unsubscribing is left to the inbox's
+ * List-Unsubscribe control.
  */
 export const welcomeEmailMessage = (
   email: string,
   name: string,
   links: UnsubscribeLinks,
-  origin: string,
+  origins: WelcomeEmailOrigins,
 ): AuthEmail => {
-  // IaC serves the docs and MCP endpoint on the same canonical cloud origin.
-  const docsUrl = `${origin}/docs`;
+  const docsUrl = `${origins.site}/docs`;
   const firstName = name.trim().split(/\s+/)[0];
-  const greeting = firstName && !firstName.includes("@") ? `hey ${firstName},` : "hey there,";
-  const starterPrompt = `add the executor mcp server at ${origin}/mcp, then read the executor docs at ${docsUrl} and work out how you can best use executor to help me.`;
+  const greeting = firstName && !firstName.includes("@") ? `Hey ${firstName},` : "Hey there,";
+  const starterPrompt = `Add the Executor MCP server at ${origins.resourceOrigin}/mcp, then read the Executor docs at ${docsUrl} and work out how you can best use Executor to help me.`;
   const paragraphs = [
     greeting,
-    "i'm rhys, founder of executor - thanks for signing up!",
-    "if you're still working out where to start, here's a prompt you can hand to your agent:",
+    "I'm Rhys, founder of Executor. Thanks for signing up!",
+    "Here's a prompt you can hand to your agent to get started:",
     `"${starterPrompt}"`,
-    "candidly, i hate getting these emails as much as you do, so you won't get many from me. when i do send one, i'll make sure it's worth opening.",
-    "if you get stuck or have questions, just reply. this was an automated email but replies go straight to me, and i'd love to hear what you're using executor for.",
+    "This is an email directly from me. If you reply, it comes straight to my inbox. I'd love to hear from you if you need any help or have feedback.",
+    "I hope you enjoy Executor.",
   ];
-  const unsubscribeLead = "and if you'd rather not get these at all, the unsubscribe link is";
-  const unsubscribeUrl = Redacted.value(links.browser);
+  const signOff = ["Best,", "Rhys"];
+  const subject = "Welcome to Executor";
   return {
     to: email,
-    subject: "welcome to executor",
-    text: Redacted.make(
-      `${paragraphs.join("\n\n")}\n\n${unsubscribeLead} right here: ${unsubscribeUrl}`,
-    ),
+    subject,
+    text: Redacted.make([...paragraphs, signOff.join("\n")].join("\n\n")),
     html: Redacted.make(
-      `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>welcome to executor</title></head><body style="font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.6;color:#171717;">${paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}<p>${escapeHtml(unsubscribeLead)} <a style="color:#171717;" href="${escapeHtml(unsubscribeUrl)}">right here</a></p></body></html>`,
+      `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${subject}</title></head><body style="font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.6;color:#171717;">${paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}<p>${signOff.map(escapeHtml).join("<br>")}</p></body></html>`,
     ),
     headers: Redacted.make({
       "List-Unsubscribe": `<${Redacted.value(links.oneClick)}>`,
@@ -147,7 +161,10 @@ export const emailCodeMessage = ({
   const unsolicited = "If you didn't request this, you can safely ignore this email.";
   return {
     to: email,
-    subject: type === "sign-in" ? "Your Executor sign-in code" : `Executor: ${heading}`,
+    subject:
+      type === "sign-in" || type === "sign-up"
+        ? `Your Executor ${type} code`
+        : `Executor: ${heading}`,
     text: Redacted.make(
       `Executor\n\n${heading}\n\n${instruction}\n\n${otp}\n\n${expiry}\n\n${unsolicited}`,
     ),

@@ -4,9 +4,12 @@ import {
   fullAuthority,
   selectedAuthority,
   type AuthorizationPolicy,
+  permitsApp,
+  permittedTargets,
+  eventAccess,
 } from "@executor-js/authorization";
 export { AppPermission } from "@executor-js/authorization";
-import { AppId, ProfileId, ToolName } from "@executor-js/sdk/core";
+import { AccountId, AppId, ToolName, type LinkedAccounts } from "@executor-js/sdk/core";
 import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
 import { Match, Schema } from "effect";
 
@@ -59,14 +62,19 @@ export const GrantRefusal = Schema.Union([
   Schema.Struct({ reason: Schema.Literal("approval"), mode: ApprovalMode }),
   /** The grant includes none of this app's tools. */
   Schema.Struct({ reason: Schema.Literal("app"), app: AppId }),
-  /** The grant includes the app, but not running it as this profile, or without one. */
+  /**
+   * The grant includes the app, but no entry permits running it with these accounts, or without
+   * an account when none is listed.
+   */
   Schema.Struct({
     reason: Schema.Literal("target"),
     app: AppId,
-    profile: Schema.optionalKey(ProfileId),
+    accounts: Schema.optionalKey(Schema.NonEmptyArray(AccountId)),
   }),
   /** The grant includes the app and how it runs, but not this tool. */
   Schema.Struct({ reason: Schema.Literal("tool"), app: AppId, tool: ToolName }),
+  /** The grant selects some of this app's events, and not the one requested. */
+  Schema.Struct({ reason: Schema.Literal("events"), app: AppId }),
 ]);
 export type GrantRefusal = typeof GrantRefusal.Type;
 
@@ -96,6 +104,59 @@ export const approvalRefusal = (
   target.mode !== "browser"
     ? { reason: "approval", mode: target.mode }
     : undefined;
+/**
+ * The caller's linked accounts for each of the app's user requirements that this authority may run
+ * the app with: the accounts its entries target, or every one when an entry targets none.
+ */
+export const targetedLinks = <A extends LinkedAccounts[string]["accounts"][number]>(
+  authority: AuthorizationPolicy,
+  app: AppId,
+  linked: LinkedAccounts<A>,
+): LinkedAccounts<A> => {
+  const targets = permittedTargets(authority.tools, app);
+  if (targets === undefined) return linked;
+  return Object.fromEntries(
+    Object.entries(linked).map(([requirement, linked]) => [
+      requirement,
+      {
+        ...linked,
+        accounts: linked.accounts.filter((account) => targets.accounts.has(account.id)),
+      },
+    ]),
+  );
+};
+/**
+ * Why this authority refuses the caller's links before they are narrowed: a plain user requirement
+ * the caller linked accounts for, none of which its entries target. Narrowed, the requirement
+ * would have no account and read as unlinked; it is the grant that does not allow the account the
+ * requirement uses, its newest link.
+ */
+export const untargetedLinkRefusal = (
+  authority: AuthorizationPolicy,
+  app: AppId,
+  linked: LinkedAccounts,
+): GrantRefusal | undefined => {
+  const targets = permittedTargets(authority.tools, app);
+  if (targets === undefined) return undefined;
+  for (const requirement of Object.values(linked)) {
+    const used = requirement.accounts.at(-1);
+    if (
+      requirement.cardinality === "one" &&
+      used !== undefined &&
+      !requirement.accounts.some((account) => targets.accounts.has(account.id))
+    )
+      return { reason: "target", app, accounts: [used.id] };
+  }
+  return undefined;
+};
+/**
+ * Where one of an app's events may reach a grant with this policy, or undefined when it no
+ * longer may. See `eventAccess`.
+ */
+export const grantEventAccess = (policy: GrantPolicy, app: AppId, event: string) => {
+  const authority = grantAuthorization(policy);
+  return permitsApp(authority, app) ? eventAccess(authority, app, event) : undefined;
+};
 /**
  * Why an issued grant cannot serve this MCP URL, or undefined when it can. A grant cannot
  * change mode or connection by changing the request URL.
@@ -133,8 +194,8 @@ const mcpQuery = (address: McpAddress) => {
   return encoded === "" ? "" : `?${encoded}`;
 };
 /** Canonical OAuth audience for each MCP address. Query parameters are valid RFC 8707 resource URIs. */
-export const mcpResource = (origin: string, address: McpAddress) =>
-  `${origin}/mcp${mcpQuery(address)}`;
+export const mcpResource = (resourceOrigin: string, address: McpAddress) =>
+  `${resourceOrigin}/mcp${mcpQuery(address)}`;
 
 const notBypassed = "Do not bypass authorization.";
 /** Each refusal names what the grant covers. Connection IDs, app IDs and tool names are not secret. */
@@ -178,13 +239,13 @@ const refusalPresentation = (refusal: GrantRefusal): ErrorPresentation =>
           instructions: `An MCP grant, or the connection it was issued through, lists the apps its client may discover and run. Check whether this app should be available to the client. If so, add it to the connection, or connect again and include it when approving access, then verify that the app's tools are listed. ${notBypassed}`,
         },
       }),
-      target: ({ app, profile }) => ({
+      target: ({ app, accounts }) => ({
         title: "Runs-as target not included",
-        description: `This credential’s grant includes the app ${app}, but not running it ${profile === undefined ? "without a profile" : `as the profile ${profile}`}.`,
+        description: `This credential’s grant includes the app ${app}, but not running it ${accounts === undefined ? "without an account" : `with the account${accounts.length === 1 ? "" : "s"} ${accounts.join(", ")}`}.`,
         recovery: {
           action:
-            "Run the app as the grant allows, or add this target to its connection, then retry.",
-          instructions: `For each app, an MCP grant or its connection lists how the app may run: as specific profiles, or without a profile. Check the runs-as choices for this app. Use one the grant includes, or add this one to the connection, then verify that the call succeeds. ${notBypassed}`,
+            "Run the app with accounts the grant allows, or add this target to its connection, then retry.",
+          instructions: `For each app, an MCP grant or its connection lists how the app may run: with specific accounts, or without an account. One entry must permit every account a call uses. Check the runs-as choices for this app. Choose accounts the grant includes, or add these to the connection, then verify that the call succeeds. ${notBypassed}`,
         },
       }),
       tool: ({ app, tool }) => ({
@@ -194,6 +255,15 @@ const refusalPresentation = (refusal: GrantRefusal): ErrorPresentation =>
           action:
             "Use a tool the grant includes, or add this tool to its connection or grant, then retry.",
           instructions: `An MCP grant, or its connection, selects each app's tools by exact name, as all tools, or as read-only tools only; a read-only selection excludes every tool not marked read-only. Check whether this tool should be available to the client. If so, change the connection's tool selection, or connect again and include the tool, then verify that the call succeeds. ${notBypassed}`,
+        },
+      }),
+      events: ({ app }) => ({
+        title: "Events not included",
+        description: `This credential’s grant does not include this event of the app ${app}.`,
+        recovery: {
+          action:
+            "Add this event to the app's event selection in this connection or grant, then retry.",
+          instructions: `An MCP grant, or its connection, selects each app's events as all events or by exact name, beside its tools. Check whether this client should receive the event. If so, change the connection's event selection for the app, or connect again with it, then verify that events/list includes it. ${notBypassed}`,
         },
       }),
     }),
@@ -207,42 +277,76 @@ export const GrantForbidden = UserFacingError.define({
   presentation: ({ refusal }) => refusalPresentation(refusal),
 });
 export type GrantForbidden = typeof GrantForbidden.Type;
-/** Every approval mode for the full-access URL, or for one connection's URL. */
-export const mcpOAuthResources = (origin: string, connection?: ConnectionId) =>
-  ApprovalMode.literals.map((mode) => ({
-    identifier: mcpResource(origin, connection === undefined ? { mode } : { mode, connection }),
-    allowedScopes: ["mcp", "offline_access"],
-  }));
+/**
+ * The origins one kind of resource is served at. The first is canonical: URLs shown to people
+ * and the audience of a request that names no resource use it. Every listed origin keeps
+ * accepting the grants issued for it, so a deployment that adds a hostname lists it beside the
+ * ones clients already use.
+ */
+export type OriginList = readonly [string, ...string[]];
+/**
+ * Where a deployment serves its MCP resources (`<origin>/mcp...`) and its API resource
+ * (`<origin>/api`). The two kinds may live on different hosts. A grant names exactly one
+ * resource, and its token works at every origin of that resource's kind.
+ */
+export interface ResourceOrigins {
+  readonly mcp: OriginList;
+  readonly api: OriginList;
+}
+/** A deployment that serves both kinds of resource on one origin only. */
+export const singleResourceOrigin = (origin: string): ResourceOrigins => ({
+  mcp: [origin],
+  api: [origin],
+});
+/**
+ * The origin of `origins` a request reached, from its `Host`. Discovery names the URL the client
+ * called, because clients refuse metadata for another resource; any other host gets the
+ * canonical origin.
+ */
+export const requestResourceOrigin = (origins: OriginList, host: string | undefined) =>
+  origins.find((origin) => new URL(origin).host === host) ?? origins[0];
+/** Every approval mode for the full-access URL, or for one connection's URL, at every MCP origin. */
+export const mcpOAuthResources = (mcpOrigins: OriginList, connection?: ConnectionId) =>
+  mcpOrigins.flatMap((origin) =>
+    ApprovalMode.literals.map((mode) => ({
+      identifier: mcpResource(origin, connection === undefined ? { mode } : { mode, connection }),
+      allowedScopes: ["mcp", "offline_access"],
+    })),
+  );
 /**
  * RFC 8707 makes `resource` optional. A request that names none is for the plain MCP URL
  * that discovery advertises, in its original model mode: no approval mode or connection is
  * implied. API authority is never a default; a request for the `executor` scope has none.
  */
-export const defaultResource = (origin: string, scope: string | undefined) =>
+export const defaultResource = (mcpOrigin: string, scope: string | undefined) =>
   scope?.split(" ").includes("executor") === true
     ? undefined
-    : mcpResource(origin, { mode: "model" });
-/** Select exactly one known resource. Multi-resource consent must not combine approval modes. */
+    : mcpResource(mcpOrigin, { mode: "model" });
+/**
+ * Select exactly one known resource: an API resource at an API origin or an MCP resource at an
+ * MCP origin. Multi-resource consent must not combine approval modes.
+ */
 export const grantTarget = (
-  origin: string,
+  origins: ResourceOrigins,
   resources: readonly string[],
 ): GrantTarget | undefined => {
   if (resources.length !== 1) return undefined;
   const resource = resources[0];
   if (resource === undefined) return undefined;
-  if (resource === `${origin}/api`) return { kind: "api" };
   const url = URL.parse(resource);
-  if (url === null || `${url.origin}${url.pathname}` !== `${origin}/mcp`) return undefined;
+  if (url === null) return undefined;
+  if (origins.api.includes(url.origin) && resource === `${url.origin}/api`) return { kind: "api" };
+  if (!origins.mcp.includes(url.origin) || url.pathname !== "/mcp") return undefined;
   const address = requestedMcpAddress(url);
   // Only the canonical spelling is a resource; reordered or extra parameters are not.
-  return address !== undefined && mcpResource(origin, address) === resource
+  return address !== undefined && mcpResource(url.origin, address) === resource
     ? { kind: "mcp", ...address }
     : undefined;
 };
 /** Discovery and the authentication challenge carry the requested address into standard OAuth. */
-export const mcpResourceMetadataUrl = (origin: string, address: McpAddress) => {
+export const mcpResourceMetadataUrl = (resourceOrigin: string, address: McpAddress) => {
   const query = new URLSearchParams();
   if (address.connection !== undefined) query.set("connection", address.connection);
   query.set("elicitation_mode", address.mode);
-  return `${origin}/.well-known/oauth-protected-resource/mcp?${query.toString()}`;
+  return `${resourceOrigin}/.well-known/oauth-protected-resource/mcp?${query.toString()}`;
 };

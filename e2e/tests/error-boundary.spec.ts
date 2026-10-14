@@ -10,7 +10,7 @@ import { Evidence } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { requestGate } from "../support/request-gate.ts";
 import { clientCredentialsIssuer, machineClient } from "../support/client-credentials-issuer.ts";
-import { createProfile } from "../support/profiles.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 
 const Failure = Schema.Struct({
   status: Schema.Literal("completed"),
@@ -68,17 +68,13 @@ layer(HostedLive, { excludeTestServices: true })("Error boundary", (it) => {
         const { app, prefix, execute } =
           yield* setup(`import {defineApp,defineProvider,secrets,query,object,string,router} from "apps";
 const service=defineProvider({name:"Reports",auth:{key:secrets({label:"Password",fields:object({password:string()})})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({ queries: router({read:query({input:object({privateValue:string()})},async({accounts},input)=>{
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({ queries: router({read:query({input:object({privateValue:string()})},async({user: { accounts }},input)=>{
 throw new Error("Could not read the report",{cause:new Error("Report was deleted; token=synthetic-secret; private="+input.privateValue+"; "+JSON.stringify({password:accounts.service.fields.password,detail:accounts.service.fields.password,secret:"unselected secret"}))});
 })}) })}));`);
         const path = `${prefix}/apps/${app.id}`;
-        const profile = yield* createProfile(actors.owner, path);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         const account = yield* body(
           Resource,
@@ -94,17 +90,17 @@ throw new Error("Could not read the report",{cause:new Error("Report was deleted
             .request(actors.owner, "DELETE", `${prefix}/accounts/${account.id}`)
             .pipe(Effect.orDie),
         );
-        const operation = `${app.slug}.profiles.${profile.id}.queries.read`;
+        const operation = `${app.slug}.queries.read`;
         const result = yield* execute(
-          `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].queries.read({privateValue:"synthetic-private-input"});`,
+          `return await tools[${JSON.stringify(app.slug)}].queries.read({privateValue:"synthetic-private-input"});`,
         );
         const failure = yield* body(Failure, { status: 200, body: result.structuredContent });
         expect(failure.execution.error.message).toBe(
-          `${operation}: ToolCallFailed (HTTP 502): The app threw Error: Could not read the report (caused by Error: Report was deleted; token=[redacted]; private=[redacted]; {"password":"[redacted]","detail":"[redacted]","secret":"[redacted]"}) Recovery: Fix the input or the app code that threw this error, then retry.`,
+          `${operation}: ToolCallFailed (HTTP 502): The app threw Error: Could not read the report (caused by Error: Report was deleted; token=[redacted]; private=[redacted]; {"password":"[redacted]","detail":"[redacted]","secret":"[redacted]"}) Recovery: Read the error to determine whether input, app code, configuration or Executor needs attention. Retryable (unchanged call): yes.`,
         );
         yield* evidence.json("thrown-app-error.json", result.structuredContent);
         const caught = yield* execute(
-          `try { await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].queries.read({privateValue:"synthetic-private-input"}); } catch (error) { return JSON.parse(error.message); }`,
+          `try { await tools[${JSON.stringify(app.slug)}].queries.read({privateValue:"synthetic-private-input"}); } catch (error) { return JSON.parse(error.message); }`,
         );
         expect(caught.structuredContent).toMatchObject({
           execution: {
@@ -114,7 +110,8 @@ throw new Error("Could not read the report",{cause:new Error("Report was deleted
               message:
                 'The app threw Error: Could not read the report (caused by Error: Report was deleted; token=[redacted]; private=[redacted]; {"password":"[redacted]","detail":"[redacted]","secret":"[redacted]"})',
               recovery: {
-                action: "Fix the input or the app code that threw this error, then retry.",
+                action:
+                  "Read the error to determine whether input, app code, configuration or Executor needs attention.",
               },
             },
           },
@@ -133,7 +130,7 @@ throw new Error("Could not read the report",{cause:new Error("Report was deleted
           const gate = yield* requestGate;
           const { app, execute } = yield* setup(
             `import {defineApp,mutation,object,router} from "apps";
-export default defineApp({accounts:{}},async()=>({tools: router({ mutations: router({write:mutation({input:object({})},async({fetch})=>{
+export default defineApp({},async()=>({tools: router({ mutations: router({write:mutation({input:object({})},async({fetch})=>{
 await fetch(${JSON.stringify(gate.origin + "/done")});
 await fetch(${JSON.stringify(gate.origin + "/wait")});
 return {written:true};
@@ -168,15 +165,11 @@ return {written:true};
         const { app, prefix, execute } =
           yield* setup(`import {defineApp,defineProvider,oauth2,query,object,router} from "apps";
 const service=defineProvider({name:"Reports",auth:{machine:oauth2({grant:"client_credentials",tokenUrl:${JSON.stringify(issuer.origin + "/token")},scopes:[],tokenEndpointAuthMethod:"client_secret_basic"})}});
-export default defineApp({accounts:{service}},async()=>({tools: router({ queries: router({read:query({input:object({})},async()=>({ok:true}))}) })}));`);
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({ queries: router({read:query({input:object({})},async()=>({ok:true}))}) })}));`);
         const path = `${prefix}/apps/${app.id}`;
-        const profile = yield* createProfile(actors.owner, path);
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", `${path}/connections`, {
-            requirement: "service",
-            profile: profile.id,
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         const connected = yield* body(
           Schema.Struct({ account: Schema.Struct({ id: Schema.String }) }),
@@ -194,9 +187,9 @@ export default defineApp({accounts:{service}},async()=>({tools: router({ queries
         );
         yield* issuer.configure({ rejected: true });
         yield* issuer.awaitExpiry;
-        const operation = `${app.slug}.profiles.${profile.id}.queries.read`;
+        const operation = `${app.slug}.queries.read`;
         const result = yield* execute(
-          `return await tools[${JSON.stringify(app.slug)}].profiles[${JSON.stringify(profile.id)}].queries.read({});`,
+          `return await tools[${JSON.stringify(app.slug)}].queries.read({});`,
         );
         const failure = yield* body(Failure, { status: 200, body: result.structuredContent });
         expect(failure.execution.error.message).toContain(operation);

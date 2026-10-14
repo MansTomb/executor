@@ -6,9 +6,9 @@ import { provider, restProvider } from "./provider.ts";
 import { readTask, supportsTask } from "./task.ts";
 
 export default defineApp(
-  { accounts: { service: provider.many(), rest: restProvider.many() } },
-  async ({ accounts, signal }) => ({ tools: await accountRouter(
-      accounts.service,
+  { user: { accounts: { service: provider.many(), rest: restProvider.many() } } },
+  async ({ user, signal }) => ({ tools: await accountRouter(
+      user?.accounts.service ?? [],
       async (account) =>
         mcpRouter({
           url: "https://mcp.clickup.com/mcp",
@@ -17,7 +17,7 @@ export default defineApp(
           account,
           intercept: async ({ tool, context, input, next }) => {
             if (tool.name !== "clickup_get_task" || !supportsTask(input)) return next();
-            const candidates = accounts.rest.filter((rest) => rest.fields.mcpAccountId === account.id);
+            const candidates = (user?.accounts.rest ?? []).filter((rest) => rest.fields.mcpAccountId === account.id);
             if (candidates.length === 0 || input["workspace_id"] === undefined) return next();
             if (candidates.length !== 1)
               throw new Error("Select exactly one ClickUp REST account for this MCP account");

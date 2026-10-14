@@ -16,7 +16,7 @@ const {
 } = Astro.props
 
 const ogImage = new URL('/og-image.png', Astro.site ?? Astro.url).toString()
-const canonical = new URL(Astro.url.pathname.startsWith('/experiments/hero/') ? '/' : Astro.url.pathname, Astro.site ?? Astro.url).toString()
+const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url).toString()
 ---
 
 <html lang="en">
@@ -27,7 +27,14 @@ const canonical = new URL(Astro.url.pathname.startsWith('/experiments/hero/') ? 
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
+    <script is:inline>
+      // Before first paint: follow the system setting, on the same attribute
+      // the docs' Blume theme script sets.
+      document.documentElement.dataset.theme = matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+    </script>
     <meta name="description" content={description} />
     {noindex ? <meta name="robots" content="noindex" /> : <link rel="canonical" href={canonical} />}
     <meta property="og:type" content="website" />
@@ -65,10 +72,9 @@ const canonical = new URL(Astro.url.pathname.startsWith('/experiments/hero/') ? 
       // web-analytics view is built on. Astro serves a full page load per
       // navigation, so plain `true` (capture once on init) is right here;
       // `history_change` is for SPAs like apps/cloud.
-      import { heroBootstrap, isHeroPreview, markHeroPreview, observeHero } from "../hero-analytics";
-      markHeroPreview();
+      import { siteVisitorCookie, siteVisitorDays } from "../content/site-visitor";
       const phKey = import.meta.env.PUBLIC_POSTHOG_KEY;
-      if (phKey && !isHeroPreview()) {
+      if (phKey) {
         const phPath = import.meta.env.PUBLIC_POSTHOG_PATH;
         if (typeof phPath !== "string" || !/^\/api\/[a-f0-9]{16}$/.test(phPath)) throw new Error("PostHog proxy path is missing from this build");
         // The parent deployment should replace this with its analytics proxy
@@ -76,7 +82,6 @@ const canonical = new URL(Astro.url.pathname.startsWith('/experiments/hero/') ? 
         const posthogReady = import("posthog-js").then(({ default: posthog }) => {
           posthog.init(phKey, {
             defaults: "2025-05-24",
-            bootstrap: heroBootstrap(),
             before_send: (event) => {
               if (event) {
                 try {
@@ -94,11 +99,15 @@ const canonical = new URL(Astro.url.pathname.startsWith('/experiments/hero/') ? 
             disable_session_recording: true,
             capture_exceptions: false,
             person_profiles: "identified_only",
-            loaded: (client) => client.register({ product_version: "v2", surface: "marketing",
-              environment: import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT, release: import.meta.env.PUBLIC_EXECUTOR_RELEASE,
-              executor_test: String(import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT).startsWith("test-") }),
+            loaded: (client) => {
+              client.register({ product_version: "v2", surface: "marketing",
+                environment: import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT, release: import.meta.env.PUBLIC_EXECUTOR_RELEASE,
+                executor_test: String(import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT).startsWith("test-") });
+              // Sign-up on the browser origin reads this to link the new account to this visit.
+              const domain = import.meta.env.PUBLIC_EXECUTOR_COOKIE_DOMAIN;
+              document.cookie = `${siteVisitorCookie}=${encodeURIComponent(client.get_distinct_id())}; Path=/; Max-Age=${siteVisitorDays * 86400}; SameSite=Lax${domain ? `; Domain=${domain}` : ""}${location.protocol === "https:" ? "; Secure" : ""}`;
+            },
           });
-          observeHero((event, properties) => posthog.capture(event, properties));
           return posthog;
         });
         // The copy handler (in index.astro) is a separate bundle, so it asks for

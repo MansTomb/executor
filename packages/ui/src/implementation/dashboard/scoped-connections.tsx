@@ -9,7 +9,7 @@ import {
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
-import type { AccountId, App, AppId, Profile, ToolName } from "@executor-js/sdk";
+import type { AccountId, App, AppId, ToolName } from "@executor-js/sdk";
 import { ConnectionId, type ConnectionView } from "@executor-js/mcp-auth/connections";
 import type { AccountSummary, FailureProps, Inventory, Query } from "../../contracts/dashboard.ts";
 import {
@@ -20,6 +20,7 @@ import {
   connectionTargetKey,
   connectionTargetLabel,
   connectionToolsLabel,
+  connectionEventsLabel,
   type ScopedConnectionBindings,
 } from "../../contracts/scoped-connections.ts";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -45,24 +46,23 @@ import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.t
 import { Skeleton } from "../components/skeleton.tsx";
 import { PageFrame, PageHeader } from "./page.tsx";
 import { QueryView } from "./context.tsx";
-import { ProviderIcon } from "./common.tsx";
-import { providerDisplayUrl } from "../../contracts/dashboard.ts";
+import { AppIcon } from "./common.tsx";
 import {
   appChoices,
   ConnectionAppRow,
   accountOption,
   initialSelection,
   selectionIssue,
+  declaresEvents,
   type AppChoices,
 } from "./connection-app-picker.tsx";
 import { useIncrementalList } from "./incremental-list.tsx";
 import { McpInstallInstructions } from "./connect.tsx";
 import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
 
-/** Each host supplies its existing authorized, profile-specific catalog read. */
+/** Each host supplies its existing authorized catalog read of the app's tools. */
 export interface ConnectionToolPickerProps {
   readonly app: App;
-  readonly profile: Profile | undefined;
   readonly names: readonly ToolName[];
   readonly onChange: (names: readonly ToolName[]) => void;
 }
@@ -75,23 +75,13 @@ type View =
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count.toLocaleString("en-US")} ${count === 1 ? one : many}`;
 
-/** Every profile/app choice per app, computed once per inventory. */
-const inventoryChoices = (inventory: Inventory) => {
-  const profiles = new Map<AppId, Profile[]>();
-  for (const profile of inventory.profiles) {
-    const list = profiles.get(profile.app);
-    if (list === undefined) profiles.set(profile.app, [profile]);
-    else list.push(profile);
-  }
-  return new Map<AppId, AppChoices>(
-    inventory.apps.map((app) => [
-      app.id,
-      appChoices(app, profiles.get(app.id) ?? [], inventory.accounts),
-    ]),
+/** Every account choice per app, computed once per inventory. */
+const inventoryChoices = (inventory: Inventory) =>
+  new Map<AppId, AppChoices>(
+    inventory.apps.map((app) => [app.id, appChoices(app, inventory.links, inventory.accounts)]),
   );
-};
 
-/** Show a stored connection with current names; removed apps and profiles stay visible as such. */
+/** Show a stored connection with current names; removed apps and accounts stay visible as such. */
 const connectionDraft = (
   connection: ConnectionView,
   choices: ReadonlyMap<AppId, AppChoices>,
@@ -104,12 +94,13 @@ const connectionDraft = (
       id: item.app,
       name: choice?.app.name ?? "Unavailable app",
       tools: item.tools,
+      ...(item.events === undefined ? {} : { events: item.events }),
       targets: item.runsAs.map((target): ConnectionTarget => {
         if (target.kind === "app") return target;
         const option = choice?.options.find(
-          (candidate) => candidate.target.kind === "profile" && candidate.target.id === target.id,
+          (candidate) => candidate.target.kind === "account" && candidate.target.id === target.id,
         );
-        return option?.target ?? { kind: "profile", id: target.id, label: "Profile unavailable" };
+        return option?.target ?? { kind: "account", id: target.id, label: "Account unavailable" };
       }),
     };
   }),
@@ -132,6 +123,7 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends 
   revoke,
   Failure,
   installation,
+  agents,
   docs = publicDocsBaseUrl,
   renderTools,
 }: ScopedConnectionBindings<EL, ES, ER> & {
@@ -139,6 +131,8 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends 
   /** Renders every failure: inventory, connection reads, saves and revocation. */
   readonly Failure: ComponentType<FailureProps<E>>;
   readonly installation: ReactNode;
+  /** The agents connected through these URLs, when the host lists them. */
+  readonly agents?: ReactNode;
   /** Documentation the setup prompt points agents to. */
   readonly docs?: string;
   readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
@@ -223,6 +217,7 @@ export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends 
                 )
               }
             </QueryView>
+            {agents}
           </div>
         )}
         {view.kind === "editor" && (
@@ -525,8 +520,7 @@ function AssignAccount({
       </PopoverTrigger>
       <PopoverContent className="w-80 p-1.5">
         <p className="px-2 pt-1.5 pb-2 text-xs text-muted-foreground">
-          Run every included app that isn’t set up yet as this account. Uses a matching saved
-          profile when there is one.
+          Run every included app that isn’t set up yet as this account.
         </p>
         {[...options.entries()]
           .toSorted(([, a], [, b]) => b.fits - a.fits)
@@ -588,14 +582,8 @@ function ConnectionEditor<E, ES extends E>({
   // Apps already in the connection come first; the order is fixed so rows never jump on toggle.
   const [pinned] = useState(() => new Set(initial.apps.map((app) => app.id)));
   const choices = useMemo(() => {
-    const profiles = new Map<AppId, Profile[]>();
-    for (const profile of inventory.profiles) {
-      const list = profiles.get(profile.app);
-      if (list === undefined) profiles.set(profile.app, [profile]);
-      else list.push(profile);
-    }
     return inventory.apps
-      .map((app) => appChoices(app, profiles.get(app.id) ?? [], inventory.accounts))
+      .map((app) => appChoices(app, inventory.links, inventory.accounts))
       .toSorted(
         (a, b) =>
           Number(pinned.has(b.app.id)) - Number(pinned.has(a.app.id)) ||
@@ -852,16 +840,11 @@ function ConnectionAccessList({
       <div className="divide-y">
         {visible.slice(0, count).map((selection) => {
           const app = byId.get(selection.id);
-          const provider =
-            app === undefined ? undefined : Object.values(app.requirements.accounts)[0]?.definition;
           const names = selection.tools.kind === "selected" ? selection.tools.names : [];
           return (
             <div key={selection.id}>
               <div className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
-                <ProviderIcon
-                  name={provider?.name ?? selection.name}
-                  url={providerDisplayUrl(provider)}
-                />
+                <AppIcon app={app} name={selection.name} />
                 <span className="min-w-0 flex-1 basis-48">
                   <span className="block truncate text-[13px] font-medium">{selection.name}</span>
                   <span className="block truncate text-xs text-muted-foreground">
@@ -889,6 +872,11 @@ function ConnectionAccessList({
                 ) : (
                   <span className="px-3 text-xs text-muted-foreground">
                     {connectionToolsLabel(selection.tools)}, including new ones
+                  </span>
+                )}
+                {declaresEvents(app) && (
+                  <span className="px-3 text-xs text-muted-foreground">
+                    {connectionEventsLabel(selection.events)}
                   </span>
                 )}
               </div>

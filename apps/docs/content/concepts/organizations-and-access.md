@@ -11,14 +11,37 @@ Executor has no organizations; it is one person on one machine.
 
 Every person in an organization is a member with one role:
 
-| Role     | Can do                                           |
-| -------- | ------------------------------------------------ |
-| `owner`  | Everything, including managing the organization. |
-| `admin`  | Manage apps and accounts, and run tools.         |
-| `member` | Inspect the organization.                        |
+| Role     | Can do                                                                                                                  |
+| -------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `member` | Create apps, connect accounts, use their own apps and what is shared with them, and manage what they created.           |
+| `admin`  | A member's rights, plus invite and remove people, manage groups, publish apps, and manage every app and shared account. |
+| `owner`  | An admin's rights, plus delete the organization on Cloud.                                                               |
 
-Running a tool through MCP currently requires `admin` or `owner`. A `member` can
-look but not execute.
+Roles decide who manages things, not who uses them. Using an app, including
+calling its tools through MCP, follows the app's audience:
+
+- **Only me**, the default for a new app: only the person who created it.
+- **Everyone** in the organization.
+- **Groups**: the members of the groups it is shared with. A member can share
+  only with groups they belong to; admins and owners can pick any group.
+
+Shared accounts follow the same rule. A personal account is used and managed
+only by the person who connected it.
+
+Managing does not grant use. An admin or owner can see, edit, deploy, share and
+delete another person's private app, but cannot call its tools unless it is
+shared with them. Each call also uses only the caller's own linked accounts, so
+nobody runs with another person's accounts. A [scoped connection](/mcp) can
+narrow an agent's access further.
+
+The exception is an app's own accounts. An app can require accounts that belong
+to the app, such as a team's service key. People who can edit the app link
+them for everyone, and only accounts they can use themselves. Everyone who can
+use the app then uses the linked account through the app's code, for their calls
+and the app's background work, without access to the account itself. Editing
+the app does not let anyone link somebody else's account. Unlinking stops the
+app using it at once.
+See [Providers and accounts](/concepts/providers-and-accounts#app-accounts).
 
 People join by invitation. On hosted you can also be admitted by your identity
 provider when one is configured.
@@ -62,5 +85,3 @@ account an app can use, and no tool ever receives your login token. See
 
 - Workspaces: a grouping inside an organization for installing apps and sharing
   accounts with a smaller set of people.
-- Per-person account selection, so a shared app can use the caller's own
-  account.
