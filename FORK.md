@@ -18,8 +18,8 @@ The maintained branch is `selfhost`. Local patches:
   counts data Workers.
 - `37facaf6c`: discover only statically referenced app namespaces. Dynamic
   programs and unscoped tool searches retain full discovery and live authorization.
-  Superseded on 2026-10-14 by upstream's on-demand discovery (`programReach`);
-  see that integration below.
+  Since 2026-10-14 upstream's on-demand discovery (`programReach`) provides it:
+  only apps a program names or reaches load, each on first use; see below.
 - `6565a3749`: drain admitted HTTP requests before stopping workerd. Close the
   listener during shutdown and allow 40 seconds for a 35-second drain deadline.
 - `e23b30dfd`: use `--gc-global` in the packaged self-host runtime. Default GC
@@ -34,7 +34,7 @@ The maintained branch is `selfhost`. Local patches:
   fallback. Warm ten-result search improved from 3.067/3.737 to 0.955/1.030 seconds
   p50/p95 with 4,090 synthetic tools. Full export is slower because it also reads
   summaries. The discovery and grant-restriction E2Es cover freshness and access.
-  Superseded on 2026-10-14 by upstream's stored search rows; see below.
+  Ported on 2026-10-14 onto upstream's search; see below.
 - `5e21403ca`: describe native MCP result envelopes instead of advertising their
   inner structured payload as the whole return value. Preserve upstream output
   validation and returned values. Ordinary references and statically bound
@@ -56,8 +56,8 @@ The maintained branch is `selfhost`. Local patches:
   form. A scoped production search after five idle minutes fell from 27.5 to
   1.1 seconds end to end, and its warm repeat from 10.0 to 0.6 seconds. Selection, schema and grant-restriction E2Es
   cover scoped, unscoped, dynamic, repeated, mixed-app and narrowed searches.
-  The discovery half is superseded on 2026-10-14 by upstream's backend-ranked
-  search; the scoped-search guidance in the execute descriptions is kept.
+  Since 2026-10-14 upstream's search reads only the apps a literal namespace names;
+  the scoped-search guidance in the execute descriptions is kept.
 - `163e32725`: report truncated execute output before the cut value. Agent
   harnesses keep only a prefix of a tool result (Pi and OptChat clip at 30,000
   characters), and CodeMode appends its notice after the value while
@@ -231,23 +231,44 @@ call)` suffix; reconnect errors name the account's label and ID, and add the
   its slow-catalog schema inclusion, and the host still accepts a full catalog in
   reply to a summary read, so bundles built by the fork framework keep working.
 - MCP interceptors run as the app's code in upstream's tool-call timing.
-- Superseded by upstream and removed: the fork's summary-index discovery
-  (`tools.index` live reads and the `live` option, the `tools.list` name filter,
-  `McpBackend.indexTools`, the 30-second index retention and
-  `DeclarationCache.delete`), the static and scoped discovery of `37facaf6c`,
-  `69a64ab74` and `613ce0b00`, the schema batching of `f70d35bcc`, and the
-  read-only kind binding of the October integration. Their scenarios stay in the
-  focused gate and must pass on upstream's implementation.
-- Freshness changes with that retirement. Upstream serves a kept listing for 30
-  seconds (`EXECUTOR_TOOL_LISTING_FRESH_SECONDS`), then serves it stale while a
-  background read refreshes it, for up to a day
-  (`EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS`). MCP search reads stored rows with
-  `refreshStale: false`, so a catalog change reaches search only after something
-  lists the app again. The fork's live index made such changes visible at once.
-  Assertions in `mcpDiscoverySchemas`, `mcpDiscoverySelection`,
-  `readOnlyGrantLiveKind`, `mcpSlowListing` and `mcpSlowListingRecovery` that
-  require live reads or the 30-second index retention are unresolved; they need a
-  decision before this branch ships.
+- The 65,536-byte execute output budget is kept; upstream raised its default to
+  100,000. Approval requests are bounded by the same budget, so upstream's
+  approval-size and concise-search scenarios use the fork's limit.
+- Local serves the analytics route again: upstream now lists the SDK groups local
+  serves, which dropped it.
+- `mcpDiscoverySelection` keeps every returned value and access check. Its eager
+  discovery counts now assert upstream's lazy loading instead: reaching the fast
+  app dynamically, listing app names, a run-time search namespace and programs
+  that never run leave the unrelated app unevaluated, while searching or calling
+  it, or searching every app, evaluates it.
+- Live, summary-first discovery is ported onto upstream's lazy discovery and
+  backend ranking. Upstream keeps listings fresh for 30 seconds, then serves them
+  stale for up to a day, and its MCP search read stored rows without evaluating
+  the app; that would leave remote catalog changes, removed tools and read-only
+  flags stale. MCP discovery instead reads each app's index (names and
+  descriptions, `ToolListOptions.live`) on every execution: a catalog that
+  evaluates within discovery's wait is evaluated again every time, a slower one is
+  shared while it runs and served from process memory for at most 30 seconds after
+  it finishes, measured from completion, never stored or refreshed in the
+  background. Remembered failures, invalidation and access checks apply as before,
+  and a fast success replaces a remembered failure. Search rows are rewritten from
+  that live index (an unchanged index rewrites none) before the backend ranks
+  them, so stored rows never answer for a catalog that was not read. Program
+  namespaces take no schemas; the app validates each call's input. Schemas are
+  read live by name only for a search page, a describe, or a call that passes
+  `$accounts`, at most once per tool per execution. A page that names every tool
+  of a listing larger than 64 reads it whole, and falls back to names when that
+  read fails. A slow index whose build answered with schemas is kept with them, so
+  describing its tools within the retention reads that index instead of evaluating
+  the catalog again. HTTP `tools/index` evaluates live, so upstream's
+  `toolsIndexCache` scenario, which expects browsing to reuse a kept listing, fails
+  by design; it is not in the focused gate. `tools.get` keeps upstream's kept
+  listing, as the fork's base did.
+- Read-only grants keep upstream's query binding, and both the hosted and MCP
+  grant checks describe the tool live instead of reading a kept listing. MCP
+  catalog reads check the grant again after the catalog returns and narrow the
+  result with it, including catalogs merged across grant entries; a grant that
+  newly needs metadata reads it live.
 - `scopedConnectionProfiles` became upstream's `scopedConnectionAccounts`, and the
   output-truncation scenario joined the focused gate.
 
@@ -257,8 +278,13 @@ database also builds the analytics indexes. Generated migration operations from
 4.0.6 to 4.0.15 never touch `executor_analytics_events`. The previous server
 refuses a database at 4.0.15, and 4.0.8 and 4.0.13 change data, so rollback is a
 stopped-volume restore plus the previous image. The upgrade check seeds the
-previous image through a profile and calls the candidate without one, so it
-proves that the profile's account became a link.
+previous image through two profiles of one member with distinct accounts and
+app data, and calls the candidate without a profile. It proves that the app keeps
+the oldest profile's account and its data, and that the second account set
+becomes the "App (Profile)" copy linking only its account. The copy starts with
+an empty database and is rebuilt from source, so with the registry unreachable it
+is not deployed; the report records which. Profile-targeted grants and
+`.many()` unions are not covered.
 
 ## Merging upstream
 
