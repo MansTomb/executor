@@ -115,7 +115,7 @@ const source = (version) => [
   { path: "package.json", content: JSON.stringify({ dependencies: { apps: appsVersion } }) },
   {
     path: "index.ts",
-    content: `import { defineApp, query, object, number, router } from "apps"; export const version = query({input:object({}),output:number()},async()=>${version}); export default defineApp({accounts:{}},{tools:router({version})});`,
+    content: `import { defineApp, query, object, number, router } from "apps"; export const version = query({input:object({}),output:number()},async()=>${version}); export default defineApp({user:{accounts:{}}},{tools:router({version})});`,
   },
 ];
 
