@@ -143,6 +143,29 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       return { ...page, items, next: undefined };
     });
   /**
+   * Read a catalog, then the grant as it is after the read, which every result is narrowed with. A
+   * grant that decides from tool metadata, such as a read-only rule, reads the catalog live: an
+   * earlier slow evaluation the caller would accept may predate a tool's current kind. When the
+   * grant read after the catalog newly decides from metadata, the catalog is read again live and
+   * the grant once more. Grants that decide from names alone keep the caller's retention.
+   */
+  const readGranted = <A, E>(
+    app: AppId,
+    options: ToolListOptions | undefined,
+    read: (options: ToolListOptions | undefined) => Effect.Effect<A, E>,
+  ) =>
+    Effect.gen(function* () {
+      const live = { ...options, live: liveMetadata };
+      const metadata = requiresToolMetadata((yield* authority).tools, app);
+      let result = yield* read(metadata ? live : options);
+      let policy = yield* authority;
+      if (!metadata && requiresToolMetadata(policy.tools, app)) {
+        result = yield* read(live);
+        policy = yield* authority;
+      }
+      return { result, policy };
+    });
+  /**
    * The catalog an app's grant entries permit together, when no single entry permits every named
    * account. Each entry lists the catalog with the named accounts it targets, on one deployment,
    * and contributes the tools and routers it permits; a tool keeps the first entry's description.
@@ -181,24 +204,29 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         return yield* new GrantForbidden({
           refusal: targetRefusal(input.app, named(input.accounts)),
         });
-      const listed = yield* fullListing({ ...input, accounts: first.accounts }, options);
-      const pages = [{ accounts: first.accounts, page: listed }];
-      for (const part of rest)
-        pages.push({
-          accounts: part.accounts,
-          page: yield* fullListing(
-            { ...input, accounts: part.accounts, deployment: listed.deployment },
-            options,
-          ),
-        });
+      const { result: read, policy: current } = yield* readGranted(input.app, options, (read) =>
+        Effect.gen(function* () {
+          const listed = yield* fullListing({ ...input, accounts: first.accounts }, read);
+          const pages = [{ accounts: first.accounts, page: listed }];
+          for (const part of rest)
+            pages.push({
+              accounts: part.accounts,
+              page: yield* fullListing(
+                { ...input, accounts: part.accounts, deployment: listed.deployment },
+                read,
+              ),
+            });
+          return { listed, pages };
+        }),
+      );
+      const { listed } = read;
       // The grant may have narrowed while the catalogs were read: each page contributes only what
       // an entry of the grant as it is now permits for that page's accounts.
-      const current = yield* authority;
       yield* refuse(appRefusal(current, input.app));
       const items = new Map<string, ToolPage["items"][number]>();
       const routers = new Map<string, ToolPage["routers"][number]>();
       let permitted = false;
-      for (const { accounts, page } of pages)
+      for (const { accounts, page } of read.pages)
         for (const entry of appEntryPolicies(current, input.app) ?? []) {
           if (!permitsAccounts(entry, input.app, named(accounts))) continue;
           permitted = true;
@@ -344,18 +372,9 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           ids.length === 0 ||
           permitsAccounts(policy, input.app, ids)
         ) {
-          let page = yield* backend.listTools(input, options);
-          let current = yield* authority;
-          // A grant that newly reads tool metadata decides from a live read, not a kept one.
-          if (
-            options?.live === undefined &&
-            options?.tools === undefined &&
-            !requiresToolMetadata(policy.tools, input.app) &&
-            requiresToolMetadata(current.tools, input.app)
-          ) {
-            page = yield* backend.listTools(input, { ...options, live: liveMetadata });
-            current = yield* authority;
-          }
+          const { result: page, policy: current } = yield* readGranted(input.app, options, (read) =>
+            backend.listTools(input, read),
+          );
           return yield* granted(current, input.app, page, permittedPage);
         }
         // No entry permits every named account, such as all of a many() requirement's linked
@@ -376,8 +395,12 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           ids.length === 0 ||
           permitsAccounts(policy, input.app, ids)
         ) {
-          const index = yield* backend.indexTools(input, options);
-          return yield* granted(yield* authority, input.app, index, permittedIndex);
+          const { result: index, policy: current } = yield* readGranted(
+            input.app,
+            options,
+            (read) => backend.indexTools(input, read),
+          );
+          return yield* granted(current, input.app, index, permittedIndex);
         }
         // As for `listTools`, entries that each permit some of the named accounts contribute what
         // they permit; their merged catalog is listed with schemas, which the index omits.
@@ -398,8 +421,10 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
     searchableTools: (input, options) =>
       Effect.gen(function* () {
         yield* checkApp(input.app, input.accounts);
-        const searchable = yield* backend.searchableTools(input, options);
-        const policy = yield* authority;
+        // The rows a search ranks and the grant narrows are written from this read.
+        const { result: searchable, policy } = yield* readGranted(input.app, options, (read) =>
+          backend.searchableTools(input, read),
+        );
         yield* refuse(appRefusal(policy, input.app));
         // The listing names the accounts the host resolved; one entry must permit all of them.
         yield* refuse(accountsRefusal(policy, input.app, named(searchable.accounts)));

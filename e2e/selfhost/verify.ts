@@ -62,6 +62,7 @@ const focused = [
       scenarios.apiGrantRestrictions,
       scenarios.liveGrantRestrictions,
       scenarios.readOnlyGrantLiveKind,
+      scenarios.readOnlyGrantRetainedMetadata,
       scenarios.toolCallHeldCheck,
       scenarios.toolCallHeldAccess,
       scenarios.patMcpApprovals,

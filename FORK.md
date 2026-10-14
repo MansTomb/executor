@@ -267,8 +267,15 @@ call)` suffix; reconnect errors name the account's label and ID, and add the
 - Read-only grants keep upstream's query binding, and both the hosted and MCP
   grant checks describe the tool live instead of reading a kept listing. MCP
   catalog reads check the grant again after the catalog returns and narrow the
-  result with it, including catalogs merged across grant entries; a grant that
-  newly needs metadata reads it live.
+  result with it, including catalogs merged across grant entries. A grant that
+  decides from tool metadata, such as a read-only rule, reads every catalog it
+  narrows live (`index`, list, search rows and each entry of a merged catalog),
+  never from a retained slow evaluation; grants that decide from names keep the
+  slow reuse. When the grant read after a catalog newly decides from metadata,
+  the catalog is read again live and the grant once more. Local reads the grant
+  live on each check; hosted MCP resolves it once per request, so a narrowing
+  applies from the next request. The `readOnlyGrantRetainedMetadata` scenario
+  covers a retained slow catalog whose tool became a mutation.
 - `scopedConnectionProfiles` became upstream's `scopedConnectionAccounts`, and the
   output-truncation scenario joined the focused gate.
 

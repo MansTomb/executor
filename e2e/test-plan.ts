@@ -5825,6 +5825,17 @@ export const scenarios = plan({
       local: na("Local has no hosted organization policies."),
     },
   },
+  readOnlyGrantRetainedMetadata: {
+    fixtures: "actors",
+    file: "read-only-grant-retained.spec.ts",
+    title:
+      "read-only grants read tool metadata live past a retained slow catalog, and split grant entries never expose it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Slows and changes a dynamic catalog through a loopback fixture"),
+      local: na("Local has no hosted organization policies."),
+    },
+  },
   toolCallHeldAccess: {
     fixtures: "actors",
     file: "tool-call-held-check.spec.ts",
