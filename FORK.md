@@ -413,7 +413,8 @@ self-host SSO discovery and claims, MCP guidance, and provider icon fallbacks.
 Every fork policy remains. Live discovery and authorization now pin `version`
 where upstream renamed `deployment`. Listing retention keeps upstream's per-tool
 JSON sizes, and in-process full catalog reads use upstream's unbounded pages.
-The router keeps schemas included with slow summary responses and uses upstream's
+Selecting retained tools preserves catalog order and recomputes page sizes for
+the selected tools. The router keeps schemas included with slow summary responses and uses upstream's
 shared schema validation for full reads. Generated skill digests are rebuilt from
 the merged skill files. The focused gate uses the renamed active-version scenarios.
 

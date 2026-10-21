@@ -1312,12 +1312,12 @@ export const makeTools = (
         const kept =
           named === undefined || retained?.described !== true
             ? undefined
-            : named.flatMap((name) => retained.items.filter((tool) => tool.name === name));
+            : retained.items.filter((tool) => named.includes(tool.name));
         const listing =
           named === undefined
             ? yield* listings.read(state, listingOf(state), options)
             : retained !== undefined && kept !== undefined && kept.length === named.length
-              ? { ...retained, items: kept }
+              ? { catalog: retained.catalog, routers: retained.routers, items: kept }
               : yield* resolve(state, resolveAccount).pipe(
                   Effect.withSpan("sdk.accounts.resolve"),
                   Effect.flatMap(describedOf(state, named)),
