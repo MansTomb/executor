@@ -6,6 +6,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Deferred, Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 
 /**
  * - `anonymous`: initialize and tools/list work without credentials; nothing about OAuth.
@@ -21,6 +22,9 @@ import { createServer } from "node:http";
  * - `pkce-plain`: authorization-server metadata lists only the `plain` PKCE method.
  * - `bearer-key`: a Bearer challenge and no OAuth anywhere: an API key.
  * - `initialize-fails`: initialize answers with a JSON-RPC error.
+ * - `older-protocol`: works anonymously, negotiates protocol 2025-06-18 and issues a session.
+ *   Like MCP SDK servers that predate 2025-11-25, it refuses any later request, including the
+ *   DELETE that ends a session, whose MCP-Protocol-Version header names a version it lacks.
  * - `refused`: a firewall answers every request with a 403 page.
  */
 export type McpAuthPattern =
@@ -36,6 +40,7 @@ export type McpAuthPattern =
   | "pkce-plain"
   | "bearer-key"
   | "initialize-fails"
+  | "older-protocol"
   | "refused";
 
 const Message = Schema.Struct({
@@ -50,13 +55,41 @@ const page = (status: number) =>
   });
 
 /** Start one pattern's server; the listener closes with the caller's scope. */
-export const mcpAuthServer = Effect.fn(function* (pattern: McpAuthPattern) {
+export const mcpAuthServer = Effect.fn(function* (
+  pattern: McpAuthPattern,
+  tls?: { readonly key: string; readonly cert: string },
+) {
   const address = yield* Deferred.make<string>();
   let registrations = 0;
+  let requests = 0;
+  /** Sessions `older-protocol` issued, ended, and refused to end for an unsupported version. */
+  const sessions = { opened: 0, released: 0, refused: 0 };
+  const supportedVersions = ["2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"];
+  const versionRefused = (request: HttpServerRequest.HttpServerRequest) => {
+    const version = request.headers["mcp-protocol-version"];
+    return (
+      pattern === "older-protocol" && version !== undefined && !supportedVersions.includes(version)
+    );
+  };
+  const unsupportedVersion = HttpServerResponse.json(
+    {
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32000, message: "Bad Request: Unsupported protocol version" },
+    },
+    { status: 400 },
+  );
   const origin = Deferred.await(address);
-  const anonymous = pattern === "anonymous" || pattern === "anonymous-oauth";
+  const anonymous =
+    pattern === "anonymous" || pattern === "anonymous-oauth" || pattern === "older-protocol";
   /** Patterns with an authorization server, and those that publish path-suffixed metadata. */
-  const oauth = !["anonymous", "bearer-key", "initialize-fails", "refused"].includes(pattern);
+  const oauth = ![
+    "anonymous",
+    "bearer-key",
+    "initialize-fails",
+    "older-protocol",
+    "refused",
+  ].includes(pattern);
   const pathMetadata = [
     "anonymous-oauth",
     "oauth-dcr",
@@ -111,7 +144,20 @@ export const mcpAuthServer = Effect.fn(function* (pattern: McpAuthPattern) {
       : HttpServerResponse.json({ jsonrpc: "2.0", id, ...body });
   const routes = Layer.mergeAll(
     HttpRouter.add("GET", "/mcp", Effect.succeed(HttpServerResponse.empty({ status: 405 }))),
-    HttpRouter.add("DELETE", "/mcp", Effect.succeed(HttpServerResponse.empty({ status: 204 }))),
+    HttpRouter.add(
+      "DELETE",
+      "/mcp",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        if (pattern !== "older-protocol") return HttpServerResponse.empty({ status: 204 });
+        if (versionRefused(request)) {
+          sessions.refused++;
+          return yield* unsupportedVersion;
+        }
+        sessions.released++;
+        return HttpServerResponse.empty({ status: 200 });
+      }),
+    ),
     HttpRouter.add(
       "POST",
       "/mcp",
@@ -122,7 +168,24 @@ export const mcpAuthServer = Effect.fn(function* (pattern: McpAuthPattern) {
           Effect.flatMap(Schema.decodeUnknownEffect(Message)),
           Effect.orDie,
         );
+        if (message.method !== "initialize" && versionRefused(request))
+          return yield* unsupportedVersion;
         if (message.id === undefined) return HttpServerResponse.empty({ status: 202 });
+        if (pattern === "older-protocol" && message.method === "initialize") {
+          sessions.opened++;
+          return yield* HttpServerResponse.json(
+            {
+              jsonrpc: "2.0",
+              id: message.id,
+              result: {
+                protocolVersion: "2025-06-18",
+                capabilities: { tools: {} },
+                serverInfo: { name: "synthetic-older-protocol", version: "1" },
+              },
+            },
+            { headers: { "mcp-session-id": `older-session-${sessions.opened}` } },
+          );
+        }
         if (pattern === "initialize-fails")
           return yield* answer(message.id, {
             error: { code: -32602, message: "Unsupported protocol version" },
@@ -237,17 +300,29 @@ export const mcpAuthServer = Effect.fn(function* (pattern: McpAuthPattern) {
   );
   const services = yield* Layer.build(
     HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
-      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+      Layer.provideMerge(
+        NodeHttpServer.layer(
+          () =>
+            (tls === undefined ? createServer() : createHttpsServer(tls)).on("request", () => {
+              requests++;
+            }),
+          { host: "127.0.0.1", port: 0 },
+        ),
+      ),
     ),
   );
   const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
   if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
-  const base = `http://127.0.0.1:${server.address.port}`;
+  const base = `${tls === undefined ? "http" : "https"}://127.0.0.1:${server.address.port}`;
   yield* Deferred.succeed(address, base);
   return {
     origin: base,
     url: `${base}/mcp`,
     /** Dynamic client registration requests received. */
     registrations: Effect.sync(() => registrations),
+    /** HTTP requests received, including MCP and OAuth discovery. */
+    requests: Effect.sync(() => requests),
+    /** Sessions `older-protocol` issued, ended, and refused to end. */
+    sessions: Effect.sync(() => ({ ...sessions })),
   };
 });

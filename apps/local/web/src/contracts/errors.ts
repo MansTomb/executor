@@ -10,7 +10,6 @@ import type { HttpClientError } from "effect/http";
 import { pageOutdated } from "@executor-js/dashboard-start/build-change";
 import type { Sse } from "effect/encoding";
 import type { LiveConnectionLost } from "./api.ts";
-import type { ToolCatalogChanged } from "@executor-js/local-server/contracts";
 
 type Groups =
   | (typeof LocalAppManagementApi.groups)[keyof typeof LocalAppManagementApi.groups]
@@ -24,7 +23,6 @@ export type DashboardError =
   | Schema.SchemaError
   | LiveConnectionLost
   | Cause.NoSuchElementError
-  | ToolCatalogChanged
   | Sse.Retry
   | Sse.SseError;
 /** Safe display fields only. A reconnect action keeps its branded account identity. */
@@ -157,8 +155,7 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "Managed by Executor",
         "This app is part of the local server, which links its account itself.",
       ),
-    DeploymentNotFound: () =>
-      message("Deployment not found", "Choose another retained deployment."),
+    VersionNotFound: () => message("Version not found", "Choose another retained version."),
     AccountRequired: ({ scope }) =>
       scope === "app"
         ? message(
@@ -207,8 +204,6 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "The app took too long",
         "Its tool catalog is still loading in the background. Try again shortly.",
       ),
-    ToolCatalogChanged: () =>
-      message("The tool catalog changed", "Try again to load the current tool catalog."),
     AppWorkflowsActive: () =>
       message(
         "Workflows are still running",
@@ -282,8 +277,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
       ),
     CatalogUnavailable: () =>
       message("Catalog unavailable", "The app catalog could not be reached. Try again."),
-    AppDeploymentChanged: () =>
-      message("App changed", "Reload its source before updating or activating a deployment."),
+    AppVersionChanged: () =>
+      message("App changed", "Reload its source before updating or activating a version."),
     AppSlugTaken: () =>
       message(
         "App address already in use",
@@ -295,7 +290,7 @@ const errorMessage = Match.type<DashboardError>().pipe(
       message("Check the account fields", "The supplied fields do not match this sign-in method."),
     SkillDefinitionInvalid: ({ file }) =>
       message("Skill could not load", `Fix the skill definition in ${file} and deploy again.`),
-    DeploymentBuildFailed: (error) =>
+    VersionBuildFailed: (error) =>
       message(
         "App could not build",
         error.reason === "App build failed"

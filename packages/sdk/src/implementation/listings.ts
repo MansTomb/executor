@@ -19,7 +19,7 @@ import {
   type ToolRouter,
 } from "../contracts/tools.ts";
 import type { AppAccounts } from "../contracts/apps.ts";
-import type { DeploymentId } from "../contracts/shared.ts";
+import type { VersionId } from "../contracts/shared.ts";
 import type { Declarations } from "./declarations.ts";
 import { makeHandoff } from "./handoff.ts";
 import { decodeListing, shareListing } from "./listing-json.ts";
@@ -30,9 +30,10 @@ import type { ToolSearch } from "./tool-search.ts";
 /** Every tool of one app for one invocation state, sorted by name. */
 export interface ToolListing {
   readonly catalog: {
-    readonly deployment: DeploymentId;
+    readonly version: VersionId;
     readonly accounts: AppAccounts;
   };
+  /** Sorted by name. */
   readonly items: ReadonlyArray<Tool>;
   /** Every router in the catalog, on every page. */
   readonly routers: ReadonlyArray<ToolRouter>;
@@ -41,6 +42,7 @@ export interface ToolListing {
    * slow to evaluate. Other index listings have empty schemas.
    */
   readonly described?: true;
+  readonly itemChars?: ReadonlyArray<number>;
 }
 
 /** Failures of the evaluation itself. Credential and storage failures are never remembered. */
@@ -105,7 +107,11 @@ class Evaluated {
   readonly sizes: ReturnType<typeof shareListing>["sizes"];
   readonly json: ReturnType<typeof shareListing>["json"];
   constructor(shared: ReturnType<typeof shareListing>, completedAt: number, durationMs: number) {
-    this.listed = new Listed(shared.listing, completedAt, durationMs);
+    this.listed = new Listed(
+      { ...shared.listing, itemChars: shared.itemChars },
+      completedAt,
+      durationMs,
+    );
     this.bytes = shared.bytes;
     this.sizes = shared.sizes;
     this.json = shared.json;
@@ -137,7 +143,7 @@ type Outcome = Evaluated | Failed | Unkept | Stopped;
 
 /**
  * Keep each evaluated listing in the shared declaration store under the declaration key, so a
- * new deployment, account set or stored credential is another listing,
+ * new version, account set or stored credential is another listing,
  * and serve anything this read did not evaluate itself only after the checks a live evaluation
  * runs before it releases credentials: a kept listing, a remembered failure, and the result of
  * an evaluation another request started.
@@ -184,7 +190,7 @@ export const makeListings = (options: {
     kind: ListingKind = "tools.list",
   ) =>
     Effect.gen(function* () {
-      const identity = { app: state.app.id, deployment: state.deployment.id };
+      const identity = { app: state.app.id, version: state.version.id };
       const evaluated = (
         read.resolved === undefined
           ? resolve(state, options.resolveAccount)

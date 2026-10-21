@@ -170,6 +170,7 @@ export const pageContext = (pathname: string, search = "") => {
     "account",
     "approvals",
     "billing",
+    "setup",
   ]);
   const section = segments[0] === "org" ? segments[2] : segments[0];
   const page =
@@ -194,6 +195,8 @@ export const pageContext = (pathname: string, search = "") => {
       "workflows",
       "settings",
       "source",
+      "versions",
+      // The former name of `versions`, in links saved before the rename.
       "deployments",
     ].includes(view)
       ? view

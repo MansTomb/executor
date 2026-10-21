@@ -18,7 +18,7 @@ import {
 } from "apps/contracts";
 import { DatabaseFieldReserved } from "@executor-js/app-data/contracts";
 import { RecordedMessage } from "@executor-js/utils/recorded-message";
-import { BuildStage, SourceLocation, type BuildMemoryExceeded } from "./deployment.ts";
+import { BuildStage, SourceLocation, type BuildMemoryExceeded } from "./version.ts";
 import type { CodeFiles } from "./source.ts";
 import { BuildId, Json } from "./shared.ts";
 import type { BlobKey, BlobRange } from "./blobs.ts";
@@ -198,7 +198,7 @@ export const BuiltApp = Schema.Struct({
   ui: Schema.optional(Schema.Array(UiAsset)),
 });
 /**
- * A deployment's public file, which its deploy copied to the host's store. Hosts stream it, or
+ * A version's public file, which its deploy copied to the host's store. Hosts stream it, or
  * one range of it, after authorizing the request; `object` names its exact bytes.
  */
 export interface RuntimePublicFile {
@@ -284,6 +284,7 @@ export const RuntimeFailure = Schema.Literals([
   "hung",
   "internal",
   "invalid-reply",
+  "too-large",
   "data",
   "build",
   "unsupported",
@@ -303,6 +304,7 @@ export const runtimeFailures: Record<RuntimeFailure, string> = {
   hung: "The app's Worker can never answer",
   internal: "The runtime failed internally",
   "invalid-reply": "The app's reply does not match its host protocol",
+  "too-large": "A value crossing Workers RPC for the app exceeded its size limit",
   data: "The app's data supervisor failed the call",
   build: "The app's build could not be read",
   unsupported: "The app's build speaks a host protocol this host does not run",
@@ -409,6 +411,12 @@ export interface Runtime<Requirements = never> {
       readonly tools?: readonly string[];
       /** Describe only declared operations with schedules. Send only to scheduledTools builds. */
       readonly scheduled?: true;
+      /**
+       * Have the build send each definition and each `$defs` its tools' schemas hold once, as a
+       * `HostedSharedCatalog`. Send only to sharedDefinitions builds. The catalog is the same
+       * either way; restored, its tools share one object for each `$defs` and definition.
+       */
+      readonly definitions?: "shared";
     } & HostContext,
   ) => Effect.Effect<HostedCatalog, RuntimeLoadError | typeof HostInspectError.Type, Requirements>;
   /** List the current tools without their schemas. */

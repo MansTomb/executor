@@ -12,7 +12,7 @@ import {
   unlinkAccount,
 } from "./app-accounts.ts";
 import { appOrigin } from "../contracts/app-ui.ts";
-/** Product projections over the existing SDK and retained deployment storage. */
+/** Product projections over the existing SDK and retained version storage. */
 import {
   StorageError,
   AppNameTaken,
@@ -30,10 +30,6 @@ import {
   type ApprovalRequestId,
   type AccountId,
   type ExecutorDatabase,
-  type Cursor,
-  type DeploymentId,
-  type Tool,
-  type ToolRouter,
   type Executor,
 } from "@executor-js/sdk/core";
 import { Effect, Layer, Redacted, Result, Schema, Stream } from "effect";
@@ -67,7 +63,6 @@ import {
   AppAccountLinksBlocked,
   AccountManagementBlocked,
   AccountLinkedToApp,
-  ToolCatalogChanged,
   type AppAccountTarget,
 } from "../contracts/dashboard.ts";
 
@@ -285,13 +280,13 @@ export const dashboard = (
   const appDetail = (appId: AppId) =>
     Effect.gen(function* () {
       const app = yield* executor.apps.get({ app: appId });
-      const deployments = yield* executor.apps.deployments({ app: appId });
+      const versions = yield* executor.apps.versions({ app: appId });
       const source =
-        app.activeDeployment === null
+        app.activeVersion === null
           ? null
           : yield* executor.apps.source({ app: appId }).pipe(
               Effect.catchTags({
-                DeploymentNotFound: () => new StorageError(),
+                VersionNotFound: () => new StorageError(),
                 AppNotDeployed: () => new StorageError(),
               }),
             );
@@ -302,7 +297,7 @@ export const dashboard = (
             ? HttpUrl.make(appOrigin(app.id, config.port))
             : null,
         canDelete: app.id !== managedApp,
-        deployments,
+        versions,
       };
     });
   /** The apps an account is linked to, in either scope. */
@@ -422,38 +417,13 @@ export const dashboard = (
           };
         }),
       );
-      return { deployment: app.activeDeployment, selections, accounts };
+      return { version: app.activeVersion, selections, accounts };
     });
-  const allTools = (app: AppId) =>
-    Effect.gen(function* () {
-      const { accounts } = yield* resolved(app);
-      let cursor: Cursor | undefined;
-      let deployment: DeploymentId | undefined;
-      const cursors = new Set<Cursor>();
-      const tools: Tool[] = [];
-      // Every page lists the whole catalog's routers.
-      let routers: readonly ToolRouter[] = [];
-      do {
-        const page = yield* executor.tools.list({
-          app,
-          accounts,
-          limit: 2_000,
-          ...(cursor === undefined ? {} : { cursor }),
-          ...(deployment === undefined ? {} : { deployment }),
-        });
-        if (deployment !== undefined && page.deployment !== deployment)
-          return yield* new ToolCatalogChanged({ app });
-        deployment = page.deployment;
-        tools.push(...page.items);
-        routers = page.routers;
-        cursor = page.next;
-        if (cursor !== undefined) {
-          if (cursors.has(cursor)) return yield* new ToolCatalogChanged({ app });
-          cursors.add(cursor);
-        }
-      } while (cursor !== undefined);
-      return { tools, routers };
-    }).pipe(
+  /** The app's whole catalog without schemas; the page reads a selected tool's with `tool`. */
+  const toolIndex = (app: AppId) =>
+    resolved(app).pipe(
+      Effect.flatMap(({ accounts }) => executor.tools.index({ app, accounts })),
+      Effect.map((index) => ({ tools: index.items, routers: index.routers })),
       Effect.timeoutOrElse({
         duration: config.mcp.timeoutMs,
         orElse: () => Effect.fail(new ToolDiscoveryTimedOut({ app })),
@@ -489,7 +459,7 @@ export const dashboard = (
                   const result =
                     value._tag === "Failure"
                       ? Result.fail(value.failure)
-                      : yield* Effect.result(allTools(params.app));
+                      : yield* Effect.result(toolIndex(params.app));
                   return { revision, value: result };
                 }),
               ),
@@ -591,7 +561,7 @@ export const dashboard = (
                 // A snapshot reads no registry or earlier app; those failures belong to other copy sources.
                 Effect.catchTags({
                   RegistryError: Effect.die,
-                  DeploymentNotFound: Effect.die,
+                  VersionNotFound: Effect.die,
                   AppNotDeployed: Effect.die,
                 }),
                 Effect.flatMap(deployedCopy),
@@ -730,6 +700,15 @@ export const dashboard = (
           Effect.timeoutOrElse({
             duration: config.mcp.timeoutMs,
             orElse: () => Effect.fail(new ToolDiscoveryTimedOut(params)),
+          }),
+        ),
+      )
+      .handle("tool", ({ params, query }) =>
+        resolved(params.app).pipe(
+          Effect.flatMap(({ accounts }) => executor.tools.get({ ...params, ...query, accounts })),
+          Effect.timeoutOrElse({
+            duration: config.mcp.timeoutMs,
+            orElse: () => Effect.fail(new ToolDiscoveryTimedOut({ app: params.app })),
           }),
         ),
       ),

@@ -31,6 +31,7 @@ import { ScheduleWakeup } from "../contracts/schedules.ts";
 import type { ConnectionDestination } from "../contracts/resource-access.ts";
 import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
 import { connectAccount, connectionUrl } from "./accounts.ts";
+import { accountOAuthRedirectUri } from "./auth.ts";
 import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
 import {
   policyDatabase,
@@ -148,7 +149,7 @@ const userLinkRecords = (app: AppId, requirement?: string) =>
     );
   });
 
-/** The requirement in this scope of the app's active deployment, or `RequirementMismatch`. */
+/** The requirement in this scope of the app's active version, or `RequirementMismatch`. */
 const scopedRequirement = (app: App, scope: AccountScope, requirement: string) => {
   const required = Object.hasOwn(app.requirements.accounts, requirement)
     ? app.requirements.accounts[requirement]
@@ -234,7 +235,11 @@ const connect = (
       scope,
       ...payload,
     });
-    return { ...connection, url: yield* connectionUrl(services.auth, services.api, connection.id) };
+    return {
+      ...connection,
+      url: yield* connectionUrl(services.auth, services.api, connection.id),
+      redirectUri: accountOAuthRedirectUri(services.auth),
+    };
   });
 
 /**

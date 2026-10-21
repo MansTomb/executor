@@ -36,8 +36,8 @@ const mismatch = {
     title: "This app has no such account requirement here",
     description: (scope: AccountScope) =>
       scope === "app"
-        ? "The app's active deployment doesn't declare this requirement as one of its own, linked for everyone."
-        : "The app's active deployment doesn't declare this requirement as one each member links for themselves.",
+        ? "The app's active version doesn't declare this requirement as one of its own, linked for everyone."
+        : "The app's active version doesn't declare this requirement as one each member links for themselves.",
     action: (scope: AccountScope) =>
       scope === "app"
         ? "Link the account to one of the app's own requirements, or link it for yourself if the requirement is a user one."
@@ -51,7 +51,7 @@ const mismatch = {
   },
 } as const;
 /**
- * The account cannot be linked to this requirement in this scope: the app's active deployment
+ * The account cannot be linked to this requirement in this scope: the app's active version
  * does not declare the requirement in it (`requirement`), or the account's provider is not the
  * requirement's (`provider`).
  */
@@ -147,7 +147,7 @@ const connectPayload = Schema.Struct({
   account: Schema.optional(AccountId),
 });
 const connectDescription =
-  "Completing it links the new account to this requirement. For an OAuth method of the returned provider, accounts.oauthSetup with provider.id and the method name lists the permissions sign-in will request. Pass account to replace an existing account's credentials instead.";
+  "Completing it links the new account to this requirement. redirectUri is the callback to register when the service needs the user's own OAuth client. For an OAuth method of the returned provider, accounts.oauthSetup with provider.id and the method name lists the permissions sign-in will request. Pass account to replace an existing account's credentials instead.";
 
 /** The `/:scope` routes of one scope, named `appAccounts.<scope><Action>` for tools, such as `appAccounts.appList`. */
 const scopeEndpoints = <const S extends AccountScope>(scope: S) => {

@@ -6,7 +6,7 @@ import {
   type AccountId,
   type AppAccounts,
   type AppId,
-  type DeploymentId,
+  type VersionId,
   type ToolKind,
   type ToolName,
   type ToolIndex,
@@ -43,7 +43,7 @@ interface Invocation {
   readonly app: AppId;
   readonly tool: ToolName;
   readonly accounts?: AppAccounts | undefined;
-  readonly deployment?: DeploymentId | undefined;
+  readonly version?: VersionId | undefined;
   readonly kind?: ToolKind | undefined;
 }
 type ToolListInput = Parameters<McpBackend<never>["listTools"]>[0];
@@ -130,14 +130,14 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       permitsRouter(policy, { app, path: router.path }, index.items),
     ),
   });
-  /** Every page of one listing, pinned to the first page's deployment. */
+  /** Every page of one listing, pinned to the first page's version. */
   const fullListing = (input: ToolListInput, options: ToolListOptions | undefined) =>
     Effect.gen(function* () {
       let page = yield* backend.listTools(input, options);
-      const deployment = page.deployment;
+      const version = page.version;
       const items = [...page.items];
       while (page.next !== undefined) {
-        page = yield* backend.listTools({ ...input, deployment, cursor: page.next }, options);
+        page = yield* backend.listTools({ ...input, version, cursor: page.next }, options);
         items.push(...page.items);
       }
       return { ...page, items, next: undefined };
@@ -167,7 +167,7 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
     });
   /**
    * The catalog an app's grant entries permit together, when no single entry permits every named
-   * account. Each entry lists the catalog with the named accounts it targets, on one deployment,
+   * account. Each entry lists the catalog with the named accounts it targets, on one version,
    * and contributes the tools and routers it permits; a tool keeps the first entry's description.
    * A plain requirement whose account an entry does not target leaves that entry out. The page
    * names the requested accounts: calls choose theirs, and one entry must permit each call.
@@ -212,7 +212,7 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
             pages.push({
               accounts: part.accounts,
               page: yield* fullListing(
-                { ...input, accounts: part.accounts, deployment: listed.deployment },
+                { ...input, accounts: part.accounts, version: listed.version },
                 read,
               ),
             });
@@ -240,7 +240,7 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           refusal: targetRefusal(input.app, named(input.accounts)),
         });
       return {
-        deployment: listed.deployment,
+        version: listed.version,
         accounts: input.accounts,
         items: [...items.values()],
         routers: [...routers.values()],
@@ -250,21 +250,21 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
   const describe = (input: Invocation) =>
     backend
       .listTools(
-        { app: input.app, accounts: input.accounts, deployment: input.deployment },
+        { app: input.app, accounts: input.accounts, version: input.version },
         { tools: [input.tool] },
       )
       .pipe(
         Effect.map((page) => {
           const tool = page.items.find((item) => item.name === input.tool);
-          return tool === undefined ? undefined : { tool, deployment: page.deployment };
+          return tool === undefined ? undefined : { tool, version: page.version };
         }),
       );
   /**
    * Check the invocation against the grant. Exact names and all-tools decide from the name;
-   * a read-only rule reads the live catalog, and the call then runs on that same deployment, as a
+   * a read-only rule reads the live catalog, and the call then runs on that same version, as a
    * query: the app refuses it when the tool it resolves when called is a mutation. An invocation
    * that names a mutation is refused when only a read-only rule permits it. Succeeds with the
-   * deployment and kind the call runs with.
+   * version and kind the call runs with.
    */
   const authorize = (policy: AuthorizationPolicy, input: Invocation) =>
     Effect.gen(function* () {
@@ -285,7 +285,7 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
             });
       if (!requiresToolMetadata(policy.tools, input.app)) {
         yield* refuse(toolRefusal(permitsTool(policy, request)));
-        return { deployment: input.deployment, kind: input.kind };
+        return { version: input.version, kind: input.kind };
       }
       // An unknown tool or a missing flag is never read-only.
       const described = yield* describe(input);
@@ -297,7 +297,7 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         toolRefusal(permission === "any" || (permission === "query" && input.kind !== "mutation")),
       );
       return {
-        deployment: described?.deployment,
+        version: described?.version,
         kind: permission === "query" ? ("query" as const) : input.kind,
       };
     });
@@ -410,7 +410,7 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           options,
         );
         return {
-          deployment: merged.deployment,
+          version: merged.version,
           accounts: merged.accounts,
           routers: merged.routers,
           items: merged.items.map(
@@ -464,9 +464,9 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       }),
     callTool: (input, options) =>
       Effect.gen(function* () {
-        const { deployment, kind } = yield* check(input);
+        const { version, kind } = yield* check(input);
         return yield* backend.callTool(
-          { ...input, ...(deployment === undefined ? {} : { deployment }), kind },
+          { ...input, ...(version === undefined ? {} : { version }), kind },
           options,
         );
       }),
@@ -479,7 +479,7 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           app: invocation.app,
           tool: invocation.tool,
           accounts: invocationAccounts(invocation),
-          deployment: invocation.deployment,
+          version: invocation.version,
           kind: invocation.kind,
         });
         if (kind !== invocation.kind)

@@ -18,7 +18,7 @@ export interface UsageProperties {
   readonly area?: string;
   readonly operation?: string;
   readonly app_id?: string;
-  readonly deployment_id?: string;
+  readonly version_id?: string;
   readonly account_id?: string;
   readonly provider_id?: string;
   readonly tool_name?: string;
@@ -35,6 +35,8 @@ export interface UsageProperties {
   readonly result_count?: number;
   readonly run_id?: string;
   readonly schedule_id?: string;
+  /** Which Executor surface a newly approved agent grant reaches. */
+  readonly grant_kind?: "mcp" | "api";
 }
 
 /** Stable product events; detailed API features use area and operation rather than dynamic event names. */
@@ -45,6 +47,7 @@ export type UsageEvent =
   | "tool_execution_completed"
   | "tool_approval_requested"
   | "account_connected"
+  | "agent_connected"
   | "app_deployed"
   | "app_viewed"
   | "app_query_completed"

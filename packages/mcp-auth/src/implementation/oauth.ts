@@ -19,7 +19,7 @@ import {
 } from "better-auth/api";
 import { Clock, Effect, Option, Schema } from "effect";
 import { authCall, parse, runAuth } from "./auth-call.ts";
-import { deviceAuthorizationPlugin } from "./device-authorization.ts";
+import { deviceAuthorizationPlugin, devicePollsPerRequest } from "./device-authorization.ts";
 import {
   ConnectionId,
   Grant,
@@ -141,6 +141,12 @@ const redirectIdentity = (value: string) => {
 export type RefreshRejection = Parameters<
   NonNullable<OAuthOptions<Scope[]>["onRefreshRejected"]>
 >[0];
+/** What a host learns about a newly approved grant: who approved which client, for which surface. */
+export interface CreatedGrant {
+  readonly userId: string;
+  readonly clientId: string;
+  readonly kind: "mcp" | "api";
+}
 export interface GrantOAuthOptions {
   /** The browser origin that serves sign-in and consent; same-origin checks compare against it. */
   readonly origin: string;
@@ -170,6 +176,11 @@ export interface GrantOAuthOptions {
   readonly scopes: Scope[];
   /** Observe why a refresh grant was refused, including reuse detection revoking its family. */
   readonly onRefreshRejected?: ((rejection: RefreshRejection) => void) | undefined;
+  /**
+   * Observe a grant a person just approved, by consent or by a device's code, for analytics.
+   * Called once per grant, in the approving request; its failure never refuses the approval.
+   */
+  readonly onGrantCreated?: ((grant: CreatedGrant) => Promise<void>) | undefined;
   /**
    * Offer RFC 8628 device authorization, approved on the browser origin's verification page.
    * Only hosts that serve that page and a signed-in browser session enable it.
@@ -221,7 +232,16 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     clientRegistrationRequirePKCE: true,
     // Hosted MCP clients such as Cursor register from a shared backend address, and Cursor
     // spends two requests per attempt. The default of 5 per minute rejected real sign-ins.
-    rateLimit: { register: { window: 60, max: 60 } },
+    // Better Auth's count resets only after a whole window without requests, so a device client
+    // polling at its interval adds every poll until approval. The default twenty failed sign-ins
+    // approved after about a hundred seconds; allow one request's full polling beside that.
+    rateLimit: {
+      register: { window: 60, max: 60 },
+      token: {
+        window: 60,
+        max: 20 + (settings.deviceAuthorization ? devicePollsPerRequest : 0),
+      },
+    },
     grantTypes: ["authorization_code", "refresh_token"],
     disableJwtPlugin: true,
     accessTokenExpiresIn: accessTokenSeconds,
@@ -989,6 +1009,13 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         }),
       );
       const grant = yield* parse(Record, row);
+      const observe = settings.onGrantCreated;
+      if (observe !== undefined)
+        yield* Effect.tryPromise(() =>
+          observe({ userId, clientId, kind: target.kind === "mcp" ? "mcp" : "api" }),
+        ).pipe(
+          Effect.catchCause((cause) => Effect.logWarning("Agent grant was not observed", cause)),
+        );
       // Cleanup must not block the authorization; daily expiry retries what fails here.
       yield* retireReplaced(ctx, grant, resources).pipe(
         Effect.catchCause((cause) =>

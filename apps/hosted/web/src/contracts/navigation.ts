@@ -1,6 +1,6 @@
 import { AccountConnectionId, AccountId } from "@executor-js/sdk";
 import { GrantId } from "@executor-js/mcp-auth/grants";
-import { AppView, AssistantId } from "@executor-js/ui/contracts/dashboard";
+import { AppView, AppViewFromUrl, AssistantId } from "@executor-js/ui/contracts/dashboard";
 import { Option, Schema } from "effect";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
 import type { AgentBaseline } from "./mcp-connections.ts";
@@ -70,6 +70,34 @@ export function parseAgentSetupSearch(
   return prompt ? { assistant, step: "prompt", agent } : { assistant };
 }
 
+/**
+ * The assistant the assistant step set up and the agent that connected, carried through a later
+ * step so it can open that agent's first prompt. Only setup that shows its assistant first carries
+ * one, and only when an agent connected; a skipped assistant carries none.
+ */
+export const SetupHandoff = Schema.Struct({
+  assistant: AssistantId,
+  agent: GrantId,
+});
+export type SetupHandoff = typeof SetupHandoff.Type;
+
+/**
+ * The account step's URL carries the handoff when the assistant came first, so a reload, Back or
+ * an account sign-in still leads to the first prompt. A malformed handoff carries none.
+ */
+export function parseAccountsSetupSearch(search: Record<string, unknown>): Partial<SetupHandoff> {
+  return Option.match(Schema.decodeUnknownOption(SetupHandoff)(search), {
+    onNone: () => ({}),
+    onSome: ({ assistant, agent }) => ({ assistant, agent }),
+  });
+}
+
+/** The handoff an account step's search names, if it names one. */
+export const setupHandoff = (search: Partial<SetupHandoff>): SetupHandoff | undefined =>
+  search.assistant === undefined || search.agent === undefined
+    ? undefined
+    : { assistant: search.assistant, agent: search.agent };
+
 declare module "@tanstack/history" {
   interface HistoryState {
     organizationResume?: typeof OrganizationResume.Type;
@@ -86,7 +114,7 @@ export function parseAppSearch(search: Record<string, unknown>): ReturnType<
 } {
   return {
     ...parseConnectionSearch(search),
-    view: Option.getOrUndefined(Schema.decodeUnknownOption(AppView)(search.view)),
+    view: Option.getOrUndefined(Schema.decodeUnknownOption(AppViewFromUrl)(search.view)),
     tool: Option.getOrUndefined(Schema.decodeUnknownOption(Schema.NonEmptyString)(search.tool)),
   };
 }
@@ -114,6 +142,7 @@ export function hostedPageTitle(
           : "Account";
   if (root !== "org" || page === undefined) return "Organizations";
   if (extraPages[page] !== undefined) return extraPages[page];
+  if (page === "setup") return item === "assistant" ? "Continue in your agent" : "Connect accounts";
   if (page === "organization") return "Settings";
   if (page === "approvals") return item ? "Review request" : "Approvals";
   if (page === "groups") return item ? "Group" : "Groups";

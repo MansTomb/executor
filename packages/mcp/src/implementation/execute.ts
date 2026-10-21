@@ -17,7 +17,7 @@ import {
   type AppId,
   type Cursor,
   ToolName,
-  type DeploymentId,
+  type VersionId,
   type SearchableTools,
   type Tool as AppTool,
   type ToolListOptions,
@@ -244,21 +244,21 @@ function indexTools<E extends Error>(
       Effect.map((index) => ({
         tools: index.items,
         routers: index.routers,
-        deployment: index.deployment,
+        version: index.version,
         accounts: index.accounts,
       })),
     );
 }
 
-/** Every page of a listing with schemas, pinned to the first page's deployment. */
+/** Every page of a listing with schemas, pinned to the first page's version. */
 function listTools<E extends Error>(
   backend: McpBackend<E>,
-  input: { readonly app: AppId; readonly accounts: AppAccounts; readonly deployment: DeploymentId },
+  input: { readonly app: AppId; readonly accounts: AppAccounts; readonly version: VersionId },
   options: ToolListOptions,
 ) {
   return Effect.gen(function* () {
     const list = (cursor?: Cursor) =>
-      backend.listTools({ ...input, cursor, limit: 2_000 }, options);
+      backend.listTools({ ...input, cursor, limit: 2_000 }, { ...options, unboundedPages: true });
     let page = yield* list();
     const tools: AppTool[] = [...page.items];
     while (page.next !== undefined) {
@@ -310,11 +310,11 @@ type Target = Place & {
   /** The app's routers by router path. The root router has path "". */
   readonly routers: ReadonlyMap<string, ToolRouter>;
   /**
-   * The deployment its tools were listed from. Calls name no deployment: the host runs each on the
-   * app's active deployment when the call starts, so a deploy earlier in the same program, or since
+   * The version its tools were listed from. Calls name no version: the host runs each on the
+   * app's active version when the call starts, so a deploy earlier in the same program, or since
    * the app was loaded, is the one called.
    */
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
   /** The caller's linked accounts, which each call resolves its accounts from. */
   readonly linked: McpAppAccounts;
 };
@@ -330,8 +330,8 @@ type SearchTarget = Place & {
   readonly listing: ToolSearchListing;
   /** The accounts the listing was read with. */
   readonly listed: AppAccounts;
-  /** The deployment the listing was read from; its tools are described from it. */
-  readonly deployment: DeploymentId;
+  /** The version the listing was read from; its tools are described from it. */
+  readonly version: VersionId;
   /** How many tools the listing names, when the read that made it searchable knew. */
   readonly size: number | undefined;
 };
@@ -341,7 +341,7 @@ type Selected = {
   /** Canonical path below `tools`. */
   readonly path: string;
   readonly app: AppId;
-  readonly deployment: DeploymentId;
+  readonly version: VersionId;
   readonly accounts: AppAccounts;
   readonly size: number | undefined;
   readonly name: ToolName;
@@ -349,7 +349,7 @@ type Selected = {
 const selectedEntry = (entry: Entry): Selected => ({
   path: entry.path,
   app: entry.target.id,
-  deployment: entry.target.deployment,
+  version: entry.target.version,
   accounts: entry.target.listed,
   size: entry.target.size,
   name: entry.tool.name,
@@ -357,7 +357,7 @@ const selectedEntry = (entry: Entry): Selected => ({
 const selectedRow = (target: SearchTarget, name: ToolName): Selected => ({
   path: `${target.path}.${toolPath(name)}`,
   app: target.id,
-  deployment: target.deployment,
+  version: target.version,
   accounts: target.listed,
   size: target.size,
   name,
@@ -373,7 +373,7 @@ type Describe = (
 const bulkDescribe = 64;
 
 /**
- * Describe selected tools live, batched by app and deployment, and at most once each per
+ * Describe selected tools live, batched by app and version, and at most once each per
  * execution. Every read authorizes the app and its accounts again. A batch that names every tool
  * of a listing larger than `bulkDescribe` reads the whole listing live; when that fails, such as a
  * source that cannot list every schema at once, the tools are described by name.
@@ -381,13 +381,13 @@ const bulkDescribe = 64;
 const describer = (backend: McpBackend<Error>): Describe => {
   const described = new Map<string, AppTool>();
   const keyOf = (selected: Selected) =>
-    JSON.stringify([selected.app, selected.deployment, selected.name]);
+    JSON.stringify([selected.app, selected.version, selected.name]);
   return (selected) =>
     Effect.gen(function* () {
       const batches = new Map<string, Map<ToolName, Selected>>();
       for (const tool of selected) {
         if (described.has(keyOf(tool))) continue;
-        const batch = JSON.stringify([tool.app, tool.deployment]);
+        const batch = JSON.stringify([tool.app, tool.version]);
         const names = batches.get(batch) ?? new Map<ToolName, Selected>();
         batches.set(batch, names);
         names.set(tool.name, tool);
@@ -402,7 +402,7 @@ const describer = (backend: McpBackend<Error>): Describe => {
             const input = {
               app: first.app,
               accounts: first.accounts,
-              deployment: first.deployment,
+              version: first.version,
             };
             // A slow index that described its tools answers these without evaluating again.
             const named = listTools(backend, input, {
@@ -1056,8 +1056,8 @@ function catalog(
     // Tool path prefixes that expose no tools in this execution, and those that do. A call is
     // attributed to the longest matching prefix, so a typo inside a loaded namespace stays unknown.
     const namespaces: Namespaces = new Map();
-    /** The deployment each loaded namespace's tools came from. */
-    const loadedFrom = new Map<string, DeploymentId>();
+    /** The version each loaded namespace's tools came from. */
+    const loadedFrom = new Map<string, VersionId>();
     const unavailableOf = (app: AppId) => {
       const seen = new Set<string>();
       return [
@@ -1113,7 +1113,7 @@ function catalog(
               }
               const accounts = yield* resolveLinkedAccounts({
                 app: entry.target.id,
-                deployment: entry.target.deployment,
+                version: entry.target.version,
                 // The host fills app requirements from the app links.
                 appLinks: {},
                 userLinks: entry.target.linked,
@@ -1205,7 +1205,7 @@ function catalog(
     };
     const routerFailures = (
       app: ListedApp,
-      deployment: DeploymentId,
+      version: VersionId,
       routers: ReadonlyArray<ToolRouter>,
     ) =>
       routers.flatMap((router) =>
@@ -1218,7 +1218,7 @@ function catalog(
                   app: app.id,
                   name: `${app.name} ${router.title ?? router.path}`,
                   router: router.path,
-                  reason: diagnostic(routerFailure({ app: app.id, deployment }, router.error)),
+                  reason: diagnostic(routerFailure({ app: app.id, version }, router.error)),
                 },
               },
             ],
@@ -1255,21 +1255,17 @@ function catalog(
         const { linked, value: catalog } = discovered;
         const namespace = app.slug;
         namespaces.set(namespace, "available");
-        loadedFrom.set(namespace, catalog.deployment);
+        loadedFrom.set(namespace, catalog.version);
         // A router that could not list its tools is reported like an app, at its own namespace,
         // so a call into it explains why instead of reporting an unknown tool.
-        for (const { namespace, entry } of routerFailures(
-          app,
-          catalog.deployment,
-          catalog.routers,
-        )) {
+        for (const { namespace, entry } of routerFailures(app, catalog.version, catalog.routers)) {
           failed.push(entry);
           namespaces.set(namespace, entry);
         }
         const described: Target = {
           ...placeOf(app, linked),
           routers: new Map(catalog.routers.map((router) => [router.path, router])),
-          deployment: catalog.deployment,
+          version: catalog.version,
           linked,
           listed: catalog.accounts,
           size: catalog.tools.length,
@@ -1300,13 +1296,13 @@ function catalog(
           if (!namespaces.has(app.slug)) namespaces.set(app.slug, accountRequired(app));
         } else {
           const { linked, value: searchable } = discovered;
-          for (const { entry } of routerFailures(app, searchable.deployment, searchable.routers))
+          for (const { entry } of routerFailures(app, searchable.version, searchable.routers))
             failed.push(entry);
           found.push({
             ...placeOf(app, linked),
             listing: searchable.listing,
             listed: searchable.accounts,
-            deployment: searchable.deployment,
+            version: searchable.version,
             size: searchable.tools,
           });
         }
@@ -1589,7 +1585,7 @@ const unknownPath = (error: CodeMode.Diagnostic) =>
  */
 const unknownTool = (
   error: CodeMode.Diagnostic,
-  loadedFrom: ReadonlyMap<string, DeploymentId>,
+  loadedFrom: ReadonlyMap<string, VersionId>,
   slugs: ReadonlySet<string>,
 ) => {
   const path = unknownPath(error);
@@ -1597,9 +1593,9 @@ const unknownTool = (
   const segments = path.split(".");
   const slug = segments[0] ?? "";
   for (let length = segments.length; length > 0; length--) {
-    const deployment = loadedFrom.get(segments.slice(0, length).join("."));
-    if (deployment !== undefined)
-      return `This execute loaded '${slug}' from deployment ${deployment} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`;
+    const version = loadedFrom.get(segments.slice(0, length).join("."));
+    if (version !== undefined)
+      return `This execute loaded '${slug}' from version ${version} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`;
   }
   if (!slugs.has(slug))
     return `No app '${slug}' existed when this execute started. If it was created or deployed during this execute, call it in a new execute. Otherwise use search to find available tools.`;

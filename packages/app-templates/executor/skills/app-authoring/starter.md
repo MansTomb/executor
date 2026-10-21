@@ -10,8 +10,9 @@ the requested app does not fit this example.
 Discover the management app's `framework.search` and `framework.describe`
 through `tools.search`. Call `framework.search({ query: { text: "createAppClient" } })`,
 then `framework.describe({ query: { symbol: "apps/client.createAppClient", version, digest } })`
-with the search result's `version` and `digest`. Read the complete
-`live-inbox` entry in `examples`, including its `files`. Keep this reference
+with the search result's `version` and `digest`. `examples` is an array of
+`{ id, title, files }`; read the complete entry whose `id` is `live-inbox`,
+including its `files`. Keep this reference
 identity when fetching it again; a different pinned package needs its own
 reference.
 
@@ -28,7 +29,7 @@ The example's `files` already has the `{ path, content }` shape accepted by
 management tools. After reading the source, fetch the same reference and apply
 your edits to those files inside `execute`. Pass the resulting file array
 directly to the discovered create operation. Read [deploy.md](deploy.md) for
-the create, commit and deployment flow. Return the resulting IDs and URL, rather
+the create, commit and deploy flow. Return the resulting IDs and URL, rather
 than printing unchanged source and writing it back into another tool call.
 
 For later changes, fetch the app's current working source and transform only
@@ -37,7 +38,8 @@ An `execute` call does not retain variables for the next call; fetch the source
 again when needed. Preserve unrelated files and edits.
 
 With a shell and the CLI, read the same example from
-`node_modules/apps/framework-reference.json` under `examples["live-inbox"]`.
+`node_modules/apps/framework-reference.json`, the `examples` entry whose `id`
+is `live-inbox`.
 Write its `files` into a local app directory once, then edit and deploy them
 with `executor apps` as described in [deploy.md](deploy.md). Over MCP only, keep one working copy and serialize its
 content with JSON when preparing a tool payload. Do not rewrite valid TypeScript just

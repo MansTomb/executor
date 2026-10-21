@@ -114,7 +114,7 @@ export const ApprovalUnavailable = UserFacingError.define({
   fields: {
     /**
      * `expired`: the request passed its deadline. `context-changed`: Executor read the app
-     * deployment or accounts and they differ from the reviewed call.
+     * version or accounts and they differ from the reviewed call.
      * `context-unconfirmed`: Executor's storage failed while it read them, so it could not compare.
      * `answered`: another answer already claimed it. `ended`: the execution ended before the
      * request could be saved.
@@ -146,7 +146,7 @@ export const ApprovalUnavailable = UserFacingError.define({
         return {
           title: "Approved call changed",
           description:
-            "The app deployment or accounts changed after this call was saved for approval, so Executor did not resume it.",
+            "The app version or accounts changed after this call was saved for approval, so Executor did not resume it.",
           recovery: {
             action: "Run the call again to review it with the current settings.",
             instructions: `Executor resumes only the exact call that was reviewed, and its settings changed while it waited. ${check} Then start a new execute and ask the user to approve its new request.`,
@@ -156,7 +156,7 @@ export const ApprovalUnavailable = UserFacingError.define({
         return {
           title: "Approved call not confirmed",
           description:
-            "Executor could not read the app deployment or accounts to confirm they still match the reviewed call, because its own storage failed, so it did not resume the call. Nothing shows that they changed.",
+            "Executor could not read the app version or accounts to confirm they still match the reviewed call, because its own storage failed, so it did not resume the call. Nothing shows that they changed.",
           recovery: {
             action:
               "Try again in a moment: run the call again and approve its new request. If this continues, check Executor's storage.",
@@ -513,7 +513,7 @@ export const SearchToolResult = Schema.Struct({
 /** The catalog search a program reaches as tools.search, as its own MCP tool. */
 export const SearchTool = McpTool.make("search", {
   description:
-    "Find Executor app tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with each app and its linked accounts listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace; pass next to read the following page.",
+    "Find Executor app tools by words in their paths, descriptions and labels. Returns exact paths, one-line descriptions and input types, with each app and its linked accounts listed once. Pass a path to call or describe, or use it as tools.<path> inside execute. Omit query to list a namespace. To read the following page, call search again with the returned next object as the whole input; next is null on the last page.",
   parameters: SearchInput,
   success: SearchToolResult,
   failure: CatalogUnavailable,

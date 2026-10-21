@@ -40,12 +40,17 @@ callback URL by calling `handle` before it answers. Registration and cleanup mus
 be idempotent. A callback must verify the provider signature over raw bytes
 before parsing the body or performing side effects.
 
+`handle`, `register` and `unregister` each have 45 seconds. Providers often
+resend a delivery much sooner, some after 5 seconds, so answer fast: verify,
+store the event or start a workflow with `ctx.workflows.start`
+([workflows.md](workflows.md)), then reply.
+
 Discover definitions/config schemas through the Executor app's webhook
 operations. Create with a stable `key`, handler `name`, `config`, and an explicit
 `sourceAccount` for a collection requirement. Check the returned `status` and
 `failure`. Retry failed or interrupted registration/cleanup with `reconcile`.
 Remove a subscription before deleting its app or connected accounts.
-Subscriptions pin their original deployment/account IDs; recreate to upgrade.
+Subscriptions pin their original version and account IDs; recreate to upgrade.
 Providers retry deliveries; Executor does not deduplicate or replay them.
 `state` can be null during provider validation or cleanup after a lost
 registration response. Local providers need a publicly reachable callback origin.

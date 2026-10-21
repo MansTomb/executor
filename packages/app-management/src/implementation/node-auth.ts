@@ -286,6 +286,11 @@ const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
 type Endpoints = Effect.Success<ReturnType<typeof discover>>;
 const fail = (reason: LoginFailed["reason"]) => () => new LoginFailed({ reason });
 const TokenError = Schema.Struct({ error: Schema.String });
+/** Seconds a rate-limited response asks to wait, in delta-seconds; Better Auth names its own header. */
+const retryAfter = (headers: Readonly<Record<string, string | undefined>>) => {
+  const seconds = Number(headers["retry-after"] ?? headers["x-retry-after"]);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+};
 
 /**
  * Whether a browser opened here reaches the person signing in. Over SSH it would open on the
@@ -300,18 +305,31 @@ const browserReachable = (platform: string) =>
     return !remote && (platform !== "linux" || display);
   }).pipe(Effect.orElseSucceed(() => false));
 
-/** Open the approval page in this machine's browser; the printed code still works if none opens. */
+/**
+ * Open the approval page in this machine's browser; the printed code still works if none opens.
+ * The opener is started and left alone. Outside a desktop it detects, xdg-open runs a browser it
+ * has to start in the foreground until that browser quits, so waiting for it would hold polling
+ * back while the person approves, and ending it would close the browser they approve in.
+ */
 const openBrowser = (platform: string, url: string) =>
   Effect.gen(function* () {
     if (!(yield* browserReachable(platform))) return;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const command =
+    const [opener, ...args] =
       platform === "darwin"
-        ? ChildProcess.make("open", [url])
+        ? ["open", url]
         : platform === "win32"
-          ? ChildProcess.make("rundll32", ["url.dll,FileProtocolHandler", url])
-          : ChildProcess.make("xdg-open", [url]);
-    yield* spawner.exitCode(command).pipe(Effect.ignore);
+          ? ["rundll32", "url.dll,FileProtocolHandler", url]
+          : ["xdg-open", url];
+    const command = ChildProcess.make(opener, args, {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    // An unreferenced process outlives this scope and does not keep the CLI running.
+    yield* Effect.scoped(spawner.spawn(command).pipe(Effect.flatMap((child) => child.unref))).pipe(
+      Effect.ignore,
+    );
   });
 
 /**
@@ -374,9 +392,12 @@ const deviceLogin = (endpoints: Endpoints, platform: string) =>
       ),
     );
     const deadline = (yield* Clock.currentTimeMillis) + started.expires_in * 1000;
-    const wait = (interval: number): Effect.Effect<typeof Token.Type, LoginFailed> =>
+    const wait = (
+      interval: number,
+      delay = interval,
+    ): Effect.Effect<typeof Token.Type, LoginFailed> =>
       Effect.gen(function* () {
-        yield* Effect.sleep(Duration.seconds(interval));
+        yield* Effect.sleep(Duration.seconds(delay));
         if ((yield* Clock.currentTimeMillis) >= deadline)
           return yield* new LoginFailed({ reason: "expired" });
         const response = yield* HttpClient.execute(poll).pipe(
@@ -389,6 +410,10 @@ const deviceLogin = (endpoints: Endpoints, platform: string) =>
             Effect.flatMap(Schema.decodeUnknownEffect(Token)),
             Effect.mapError(fail("token")),
           );
+        // A per-address limit in front of the token endpoint answers without an OAuth error. Slow
+        // down as `slow_down` asks, waiting at least as long as the limit names.
+        if (response.status === 429)
+          return yield* wait(interval + 5, Math.max(interval + 5, retryAfter(response.headers)));
         const { error } = yield* response.json.pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(TokenError)),
           Effect.mapError(fail("token")),

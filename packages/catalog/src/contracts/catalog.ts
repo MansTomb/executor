@@ -37,6 +37,42 @@ export const CatalogEntry = Schema.Struct({
   icons: Schema.Array(CatalogIcon),
 });
 export type CatalogEntry = typeof CatalogEntry.Type;
+/** Optional filters for a catalog listing, as URL query parameters. Without them, all entries. */
+export const CatalogQuery = {
+  search: Schema.optional(
+    Schema.String.annotate({
+      description:
+        "Case-insensitive text, trimmed, matched as a substring of each entry's id, name or package. Matches keep the catalog's order. Blank text matches every entry.",
+    }),
+  ),
+  limit: Schema.optional(
+    Schema.NumberFromString.check(
+      Schema.isInt(),
+      Schema.isBetween({ minimum: 1, maximum: 1_000 }),
+    ).pipe(
+      // Query values are strings on the wire, so the description goes on the encoded side.
+      Schema.annotateEncoded({
+        description:
+          "The most entries to return after filtering: a whole number from 1 to 1000. Without it, every match.",
+      }),
+    ),
+  ),
+};
+export type CatalogQuery = Schema.Struct.Type<typeof CatalogQuery>;
+/** Filter entries for a listing, keeping the catalog's order. */
+export const filterCatalog = (
+  entries: ReadonlyArray<CatalogEntry>,
+  filter: CatalogQuery = {},
+): ReadonlyArray<CatalogEntry> => {
+  const text = filter.search?.trim().toLowerCase();
+  const matched =
+    text === undefined || text === ""
+      ? entries
+      : entries.filter((entry) =>
+          [entry.id, entry.name, entry.package].some((value) => value.toLowerCase().includes(text)),
+        );
+  return filter.limit === undefined ? matched : matched.slice(0, filter.limit);
+};
 /** A catalog choice contains no owner, workspace, account selection or credential. */
 export const CatalogImport = Schema.Struct({ entry: Schema.NonEmptyString });
 export type CatalogImport = typeof CatalogImport.Type;
@@ -50,6 +86,8 @@ export const PreparedApp = Schema.Struct({
   origin: Schema.optionalKey(AppCopyOrigin),
 });
 export type PreparedApp = typeof PreparedApp.Type;
+/** The published official app feed. Hosts that list the official apps read it unless configured otherwise. */
+export const officialCatalogUrl = "https://catalog.executor.sh/index.json";
 /**
  * The feed's index, as `scripts/feed.ts` in the integrations repository writes it. Icon `src` and
  * `source` are relative to the index's own URL; `source` is always `apps/<id>.json`, which installs

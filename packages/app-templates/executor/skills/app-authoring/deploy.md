@@ -65,7 +65,7 @@ there as JSON, so scripts can read it:
 ```json
 {
   "error": {
-    "code": "DeploymentBuildFailed",
+    "code": "VersionBuildFailed",
     "status": 422,
     "message": "App build failed at the declaration stage: ...",
     "details": {
@@ -106,6 +106,9 @@ version="$(executor apps framework | jq -er .version)" &&
 executor apps source --app <app-id> | jq -r .revision.commit
 executor apps deploy --app <app-id> --commit <first-commit>
 ```
+
+`hello` takes no input. A handler that does takes the context first and the
+parsed input second, `async (_ctx, { name }) => ...`; see [tools.md](tools.md).
 
 To work on an existing app, fetch its source into a directory.
 `executor apps list` shows app IDs:
@@ -200,6 +203,10 @@ npx -y -p typescript@7 tsc --ignoreConfig --noEmit --strict --skipLibCheck \
   --jsx react-jsx index.ts ui/main.tsx ui/assets.d.ts
 ```
 
+Executor offers no type check of its own, over MCP or otherwise. Without npm
+access, check the source against `framework.describe` signatures, deploy, and
+tell the user it was not type-checked.
+
 Neither this check nor the build reads `tsconfig.json`; `--ignoreConfig` skips
 it. A `tsconfig.json` is still useful for editors, but its `include` does not
 add files here, so name the declaration file in the command.
@@ -227,8 +234,9 @@ Search returns `items` with the exact callable `path`, the first line of the
 `description` and the `input` type on one line. `namespaces` lists each app,
 with its linked accounts, once. A page holds at most `limit` items, 10 by
 default, and ends sooner at its size budget. `remaining` counts the matches
-after it; pass `next` to `tools.search` for the following page, until `next` is
-null. An item with `inputTruncated` has a longer input type than search shows.
+after it; call `tools.search(next)`, with `next` as the whole input, for the
+following page, until `next` is null. An item with `inputTruncated` has a longer
+input type than search shows.
 
 Read the whole signature, with the output type, and the whole description before
 relying on a result's shape:
@@ -239,6 +247,8 @@ return await tools.search.describe({ paths: ["<path from search>"] });
 
 A path that names no tool is returned in `missing` with the closest paths.
 Hosted exposes tools generated from its OpenAPI spec under `tools.executor`.
+Self-host serves the same API as Executor Cloud, so follow the hosted examples
+there; the local examples are for Executor on the user's own machine.
 Discover and call `context.get({})` to read the organization approved
 for this MCP connection. Its result has `organization`, `slug` and `role`.
 Use `organization` explicitly in management calls. Never guess `me` or `default`,
@@ -292,7 +302,7 @@ Local has no organization: omit `path` for `framework.release` and create, and
 pass `path: { app: app.id }` to deploy.
 
 A new app runs only once deployed; its tools and `appUi.location` answer only
-after that first deployment. Deploy the same `{ files }` straight after create,
+after the first deploy. Deploy the same `{ files }` straight after create,
 as above, or read `appManagement.source` and deploy the commit create saved
 with `body: { commit: source.revision.commit }`.
 
@@ -302,7 +312,7 @@ To change the app, read its working source and save the complete file list with
 not the `expected` commit you read before editing, or deploy a complete file
 list with `body: { files }`. Supply exactly one. `appManagement.deploy` takes
 the app ID in `path` and does not accept `name`, `expected` or
-`expectedDeployment`. Commits and Git pushes do not change the running version. A copy is another normal app with fresh Git history and no accounts or app data.
+`expectedVersion`. Commits and Git pushes do not change the running version. A copy is another normal app with fresh Git history and no accounts or app data.
 Running apps copy their deployed source and deploy the copy. Unfinished apps copy
 their working files and remain undeployed.
 
@@ -322,9 +332,9 @@ installed copies. A changed listing must be reviewed again before installation.
 Local and self-host consume the public registry; publish on the cloud host after
 pushing the source there. Agents edit their owned copy through normal app tools.
 
-Hosted deployment currently creates a new named app and returns the app directly.
-It rejects an existing name. Use source commits and deployment by app ID for edits.
-After deployment, start a new execute to discover and call its tools.
+Hosted deploy currently creates a new named app and returns the app directly.
+It rejects an existing name. Use source commits and deploy by app ID for edits.
+After deploying, start a new execute to discover and call its tools.
 Other hosted operations include `organization.inventory`, `organization.catalog`,
 `apps.install`, `apps.importCustom`, `apps.get`, `appUi.location`, `appAccounts` operations, and
 `apps.remove`. Always read their discovered signatures before calling them.
@@ -338,6 +348,7 @@ requirement, which links it for everyone and needs edit access to the app:
 ```js
 return await tools.executor.appAccounts.userConnect({
   path: { organization: "<approved-organization-id>", app: "<app-id>", requirement: "vercel" },
+  body: {}, // required, even when empty
 });
 ```
 
@@ -349,11 +360,24 @@ Give the returned `url` to the user. It opens Executor's signed-in browser form;
 credentials and OAuth are completed there. Check progress with
 `accounts.connection`, passing `path.organization` and `path.connection`; a
 failed sign-in leaves its error in `state.failure`.
-Members can read inventory; administrators can deploy, connect, and run app tools.
-The server rechecks the caller's grant and current membership on every API call.
+
+Access depends on the app as well as the caller's role. Any member can deploy
+a new app; it starts private, with the deployer as its creator. The creator and
+organization owners and administrators manage it: they rename it, activate a
+version, change its audience, remove it, and connect or link its app
+requirements, which also needs use of the account linked. Using an app (calling
+its tools, opening its UI, `userConnect` and `userLink`) follows its audience: a
+private app only by its creator, even for administrators; a `groups` app by
+members of those groups; an `everyone` app by every member. Managing an app does
+not grant its use. Personal accounts are usable only by their owner; shared
+accounts follow their own audience. An MCP connection limited to selected apps
+can only find and run those apps' tools; deploying and other management calls
+need a connection to all apps. The server rechecks the caller's grant, current
+membership and these rules on every API call.
 The management app's caller credential is never saved as a shared account.
 
-**The remaining management examples use the local product's API.**
+**The remaining management examples use the local product's API**, not
+self-host's.
 Both management apps derive operations from their product OpenAPI contracts.
 Operation names use `<group>_<operation>`; inputs use `path`, `query`, and `body`.
 Read discovered signatures because the two products have different routes.
@@ -374,18 +398,18 @@ return await executor.apps.deploy({
 });
 ```
 
-The response contains `app` and `deployment`. Local creates every app under the
+The response contains `app` and `version`. Local creates every app under the
 `local` owner, whatever owner you send. Creating an app with the same name again
 fails with `AppNameTaken`. To deploy an existing app, use
 `body: { owner: app.owner, app: app.id, files }` or `body: { owner: app.owner, app: app.id, commit }`.
-Deployment activates the new build after it succeeds and does not save working
+Deploying activates the new build after it succeeds and does not save working
 source. Use relative file paths such as `index.ts` and `lib/client.ts`.
 
 Discovery is prepared at the start of each `execute`. In a **new** execution,
 call the deployed app using its returned `app.slug`:
 
 ```js
-return await tools["<app-slug>"].greet({ name: "Ada" });
+return await tools["<app-slug>"].hello({});
 ```
 
 App source and `execute` code run in different environments. App source can
@@ -457,26 +481,32 @@ Commit sends the complete file list; omitted files are deleted. The result's
 deploying, as above. A deleted file is still in `source.files`: add it back and
 commit against `saved.revision.commit`. A stale
 `expected` returns `SourceError` with `reason: "conflict"`. Read working source
-again and reconcile the edits before retrying. Deployment returns `{ app,
-deployment }`, preserves the app ID and data, and never updates the Git branch.
-It has no expected-active-deployment argument. Check the app's linked accounts
+again and reconcile the edits before retrying. Deploying returns `{ app,
+version }`, preserves the app ID and data, and never updates the Git branch.
+It has no expected-active-version argument. Check the app's linked accounts
 after changing account requirements; an account whose provider no requirement
 uses no longer applies.
 
-Every call follows the active deployment, so nothing needs updating to pick up
+Every call follows the active version, so nothing needs updating to pick up
 new code. The next `execute` lists and calls the new tools. Activating a
-deployment re-registers each webhook source's subscriptions on it in the
+version re-registers each webhook source's subscriptions on it in the
 background, usually within seconds, without blocking tool calls; the app's
 Webhooks tab shows their status. It also deletes the saved settings of schedules
-the new deployment no longer declares.
+the new version no longer declares.
 
-`apps.deployments` lists retained versions. `apps.source` accepts an optional
-`query.deployment` to read a specific version. `apps.activate` requires
-`body: { deployment, expectedDeployment }`, where `expectedDeployment` is the
-app's current active deployment. A stale value returns `AppDeploymentChanged`.
+`apps.versions` lists retained versions. `apps.source` accepts an optional
+`query.version` to read a specific version. `apps.activate` requires
+`body: { version, expectedVersion }`, where `expectedVersion` is the
+app's current active version. A stale value returns `AppVersionChanged`.
 Activation only changes which code runs; it does not reverse app data or changes
-made in external services. Source reads and deployment writes follow the
+made in external services. Source reads and deploys follow the
 hosted product’s access rules. Discover tools again in a new execute after changing code.
+
+`apps.rename` changes the app's name and the slug derived from it; the app ID,
+accounts, links and data stay. A new slug changes the agent namespace
+`tools.<slug>`, the Git clone URL and, on hosted, the page address
+`appUi.location` returns, so old addresses stop working. Local page addresses
+use the app ID and do not change. No operation changes the slug alone.
 
 ## Dependencies and current boundaries
 
@@ -486,21 +516,31 @@ version this host runs (`executor apps framework` in the CLI); a deploy without
 it fails and names the same version. That package supplies the server and browser
 framework, and the exact version keeps rebuilds on it across host upgrades. Apps
 Executor generates, such as imported MCP apps, already declare it. Keep it when
-editing, and change it only to upgrade the app. The host retains the compiled version with each deployment. Missing
+editing, and change it only to upgrade the app. The host retains the compiled framework with each app version. Missing
 or unsupported packages fail the build without replacing the active app.
 Installation disables lifecycle scripts. Do not depend on the Executor SDK in
 app code. Native dependencies that need scripts are unsupported.
 
 Hosted builds currently run with limited memory. A build with very large
-dependencies can fail with `BuildMemoryExceeded`; no new deployment is activated.
+dependencies can fail with `BuildMemoryExceeded`; no new version is activated.
 This limit is planned to increase. Report the failure to the user instead of
 changing the app. Executor errors include `recovery.action` for the user and
 `recovery.instructions` for agents; follow those instructions.
 
-App code runs as trusted code in the host Node process. It receives usable
-credentials for selected accounts. Forward `context.signal` to fetch or other
+App code never runs in the host process; it runs in its own Worker, below, and
+cannot start processes or read the host's files. It receives the fields of
+selected accounts. When the provider declares `hosts`, each string field not
+marked `plain()` or `raw()` arrives as a handle that Executor's network replaces
+only on requests to those hosts; other fields arrive as their values
+([accounts.md](accounts.md#limit-where-credentials-go)). Accounts connected
+through an OAuth client the Executor instance provides are the exception: their
+credentials are always handles, even when marked `plain()` or `raw()`, and work
+only in `account.headers()` on requests to the instance's hosts that the
+provider also declares ([accounts.md](accounts.md#place-credentials-exactly)).
+Forward `context.signal` to fetch or other
 interruptible operations. Cancellation and execution limits are cooperative;
-completed writes are not rolled back. App-owned storage persists across calls. Durable background jobs remain deferred.
+completed writes are not rolled back. App-owned storage persists across calls.
+Durable background work uses workflows ([workflows.md](workflows.md)).
 
 ### Fetch from app code
 

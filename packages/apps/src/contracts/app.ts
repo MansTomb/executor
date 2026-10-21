@@ -84,7 +84,7 @@ export interface InvocationServices {
   };
   /** Explicit app/build-scoped caching. Account-specific loaders opt into forAccount. */
   readonly cache: import("./cache.ts").AppCache;
-  /** Text files retained in this deployment. Paths are package-relative, never host filesystem paths. */
+  /** Text files retained in this version. Paths are package-relative, never host filesystem paths. */
   readonly files: readonly SkillFile[];
   /** Read-only run management, bound to this configured app. */
   readonly workflows: WorkflowReads;

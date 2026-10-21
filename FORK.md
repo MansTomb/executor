@@ -401,3 +401,23 @@ finalizers have finished.
 The helpers are in `scripts/selfhost-verify/` because `e2e/check-boundary.ts` forbids
 Node I/O and async code under `e2e/`. Machine-specific rollout is not here; it lives
 in the Agents project runbook.
+
+## Upstream integration on 2026-10-21
+
+Upstream `v2` at `fe5728414` adds 34 commits to the previous merge. Effect stays
+on upstream's 4.0.1 pin. The SDK and dashboard now call immutable app deployments
+versions, while legacy deployment routes remain available. Other changes include
+shared catalog definitions, bounded HTTP tool pages, exact private HTTPS origins,
+self-host SSO discovery and claims, MCP guidance, and provider icon fallbacks.
+
+Every fork policy remains. Live discovery and authorization now pin `version`
+where upstream renamed `deployment`. Listing retention keeps upstream's per-tool
+JSON sizes, and in-process full catalog reads use upstream's unbounded pages.
+The router keeps schemas included with slow summary responses and uses upstream's
+shared schema validation for full reads. Generated skill digests are rebuilt from
+the merged skill files. The focused gate uses the renamed active-version scenarios.
+
+The execute output limit remains 65,536 bytes, including the prefix truncation
+notice and recovery guidance. The worker cap, drain, GC flags, error boundary,
+interceptors, analytics and shipped 4.0.2 migration remain in place. No patch is
+retired. The SDK storage version remains 4.0.15.
