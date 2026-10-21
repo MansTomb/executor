@@ -317,7 +317,7 @@ export const shareListing = (listing: ToolListing) => {
     return (counts = { chars, items: lengths });
   };
   return {
-    listing: { catalog: listing.catalog, routers: listing.routers, items },
+    listing: { ...listing, items },
     /**
      * UTF-16 bytes of its tools, `$defs` and definitions as its text writes them, as
      * `DeclarationLimits` counts.
