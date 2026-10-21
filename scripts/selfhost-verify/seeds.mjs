@@ -6,4 +6,8 @@ const router = `import {defineApp,defineProvider,secrets,object,string,query,mut
 const service=defineProvider({name:"Retained credential",auth:{key:secrets({label:"Token",fields:object({token:string()})})}});
 export default defineApp({accounts:{service}},async ctx=>({tools:router({queries:router({check:query({input:object({})},async()=>({retained:ctx.accounts.service.fields.token==="synthetic-upgrade-token"})),seed:query({input:object({})},async()=>{if(ctx.analytics===undefined)return false;await ctx.analytics.emit({event:"upgrade_probe",purpose:"retained"});return true;}),saved:query({input:object({})},async()=>ctx.cache.read("drained",string())),kept:query({input:object({})},async()=>ctx.cache.read("seeded",string()))}),mutations:router({remember:mutation({input:object({})},async()=>{await ctx.cache.write([{key:"seeded",value:"seeded-before-upgrade"}],"1 hour");return true;}),hold:mutation({input:object({})},async()=>{await new Promise(resolve=>setTimeout(resolve,16000));await ctx.cache.write([{key:"drained",value:"persisted-before-stop"}],"1 hour");return "completed-once";})})})}));`;
 
-export const seeds = { legacy, router };
+const linked = router
+  .replace("defineApp({accounts:{service}}", "defineApp({user:{accounts:{service}}}")
+  .replaceAll("ctx.accounts.service", "ctx.user.accounts.service");
+
+export const seeds = { legacy, router, linked };

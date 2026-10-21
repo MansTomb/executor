@@ -370,7 +370,9 @@ finalizers have finished.
   with `router` and the account APIs, pinned to the `apps` version the previous host
   names (`previousAppsVersion` in the report). `--previous-api legacy` seeds the older
   `defineApp` factory with `queries` and `mutations`, for images that predate the router,
-  and must seed analytics. A router seed records `analyticsSeeded: false`, asserts no
+  and must seed analytics. The helper discovers whether the previous image uses
+  profiles or account links, seeds that model, and checks profile conversion only
+  when the previous image still has profiles. A router seed records `analyticsSeeded: false`, asserts no
   analytics were retained, and reports "analytics retention not verified" in its checks
   and in the step note when the published `apps` release exposes no authored analytics;
   the gate never claims analytics retention it did not exercise. Containers use host
