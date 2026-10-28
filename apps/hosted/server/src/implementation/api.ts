@@ -11,6 +11,7 @@ import { hostedResourceAccessHandlers } from "./resource-access.ts";
 import { hostedOAuthClientHandlers } from "./oauth-clients.ts";
 import { hostedScheduleHandlers } from "./schedules.ts";
 /** Shared hosted handlers. No Cloudflare, Node, or local-product dependencies. */
+import { requestRejections } from "@executor-js/sdk/core";
 import { Effect, Layer } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpServerRequest } from "effect/http";
@@ -101,4 +102,4 @@ export const hostedHandlers = Layer.mergeAll(
       }),
     ),
   ),
-);
+).pipe(Layer.provide(requestRejections));

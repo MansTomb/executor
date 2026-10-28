@@ -107,7 +107,8 @@ arguments or source, and never search their files for tokens. The Executor app
   it. Hosted
   management calls need the organization: call `context.get({})` first and pass
   its `organization` as `path.organization`. For an OAuth sign-in,
-  `accounts.oauthSetup` lists the scopes it will request; tell the user.
+  `accounts.oauthSetup` lists the scopes it will request and the resource
+  indicator it will send; tell the user.
 
 Search for these tools and read their input types first; the connect tools
 require `body`, so pass `body: {}` when it has nothing. Give the user the
@@ -171,7 +172,9 @@ These are the defaults. The source limit is fixed; a host can change the others.
   larger value comes back as a truncated string that says so, and the result
   starts with `truncation`, which names the limit. `execution.ok` still reports
   that the program ran, so check `truncation` or `execution.truncated` before
-  trusting the value. Return fewer fields, a count, or one page.
+  trusting the value. Return fewer fields, a count, or one page. The runtime
+  also limits one value crossing between an app and Executor, such as a tool's
+  result, to 32 MiB; a failure Executor recognizes there names that limit.
 - Tool calls: 100 per execution.
 - Time: 5 minutes per execution, including discovery. Time spent waiting for
   the user does not count. Execute returns when the program ends or pauses for
@@ -200,8 +203,16 @@ Never rerun an entire `execute` program merely to retry one failed tool.
 - `ToolCallLimitExceeded`, `TimeoutExceeded`: split the work into smaller
   executions.
 
-Calls with outcome `success` took effect, and `interrupted` calls may have.
-Effects are never rolled back. When Executor could not confirm a failed write's
+A remote MCP tool returns its whole result. `isError: true` there means the
+tool says it failed: the call does not throw, and its outcome is `failure`.
+Check `isError` before using such a result. Other fields, such as `ok`, mean
+what the tool's description says.
+
+An outcome of `success` means only that the call returned normally, with no
+tool error reported to Executor. It does not show that the intended action
+happened: check the returned value, such as `isError` or the app's own status
+fields, before treating it as done. `failure` and `interrupted` calls may have
+had effects. Effects are never rolled back. When Executor could not confirm a failed write's
 outcome, its recovery says so: do not repeat it automatically.
 Inside a program, a caught tool error's `message` is the same JSON as
 `response`, so a program can handle expected failures itself.

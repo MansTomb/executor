@@ -3,7 +3,7 @@ import { CurrentUsage } from "../contracts/product-analytics.ts";
 import { requiresToolMetadata } from "@executor-js/authorization";
 import { grantAuthorization } from "@executor-js/mcp-auth";
 import { GroupDatabase } from "../contracts/groups.ts";
-import { CurrentUserId } from "../contracts/auth.ts";
+import { CurrentUserId, callerSpanAttributes } from "../contracts/auth.ts";
 import {
   restrictMcpBackend,
   deliveryRefusal,
@@ -17,6 +17,7 @@ import {
 import {
   defaultMcpLimits,
   makeMcp,
+  McpRequestAttributes,
   refusedMcpRequest,
   type McpBackend,
   type McpOptions,
@@ -142,11 +143,13 @@ export const makeHostedMcp = (
   beforeExecute?: McpOptions["beforeExecute"],
   limits: McpOptions["limits"] = defaultMcpLimits,
   sessions?: McpOptions["sessions"],
+  interactions?: McpOptions["interactions"],
 ) =>
   makeMcp({
     backend: requestBackend,
     ...(beforeExecute === undefined ? {} : { beforeExecute }),
     ...(sessions === undefined ? {} : { sessions }),
+    ...(interactions === undefined ? {} : { interactions }),
     caller: requestCaller,
     instructions: executorIntro,
     limits,
@@ -213,13 +216,19 @@ export const dispatchHostedMcp = <E, R>(
     // move it to another organization. The same bearer keeps its user, client and grant.
     const headers = new Headers(request.headers);
     headers.delete("x-executor-organization");
-    // The organization's opaque ID goes on the request's span and on each operation that rechecks
-    // (`mcp.tool.call`, `mcp.tool.resume`), so their latency can be split by organization.
-    const organization = { "executor.organization.id": access.access.organization };
-    yield* Effect.annotateCurrentSpan(organization);
-    const current = Effect.annotateCurrentSpan(organization).pipe(
+    // The organization's and the caller's opaque IDs go on the request's span, on every MCP
+    // operation's span (`McpRequestAttributes`) and on each operation that rechecks
+    // (`mcp.tool.call`, `mcp.tool.resume`), so their latency and failures can be split by
+    // organization and the users they affect counted.
+    const caller = callerSpanAttributes(access.access.organization, access.userId);
+    yield* Effect.annotateCurrentSpan(caller);
+    const current = Effect.annotateCurrentSpan(caller).pipe(
       Effect.andThen(
-        authentication.authenticate(headers, address.mode, access.access.organization),
+        authentication
+          .authenticate(headers, address.mode, access.access.organization)
+          // A recheck is for this organization and user from its start, so one refused or failed
+          // before its statement answers still names them.
+          .pipe(Effect.annotateSpans(caller)),
       ),
       Effect.flatMap(scoped),
       Effect.provideContext(services),
@@ -425,6 +434,7 @@ export const dispatchHostedMcp = <E, R>(
         return url.toString();
       }),
       Effect.provideService(RequestCaller, mcpSessionKey(access)),
+      Effect.provideService(McpRequestAttributes, caller),
       Effect.provideService(CurrentUsage, { source: "mcp", client_id: access.clientId }),
     );
   });

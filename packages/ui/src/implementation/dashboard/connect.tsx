@@ -12,10 +12,10 @@ import {
   ChatGptLogo,
   ClaudeLogo,
   CodexLogo,
-  CursorLogo,
   DevinLogo,
   GrokLogo,
   MuseLogo,
+  OpenCodeLogo,
 } from "./assistant-logos.tsx";
 
 import claudeScreenshot from "./assistant-screenshots/claude.webp";
@@ -23,7 +23,6 @@ import chatgptScreenshot from "./assistant-screenshots/chatgpt.webp";
 import devinScreenshot from "./assistant-screenshots/devin.webp";
 import grokScreenshot from "./assistant-screenshots/grok.webp";
 import museScreenshot from "./assistant-screenshots/muse.webp";
-import cursorScreenshot from "./assistant-screenshots/cursor.webp";
 
 /** The agent installs Executor itself; the prompt carries everything it needs to start. */
 export const mcpSetupPrompt = (endpoint: string, docs: string, next: string) =>
@@ -37,9 +36,6 @@ const tabClass =
 const OtherLogo = ({ className }: SVGProps<SVGSVGElement>) => (
   <HugeiconsIcon icon={McpServerIcon} strokeWidth={1.75} className={className} aria-hidden />
 );
-
-/** The published plugin serves Cursor and Grok Bot alike. */
-const executorPlugin = "https://cursor.com/marketplace/usefulsoftwareco";
 
 interface AssistantGuide {
   readonly name: string;
@@ -149,47 +145,6 @@ const signIn = (assistant: string) => (
     Executor&rsquo;s tools.
   </>
 );
-
-const pluginGuide = (name: string, endpoint: string): AssistantGuide => ({
-  name,
-  logo: name === "Cursor" ? CursorLogo : GrokLogo,
-  method: "Executor plugin",
-  link: { href: executorPlugin, label: `Install Executor for ${name}` },
-  steps: [
-    name === "Cursor" ? (
-      <>
-        Click <Ui>Add to Cursor</Ui> on the plugin page, or type{" "}
-        <Command>/add-plugin executor</Command> in Cursor.
-      </>
-    ) : (
-      <>
-        Type <Command>/add-plugin executor</Command> in Grok Bot. It installs the same Executor
-        plugin.
-      </>
-    ),
-    <>
-      Choose <Ui>Connect</Ui> on the plugin&rsquo;s <Ui>executor</Ui> MCP server, then sign in and
-      approve access.
-    </>,
-    <>
-      Run <Command>/executor-setup</Command> to check the connection.
-    </>,
-  ],
-  screenshot: {
-    src: cursorScreenshot,
-    width: 780,
-    height: 668,
-    alt: "Executor plugin listing with Add to Cursor and /add-plugin executor",
-    caption: "The Executor plugin in the marketplace",
-  },
-  note: (
-    <>
-      Using a scoped connection or your own server? Set the plugin&rsquo;s executor MCP server URL
-      to:
-      <EndpointField endpoint={endpoint} />
-    </>
-  ),
-});
 
 /** The public plugin connects to Executor Cloud; custom endpoints keep their own setup. */
 const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
@@ -323,7 +278,35 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide> 
             </>
           ),
         },
-  cursor: pluginGuide("Cursor", endpoint),
+  opencode: {
+    name: "OpenCode",
+    logo: OpenCodeLogo,
+    method: "Terminal",
+    steps: [
+      <>
+        Add Executor from your terminal.
+        <CommandBlock
+          code={`opencode mcp add executor --url ${shellQuote(endpoint)}`}
+          path="install.sh"
+          label="Copy assistant setup"
+        />
+      </>,
+      <>
+        Open the sign-in page.
+        <CommandBlock
+          code="opencode mcp auth executor"
+          path="install.sh"
+          label="Copy sign-in command"
+        />
+      </>,
+      signIn("OpenCode"),
+    ],
+    note: (
+      <>
+        On OpenCode 2, add <Command>--global</Command> to use Executor in every project.
+      </>
+    ),
+  },
   "claude-code": {
     name: "Claude Code",
     logo: ClaudeLogo,
@@ -402,7 +385,23 @@ const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide> 
     },
     note: "In an organization, Personal access lets each member sign in with their own account.",
   },
-  "grok-bot": pluginGuide("Grok Bot", endpoint),
+  "grok-bot": {
+    name: "Grok Bot",
+    logo: GrokLogo,
+    method: "Chat message",
+    steps: [
+      <>
+        Send Grok Bot this message.
+        <MessageBlock
+          message={`Add Executor as a remote MCP server named executor at ${endpoint} (Streamable HTTP, OAuth). Start sign-in and show me the approval link. After I approve, list Executor's tools to confirm the connection.`}
+        />
+      </>,
+      <>
+        Open the sign-in link Grok Bot shows. Sign in to Executor, choose your team and approve
+        access.
+      </>,
+    ],
+  },
   grok: {
     name: "Grok",
     logo: GrokLogo,

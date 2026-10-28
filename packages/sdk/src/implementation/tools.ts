@@ -47,7 +47,13 @@ import {
   type Executor,
   type ResourceLifecycle,
 } from "../contracts/executor.ts";
-import { AppCodeEntered, type Runtime } from "../contracts/runtime.ts";
+import {
+  AppCodeEntered,
+  CallFailureSources,
+  runtimeFailures,
+  type CallFailureSource,
+  type Runtime,
+} from "../contracts/runtime.ts";
 import {
   Cursor,
   ToolName,
@@ -65,6 +71,7 @@ import { OAuthReconnectRequired } from "../contracts/oauth.ts";
 import { GrantReadAhead, type GrantRow, type makeOAuth } from "./oauth.ts";
 import {
   AppEvaluationFailed,
+  type AppFailure,
   appFailure,
   appFailureText,
   type CallFailure,
@@ -662,10 +669,8 @@ const runtimeFailure = (
       HostToolApprovalRequired: () => new ToolApprovalRequired(identity),
       HostToolPolicyFailed: () => new ToolPolicyFailed(identity),
       HostOutputInvalid: () => new ToolCallFailed({ ...identity, reason: "Tool execution failed" }),
-      HostRequestInvalid: () =>
-        new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
-      HostAccountsInvalid: () =>
-        new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
+      HostRequestInvalid: (error) => evaluationFailure(identity, error),
+      HostAccountsInvalid: (error) => evaluationFailure(identity, error),
       // Also how the app's framework reports an unexpected failure anywhere in its handling of
       // the call, including after the handler returned, so it is not reported as a failure to
       // load the app's tools.
@@ -678,19 +683,80 @@ const runtimeFailure = (
       HostEvaluationFailed: (error) => evaluationFailure(identity, error),
       SkillLoadFailed: (error) => evaluationFailure(identity, error),
       McpError: (error) => operationMcpFailure(identity, error),
-      RuntimeBuildUnavailable: () =>
-        new AppEvaluationFailed({ ...identity, reason: "App evaluation failed" }),
+      RuntimeBuildUnavailable: (error) => evaluationFailure(identity, error),
       // The runtime's reply to the call was lost or unusable, which can happen after the tool ran,
-      // so it is not reported as a failure to load the app's tools.
-      RuntimeProtocolFailed: () =>
-        new ToolCallFailed({
-          ...identity,
-          reason: "Executor did not receive a usable result from this tool call.",
-        }),
-      RuntimeProtocolUnsupported: (error) =>
-        new AppEvaluationFailed({ ...identity, reason: error.message }),
+      // so it is not reported as a failure to load the app's tools. The kind is matched from the
+      // runtime's error, which the app's isolate can produce, so it is not claimed: a size failure
+      // stays a likely cause.
+      RuntimeProtocolFailed: ({ reason }) =>
+        reason === "too-large"
+          ? new ToolCallFailed({
+              ...identity,
+              reason: "Executor did not receive this tool call's result.",
+              rpcLimitMatched: true,
+            })
+          : new ToolCallFailed({
+              ...identity,
+              reason: `Executor did not receive a usable result from this tool call. ${
+                reason === undefined
+                  ? "The runtime did not report why."
+                  : reason === "unrecognized"
+                    ? "The runtime did not recognize why."
+                    : `The runtime’s error matches this cause, which Executor has not confirmed: ${runtimeFailures[reason]}.`
+              }`,
+            }),
+      RuntimeProtocolUnsupported: (error) => evaluationFailure(identity, error, error.message),
     }),
   );
+
+/** The source a failure from the app's framework names: its code, a service or its storage. */
+const detailSource = ({ source }: { readonly source?: AppFailure["source"] }): CallFailureSource =>
+  source === "service" ? "upstream" : source === "storage" ? "storage" : "app";
+
+/**
+ * What a runtime's failure of a call names as its cause (`CallFailureSource`), read before
+ * `runtimeFailure` turns it into the caller's error, which can no longer tell them apart: a lost
+ * reply and the app's own exception are both `ToolCallFailed`.
+ */
+const failureSource = Match.type<CallError>().pipe(
+  Match.withReturnType<CallFailureSource>(),
+  Match.tagsExhaustive({
+    ProviderError: () => "upstream",
+    OpenapiResponseError: () => "upstream",
+    McpError: () => "upstream",
+    SkillLoadFailed: () => "upstream",
+    HostOperationFailed: detailSource,
+    HostEvaluationFailed: detailSource,
+    HostDeclarationInvalid: detailSource,
+    HostToolNotFound: () => "app",
+    HostOperationNotFound: () => "app",
+    HostKindMismatch: () => "app",
+    HostInputInvalid: () => "app",
+    HostOutputInvalid: () => "app",
+    WorkflowFailure: ({ reason }) =>
+      reason === "engine" || reason === "unavailable"
+        ? "runtime"
+        : reason === "approval"
+          ? "approval"
+          : reason === "credentials"
+            ? "other"
+            : "app",
+    DatabaseLimitExceeded: () => "storage",
+    HostToolBlocked: () => "approval",
+    HostToolApprovalRequired: () => "approval",
+    HostToolPolicyFailed: () => "approval",
+    RuntimeProtocolFailed: () => "runtime",
+    RuntimeBuildUnavailable: () => "runtime",
+    RuntimeProtocolUnsupported: () => "runtime",
+    HostRequestInvalid: () => "runtime",
+    HostAccountsInvalid: () => "other",
+    ElicitationFailed: () => "other",
+  }),
+);
+
+/** Tell the caller's observer, if any, what a call failed with (`CallFailureSources`). */
+const observeFailure = (source: CallFailureSource) =>
+  Effect.map(CallFailureSources, (observe) => observe?.(source));
 
 /**
  * The error a failed call reports to its caller, such as an agent. A call that may write, a
@@ -701,13 +767,14 @@ const runtimeFailure = (
  * work after the hand-off, such as saving an approval request. Its error records that, so it leads
  * with Executor's instruction not to repeat the call and is never offered as a retry. That includes
  * a refusal, such as invalid input or a denied approval, which the app's reply reports. A failure
- * before the host handed over any work, and every failure of a query, keep their own
- * classification.
+ * before the host handed over any work, and every failure of a call the app confirms only reads
+ * (`confirmedRead`), keep their own classification. A query only its upstream calls one, such as
+ * an MCP tool with `readOnlyHint`, may write like any other call.
  */
 const callFailure =
-  (kind: ToolKind | undefined, enteredApp: boolean) =>
+  (read: boolean, enteredApp: boolean) =>
   (failure: CallFailure): CallFailure =>
-    kind === "query" || !enteredApp
+    read || !enteredApp
       ? failure
       : Match.value(failure).pipe(
           Match.tagsExhaustive({
@@ -766,7 +833,7 @@ const summarizeTool = ({
 /** Live calls return completion or a durable approval request. Resume trusts the supplied SDK decision. */
 export const makeTools = (
   storage: ExecutorDatabase,
-  oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usable">,
+  oauth: Pick<ReturnType<typeof makeOAuth>, "resolveSelected" | "renewRejected" | "usableAll">,
   clients: ReadonlyMap<string, FirstPartyOAuthClient>,
   runtime: Runtime,
   credentials: Credentials,
@@ -799,24 +866,33 @@ export const makeTools = (
     Schema.is(ProviderError)(error)
       ? appProviderFailure(state, error, renewal)
       : evaluationFailure({ app: state.app.id, version: state.version.id }, error);
+  /** Fail with a catalog evaluation's typed error, telling the caller's observer its source. */
+  const failCatalog = (
+    state: InvocationSnapshot,
+    error: Effect.Error<ReturnType<typeof runtime.index>>,
+    renewal?: Renewal,
+  ) =>
+    observeFailure(failureSource(error)).pipe(
+      Effect.andThen(Effect.fail(catalogFailure(state, error, renewal))),
+    );
   /**
    * Run a tool, live or approved, and renew an account the service refuses. A 401 means the
    * service did not perform the refused request, but an earlier request in the same call may
-   * already have made changes. A query only reads, so it is repeated once with the renewed
-   * credentials, and a failed renewal is its failure. A call that may write is never repeated: the
-   * renewal, renewed or failed, comes after the call was dispatched, so it is reported with the
-   * call's failure rather than in its place.
+   * already have made changes. A call the app confirms only reads (`read`, see `confirmedRead`) is
+   * repeated once with the renewed credentials, and a failed renewal is its failure. A call that may
+   * write is never repeated: the renewal, renewed or failed, comes after the call was dispatched, so
+   * it is reported with the call's failure rather than in its place.
    */
-  const executeRenewing = <A, E, R>(
+  const executeRenewing = <A, E, R, R2>(
     state: InvocationSnapshot,
     context: InvocationContext,
-    kind: ToolKind | undefined,
+    read: Effect.Effect<boolean, never, R2>,
     execute: (context: InvocationContext) => Effect.Effect<Result.Result<A, E>, never, R>,
   ) =>
     Effect.gen(function* () {
       const result = yield* execute(context);
       if (Result.isSuccess(result)) return { result };
-      if (kind === "query") {
+      if (yield* read) {
         const renewed = yield* renewRefused(oauth, clients, state, context, result.failure);
         if (renewed === undefined) return { result };
         yield* Effect.annotateCurrentSpan("executor.tool.retry", "credentials_renewed");
@@ -833,6 +909,7 @@ export const makeTools = (
   const inspection = (state: InvocationSnapshot, context: InvocationContext) => ({
     app: state.app.id,
     build: state.version.build,
+    hostApi: listings.hostApi(state.version),
     ...context,
     ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
     ...(state.version.requirements.capabilities?.sharedDefinitions === true
@@ -856,8 +933,8 @@ export const makeTools = (
         renewRefused(oauth, clients, state, context, error).pipe(
           Effect.flatMap((renewed) =>
             renewed === undefined
-              ? Effect.fail(catalogFailure(state, error))
-              : inspect(renewed).pipe(Effect.mapError((error) => catalogFailure(state, error))),
+              ? failCatalog(state, error)
+              : inspect(renewed).pipe(Effect.catch((error) => failCatalog(state, error))),
           ),
         ),
       ),
@@ -922,7 +999,7 @@ export const makeTools = (
     inspectTool(state, name, context).pipe(
       Effect.catch((error) =>
         renewOnce(state, context, error).pipe(
-          Effect.flatMap((renewal) => Effect.fail(catalogFailure(state, error, renewal))),
+          Effect.flatMap((renewal) => failCatalog(state, error, renewal)),
         ),
       ),
       Effect.flatMap(found(state, name)),
@@ -1243,6 +1320,42 @@ export const makeTools = (
         }),
       );
   /**
+   * Whether the app confirms that a tool only reads: its kept listing names the tool a query of a
+   * kind the app's code or the tool's protocol fixes (`kindConfirmed`), not one only an upstream
+   * claims, such as an MCP server's `readOnlyHint`. Only a call named a query and confirmed here
+   * keeps a read's advice to repeat it after it fails, and only such a call is repeated with renewed
+   * credentials. The caller's kind is its own claim and confirms nothing. It comes only from a
+   * listing already kept (`listings.kept`): evaluating the catalog after a call failed would run
+   * the app's code again, and its writes, only to word the failure. The listing kept in this
+   * process is taken before the call hands over its work, since a cache change the call makes
+   * forgets it; it is checked, and one kept beyond this process is read, only once the call failed
+   * after the hand-off. A tool the kept listing does not confirm, or no kept listing, is not
+   * confirmed.
+   */
+  const readOf = (state: InvocationSnapshot, name: ToolName, kind: ToolKind | undefined) =>
+    kind === "query"
+      ? listings.kept(state).pipe(
+          Effect.orElseSucceed(() => Effect.succeed<ToolListing | undefined>(undefined)),
+          Effect.flatMap((kept) =>
+            Effect.cached(
+              kept.pipe(
+                Effect.map(
+                  (listing) =>
+                    listing?.items.some(
+                      (tool) =>
+                        tool.name === name && tool.readOnly === true && tool.kindConfirmed === true,
+                    ) === true,
+                ),
+                Effect.tap((confirmed) =>
+                  Effect.annotateCurrentSpan("executor.tool.read_confirmed", confirmed),
+                ),
+                Effect.withSpan("sdk.tools.read_confirmed"),
+              ),
+            ),
+          ),
+        )
+      : Effect.succeed(Effect.succeed(false));
+  /**
    * The listing a call that names no kind evaluates when none is kept. Evaluating the catalog runs
    * the app's code, which may write before it fails, and the call may write, so it is evaluated
    * once: a refused account is renewed, and the failure reports that renewal, as a call that may
@@ -1252,7 +1365,7 @@ export const makeTools = (
     runtime.inspect(inspection(state, context)).pipe(
       Effect.catch((error) =>
         renewOnce(state, context, error).pipe(
-          Effect.flatMap((renewal) => Effect.fail(catalogFailure(state, error, renewal))),
+          Effect.flatMap((renewal) => failCatalog(state, error, renewal)),
         ),
       ),
       Effect.map(toListing(state)),
@@ -1271,16 +1384,19 @@ export const makeTools = (
     accountNeedingReconnect: (input: { app: AppId; accounts: AppAccounts }) =>
       Effect.gen(function* () {
         const state = yield* snapshot(db, input);
-        for (const { required, accounts } of state.selections)
-          for (const account of accounts) {
-            const usable = yield* oauth.usable(account, required.definition).pipe(Effect.result);
-            if (Result.isFailure(usable)) {
-              if (!Schema.is(OAuthReconnectRequired)(usable.failure))
-                return yield* Effect.fail(usable.failure);
-              yield* accountsOutcome("reconnect");
-              return account.id;
-            }
-          }
+        const usable = yield* oauth
+          .usableAll(
+            state.selections.flatMap(({ required, accounts }) =>
+              accounts.map((account) => ({ account, provider: required.definition })),
+            ),
+          )
+          .pipe(Effect.result);
+        if (Result.isFailure(usable)) {
+          if (!Schema.is(OAuthReconnectRequired)(usable.failure))
+            return yield* Effect.fail(usable.failure);
+          yield* accountsOutcome("reconnect");
+          return usable.failure.account;
+        }
         yield* accountsOutcome("ready");
         return undefined;
       }).pipe(
@@ -1362,6 +1478,7 @@ export const makeTools = (
           ),
           routers: found.routers.filter((router) => router.error !== undefined),
           ...(found.tools === undefined ? {} : { tools: found.tools }),
+          ...("stale" in found && found.stale !== undefined ? { stale: found.stale } : {}),
         };
       }).pipe(Effect.withSpan("sdk.tools.searchable")),
     /**
@@ -1483,10 +1600,12 @@ export const makeTools = (
             enteredApp = true;
           },
         };
-        // The caller's kind decides how a failure is reported and whether a refused call is
-        // repeated. For a call that names none, the catalog only names the kind it is dispatched
-        // with: reading the catalog ran the app's code, so the call's outcome stays unknown.
+        // The caller's kind, confirmed by the app for a query (`confirmedRead`), decides how a
+        // failure is reported and whether a refused call is repeated. For a call that names none,
+        // the catalog only names the kind it is dispatched with: reading the catalog ran the app's
+        // code, so the call's outcome stays unknown.
         const named = parsed.kind;
+        const read = yield* readOf(state, parsed.tool, named);
         // Every failure from here, the app's or Executor's own, passes through `callFailure` once.
         return yield* Effect.gen(function* () {
           const kind = yield* kindOf(state, context, parsed.tool, named);
@@ -1498,6 +1617,7 @@ export const makeTools = (
                 app: state.app.id,
                 ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
                 build: state.version.build,
+                hostApi: listings.hostApi(state.version),
                 database: ownsDatabase(state.version.requirements),
                 ...context,
                 tool: parsed.tool,
@@ -1513,7 +1633,7 @@ export const makeTools = (
               }),
               Effect.result,
             );
-          const { result, renewal } = yield* executeRenewing(state, context, named, execute);
+          const { result, renewal } = yield* executeRenewing(state, context, read, execute);
           // The tool is named once the app has answered for it: a name it lacks is the caller's text.
           if (
             Result.isSuccess(result) ||
@@ -1543,34 +1663,41 @@ export const makeTools = (
               options?.issuer,
             );
           }
+          yield* observeFailure(failureSource(result.failure));
           return yield* Effect.fail(runtimeFailure(identity, state, renewal)(result.failure));
         }).pipe(
-          Effect.mapError((failure) =>
-            // Only a query's renewal fails a call itself (`executeRenewing`), and a query keeps
-            // its classification. A missing account is the host's finding while it resolves
-            // accounts, before any of the app's code runs for it.
+          Effect.catch((failure) =>
+            // Only a confirmed read's renewal fails a call itself (`executeRenewing`), and a
+            // confirmed read keeps its classification. A missing account is the host's finding
+            // while it resolves accounts, before any of the app's code runs for it.
             failure._tag === "OAuthReconnectRequired" ||
             failure._tag === "OAuthRenewalFailed" ||
-            failure._tag === "AccountRequired"
-              ? failure
-              : callFailure(named, enteredApp)(failure),
+            failure._tag === "AccountRequired" ||
+            !enteredApp
+              ? Effect.fail(failure)
+              : Effect.flatMap(read, (read) => Effect.fail(callFailure(read, enteredApp)(failure))),
           ),
           // A defect after the hand-off, such as in Executor's own code, does not establish what
           // the app's code did either. A call that may write reports it as a failure that records
           // the write, and the defect is still reported as one. Interruption is unchanged.
           Effect.catchCause((cause) =>
-            named === "query" || !enteredApp || !Cause.hasDies(cause) || Cause.hasInterrupts(cause)
+            !enteredApp || !Cause.hasDies(cause) || Cause.hasInterrupts(cause)
               ? Effect.failCause(cause)
-              : reportDefect(cause).pipe(
-                  Effect.andThen(
-                    Effect.fail(
-                      new ToolCallFailed({
-                        ...identity,
-                        reason: "Executor failed unexpectedly while handling this tool call.",
-                        mayHaveWritten: true,
-                      }),
-                    ),
-                  ),
+              : Effect.flatMap(read, (read) =>
+                  read
+                    ? Effect.failCause(cause)
+                    : reportDefect(cause).pipe(
+                        Effect.andThen(observeFailure("runtime")),
+                        Effect.andThen(
+                          Effect.fail(
+                            new ToolCallFailed({
+                              ...identity,
+                              reason: "Executor failed unexpectedly while handling this tool call.",
+                              mayHaveWritten: true,
+                            }),
+                          ),
+                        ),
+                      ),
                 ),
           ),
           Effect.provideService(AppCodeEntered, appCode),
@@ -1644,6 +1771,9 @@ export const makeTools = (
                   );
                   // Set by the host when it hands this call's work to the app's code, as for a call.
                   let enteredApp = false;
+                  // As for a call, the saved (caller's) kind counts as a read only when the app
+                  // confirms it.
+                  const read = yield* readOf(state, saved.tool, saved.kind);
                   // As for a call, every failure from here passes through `callFailure` once, so a
                   // resumed call that may write reports what it failed with as possibly written.
                   return yield* Effect.gen(function* () {
@@ -1658,6 +1788,7 @@ export const makeTools = (
                             ? {}
                             : { workflowControls: workflows(state) }),
                           build: state.version.build,
+                          hostApi: listings.hostApi(state.version),
                           database: ownsDatabase(state.version.requirements),
                           ...context,
                           tool: saved.tool,
@@ -1676,15 +1807,16 @@ export const makeTools = (
                         }),
                         Effect.result,
                       );
-                    // As for a call, the saved (caller's) kind decides whether a refused call is
-                    // repeated; the catalog's only sets the dispatched kind.
+                    // As for a call, the saved (caller's) kind, confirmed by the app, decides whether
+                    // a refused call is repeated; the catalog's only sets the dispatched kind.
                     const { result, renewal } = yield* executeRenewing(
                       state,
                       context,
-                      saved.kind,
+                      read,
                       execute,
                     );
-                    if (Result.isFailure(result))
+                    if (Result.isFailure(result)) {
+                      yield* observeFailure(failureSource(result.failure));
                       return yield* Effect.fail(
                         runtimeFailure(
                           { app: saved.app, version: saved.version, tool: saved.tool },
@@ -1692,6 +1824,7 @@ export const makeTools = (
                           renewal,
                         )(result.failure),
                       );
+                    }
                     const value = result.success;
                     if (toolError)
                       yield* Effect.annotateCurrentSpan({
@@ -1704,12 +1837,15 @@ export const makeTools = (
                       ...(toolError ? { toolError: true as const } : {}),
                     };
                   }).pipe(
-                    Effect.mapError((failure) =>
+                    Effect.catch((failure) =>
                       failure._tag === "OAuthReconnectRequired" ||
                       failure._tag === "OAuthRenewalFailed" ||
-                      failure._tag === "AccountRequired"
-                        ? failure
-                        : callFailure(saved.kind, enteredApp)(failure),
+                      failure._tag === "AccountRequired" ||
+                      !enteredApp
+                        ? Effect.fail(failure)
+                        : Effect.flatMap(read, (read) =>
+                            Effect.fail(callFailure(read, enteredApp)(failure)),
+                          ),
                     ),
                     Effect.provideService(AppCodeEntered, {
                       entered: () => {

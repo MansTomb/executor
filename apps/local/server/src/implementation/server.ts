@@ -5,7 +5,7 @@ import {
   annotateSkillRead,
 } from "@executor-js/app-templates/executor";
 import { localAppBrowserHandlers } from "./app-browser.ts";
-import { accountChoiceRefusal } from "./account-choice.ts";
+import { accountChoiceRejections } from "./account-choice.ts";
 import { startupPhase } from "./startup-diagnostics.ts";
 import {
   startScheduleWorker,
@@ -43,6 +43,7 @@ import {
   CurrentActor,
   hostedExecutorOrigin,
   remoteRegistry,
+  requestRejections,
 } from "@executor-js/sdk/core";
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
 import { officialCatalogUrl } from "@executor-js/catalog";
@@ -52,7 +53,6 @@ import {
   Layer,
   Option,
   Path,
-  Redacted,
   Ref,
   Result,
   Deferred,
@@ -72,9 +72,11 @@ import { installExecutorApp } from "./executor-app.ts";
 import { localSkills } from "./app-browser.ts";
 import { localMcp } from "./mcp.ts";
 import { dashboard } from "./dashboard.ts";
-import { makeLocalAuth, authHandlers, type LocalAuth } from "./auth.ts";
+import { makeLocalAuth, authHandlers, localBearer, type LocalAuth } from "./auth.ts";
 import { LocalWebhookSetupApi } from "../contracts/webhook-setup.ts";
 import { localWebhookSetupHandlers } from "./webhook-setup.ts";
+import { DesktopReturnApi } from "../contracts/desktop-return.ts";
+import { makeDesktopReturns } from "./desktop-return.ts";
 import { accountConnectHandlers, connectForApp } from "./account-connections.ts";
 import { localOwner, localOwners } from "./owners.ts";
 import { appUi } from "./app-ui.ts";
@@ -90,7 +92,7 @@ import { webFiles } from "./web.ts";
 import { withHostPipeline } from "@executor-js/dashboard-start/in-process";
 import { layerBuildHeader } from "@executor-js/dashboard-start/build-header";
 import { LocalExecutorApi, localManagementDocument } from "../contracts/management.ts";
-import { nativeRepositories } from "@executor-js/app-source/node";
+import { bundledGit, nativeRepositories, systemGit } from "@executor-js/app-source/node";
 import { feedbackDisabled } from "@executor-js/telemetry/product-analytics";
 import { LocalFeedbackApi } from "../contracts/feedback.ts";
 import { localAnalytics, observeLocalExecutor, scheduleAnalytics } from "./product-analytics.ts";
@@ -149,7 +151,12 @@ export const localApi = (
           Config.withDefault(hostedExecutorOrigin),
         ),
       );
-      const repositories = nativeRepositories(path.join(directory, "repositories"));
+      // A release names the Git it bundles; a source checkout uses the Git on PATH.
+      const git = Option.match(
+        yield* Config.NonEmptyString("EXECUTOR_GIT_DIRECTORY").pipe(Config.option),
+        { onNone: () => systemGit, onSome: bundledGit },
+      );
+      const repositories = nativeRepositories(path.join(directory, "repositories"), git);
       const server = yield* Scope.Scope;
       const evaluation = yield* declarationConfig;
       // MCP grants are checked again before each event delivery; OAuth starts after the executor.
@@ -260,7 +267,7 @@ export const localApi = (
           // Browser reads use the separate dashboard API; these routes remain programmatic.
           if (request.headers.origin !== undefined)
             return HttpServerResponse.empty({ status: 403 });
-          if (request.headers.authorization !== `Bearer ${Redacted.value(config.apiKey)}`) {
+          if (!localBearer(config, request.headers.authorization)) {
             return HttpServerResponse.empty({ status: 401 });
           }
           const pathname = yield* Effect.try(() =>
@@ -361,7 +368,7 @@ export const localApi = (
             }),
           ),
           // A choice the contract cannot decode is refused as a decoded one is.
-          Layer.provide(accountChoiceRefusal.layer),
+          Layer.provide(accountChoiceRejections),
         ),
         HttpApiBuilder.layer(LocalFeedbackApi).pipe(
           Layer.provide(
@@ -448,6 +455,8 @@ export const localApi = (
         },
       );
       const web = options.web ?? (yield* webFiles);
+      // Executor desktop asks for the callbacks of the OAuth authorizations it opens in a browser.
+      const desktopReturns = yield* makeDesktopReturns(config);
       // Dashboard-host routes never include the app-origin APIs.
       const publicSkills = yield* readExecutorSkills;
       const authoring = yield* localAppManagement(
@@ -462,8 +471,9 @@ export const localApi = (
         layerBuildHeader,
         publishedSkillRoutes(Effect.succeed(publicSkills)),
         HttpApiBuilder.layer(LocalWebhookSetupApi).pipe(
-          Layer.provide(localWebhookSetupHandlers(executor, config, auth)),
+          Layer.provide(localWebhookSetupHandlers(executor, config, auth, wakeWebhookSources)),
         ),
+        HttpApiBuilder.layer(DesktopReturnApi).pipe(Layer.provide(desktopReturns.handlers)),
         HttpRouter.add("*", "/api/webhooks/:appId/:subscriptionId", webhookCallback(executor)),
         authoring,
         options.devtools === undefined ? Layer.empty : options.devtools(auth, config),
@@ -510,12 +520,12 @@ export const localApi = (
         ),
         HttpRouter.add("GET", "/", web.document),
         HttpRouter.add("GET", "/apps", web.document),
-        HttpRouter.add("GET", "/apps/add/custom", web.document),
         HttpRouter.add("GET", "/apps/:app", web.document),
         HttpRouter.add("GET", "/app-auth", signIn.signIn(web.document)),
         HttpRouter.add("GET", "/apps/:app/setup", web.document),
         HttpRouter.add("GET", "/apps/:app/delete", web.document),
-        HttpRouter.add("GET", "/connect", web.document),
+        HttpRouter.add("GET", "/connections", web.document),
+        HttpRouter.add("GET", "/connections/:connection", web.document),
         HttpRouter.add("GET", "/approvals", web.document),
         HttpRouter.add("GET", "/approvals/:run", web.document),
         HttpRouter.add("GET", "/account-connect/:connection", web.document),
@@ -524,17 +534,12 @@ export const localApi = (
         HttpRouter.add("GET", "/accounts/:account/disconnect", web.document),
         // Manual webhook setup links issued to agents open this dashboard page.
         HttpRouter.add("GET", "/webhooks/:app/:subscription", web.document),
-        HttpRouter.add(
-          "GET",
-          OAuthCallbackPath,
-          options.oauthCallback === undefined
-            ? web.document
-            : options.oauthCallback(`http://127.0.0.1:${config.port}`)(web.document),
-        ),
+        HttpRouter.add("GET", OAuthCallbackPath, desktopReturns.callback(web.document)),
         HttpRouter.add("GET", "/favicon.png", web.favicon),
         HttpRouter.add("GET", "/assets/:name", web.asset),
         HttpRouter.add("GET", "*", web.fallback),
-      );
+        // Every product API answers a request its schema rejects with `RequestInvalid`.
+      ).pipe(Layer.provide(requestRejections));
       // Each virtual host needs its own router, not the enclosing server's memoized router service.
       const appHandler = yield* HttpRouter.toHttpEffect(appRoutes).pipe(
         Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),

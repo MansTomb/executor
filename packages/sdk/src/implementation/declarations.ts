@@ -13,7 +13,9 @@ import {
   type KeptEntry,
   type PendingLoad,
 } from "../contracts/declarations.ts";
-import type { ResourceLifecycle } from "../contracts/executor.ts";
+import type { HostApi, ResourceLifecycle } from "../contracts/executor.ts";
+import type { AppRequirements } from "../contracts/apps.ts";
+import { appCacheNamespace, type HostApiCheck } from "../contracts/host-api.ts";
 import { type AccountId, StorageError } from "../contracts/shared.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { makeHandoff } from "./handoff.ts";
@@ -29,6 +31,7 @@ export const makeDeclarationCache = (
   /** When each app's cached upstream data last changed. */
   const changes = new Map<string, number>();
   let bytes = 0;
+  let renewals = 0;
   const size = (entry: KeptEntry) => (entry.kind === "json" ? entry.json.length * 2 : entry.bytes);
   const remove = (key: string) => {
     const entry = entries.get(key);
@@ -71,13 +74,35 @@ export const makeDeclarationCache = (
     },
     outdated: (app, at) => at <= (changes.get(app) ?? -Infinity),
     usage: () => ({ entries: entries.size, bytes }),
+    renewing: () => {
+      if (renewals >= limits.renewals) return false;
+      renewals += 1;
+      return true;
+    },
+    renewed: () => {
+      renewals = Math.max(0, renewals - 1);
+    },
   };
 };
+
+/**
+ * The host API revision a version's invocations are bound to, when its code reads this host's API.
+ * Their app cache and its kept tool listings are keyed by it, so an API change starts both afresh
+ * rather than serving tools of the previous API. A version that owns a database is bound too: its
+ * data calls run in a facet Worker loaded for the revision, whose network checks the document.
+ */
+export const versionHostApi = (
+  hostApi: HostApi | undefined,
+  version: { readonly requirements: AppRequirements },
+): HostApiCheck | undefined =>
+  hostApi !== undefined && hostApi.reads(version.requirements)
+    ? { revision: hostApi.revision, documents: hostApi.documents }
+    : undefined;
 
 const JsonText = Schema.fromJsonString(Schema.Unknown);
 
 /**
- * Evaluated declarations depend on the build, the invocation scope, the account set and its credential generations. Token renewal keeps a result; reconnecting replaces it. Every read reruns the invocation snapshot; a kept result is served
+ * Evaluated declarations depend on the build (and the host API revision for apps that read it), the invocation scope, the account set and its credential generations. Token renewal keeps a result; reconnecting replaces it. Every read reruns the invocation snapshot; a kept result is served
  * only after the same lifecycle checks that precede credential release in an evaluation.
  */
 export const makeDeclarations = (options: {
@@ -85,9 +110,10 @@ export const makeDeclarations = (options: {
   readonly durable: DurableDeclarations | undefined;
   readonly background: BackgroundWork | undefined;
   readonly resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"];
-  readonly accountUsable: ReturnType<typeof makeOAuth>["usable"];
+  readonly accountsUsable: ReturnType<typeof makeOAuth>["usableAll"];
   readonly crypto: Crypto.Crypto;
   readonly lifecycle: ResourceLifecycle | undefined;
+  readonly hostApi: HostApi | undefined;
 }) => {
   const digest = (bytes: Uint8Array) =>
     options.crypto.digest("SHA-256", bytes).pipe(
@@ -112,7 +138,7 @@ export const makeDeclarations = (options: {
             state.app.owner,
             state.app.id,
             state.version.id,
-            state.version.build,
+            appCacheNamespace(state.version.build, versionHostApi(options.hostApi, state.version)),
             // A caller's evaluation and actorless work see different contexts: only one has `user`.
             state.scope,
             selections,
@@ -145,14 +171,7 @@ export const makeDeclarations = (options: {
           lifecycle === undefined
             ? Effect.void
             : lifecycle.appResolving(state.app, linked, appUses).pipe(Effect.flatMap(permitted)),
-          Effect.forEach(
-            selected,
-            ({ account, provider }) => options.accountUsable(account, provider),
-            {
-              concurrency: "unbounded",
-              discard: true,
-            },
-          ),
+          options.accountsUsable(selected),
         ],
         { concurrency: "unbounded", discard: true },
       );
@@ -194,6 +213,9 @@ export const makeDeclarations = (options: {
   };
   return {
     key,
+    /** The host API revision an invocation of this version is bound to; see `versionHostApi`. */
+    hostApi: (version: Parameters<typeof versionHostApi>[1]) =>
+      versionHostApi(options.hostApi, version),
     authorize,
     recall,
     persist,

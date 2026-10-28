@@ -1,12 +1,12 @@
 import { billingHandlers } from "./billing.ts";
 import { onboardingHandlers, setupHandlers } from "./onboarding-handlers.ts";
 import { organizationRemovalHandlers } from "./organization-removal.ts";
-import { v1ImportHandlers } from "./v1-import-handlers.ts";
 import {
   hostedApiDocumentRoute,
   hostedHandlers,
   type LazyHostedApiDocument,
 } from "@executor-js/hosted-server";
+import { requestRejections } from "@executor-js/sdk/core";
 import { Layer } from "effect";
 import { layerWithBatches } from "@executor-js/dashboard-start/batch-host";
 import { layerBuildHeader } from "@executor-js/dashboard-start/build-header";
@@ -25,11 +25,12 @@ export const cloudApi = (document: LazyHostedApiDocument) =>
     Layer.provide(
       Layer.mergeAll(
         hostedHandlers,
-        billingHandlers,
-        onboardingHandlers,
-        setupHandlers,
-        organizationRemovalHandlers,
-        v1ImportHandlers,
+        Layer.mergeAll(
+          billingHandlers,
+          onboardingHandlers,
+          setupHandlers,
+          organizationRemovalHandlers,
+        ).pipe(Layer.provide(requestRejections)),
       ),
     ),
   );

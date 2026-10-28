@@ -9,6 +9,7 @@ import {
   approvalRequired,
   AppEvaluationFailed,
   ToolListingTimedOut,
+  ToolSearchStale,
   ToolSearchUnavailable,
   resolveLinkedAccounts,
   AccountChoiceUnsupported,
@@ -34,9 +35,12 @@ import {
   diagnosticSummary,
   executionDiagnostic,
   failureDetail,
+  failureReference,
   reportFailure,
+  type FailureSite,
 } from "./diagnostics.ts";
 import { nearest } from "./suggestions.ts";
+import { withOperationSpan } from "./telemetry.ts";
 import type { McpAppAccounts } from "../contracts/targets.ts";
 import type { McpBackend } from "../contracts/backend.ts";
 import { accountSummary, accountsKey, discoveryAccounts } from "./accounts.ts";
@@ -974,6 +978,11 @@ function catalog(
       discoveryIdleMs,
     } = defaultMcpRuntimeLimits;
     const slots = yield* Semaphore.make(concurrency);
+    // Every failure this catalog reports names the trace of the request driving it then.
+    const site = (operation: FailureSite["operation"]): FailureSite => ({
+      operation,
+      reference: progress.reference,
+    });
     // Listings share one app runtime, so how long one takes depends on the others. Discovery
     // gives up on an app only when no listing has completed for a while, not on a per-app clock.
     let progressed = yield* Clock.currentTimeMillis;
@@ -1032,10 +1041,10 @@ function catalog(
             );
           }),
         );
-      }).pipe(Effect.withSpan(name));
+      }).pipe(withOperationSpan(name));
     const apps = yield* backend
       .listApps({ toolsOnly: true })
-      .pipe(Effect.withSpan("mcp.discovery.apps"));
+      .pipe(withOperationSpan("mcp.discovery.apps"));
     yield* Effect.annotateCurrentSpan({
       "executor.discovery.apps": apps.length,
       "executor.discovery.concurrency": concurrency,
@@ -1126,8 +1135,13 @@ function catalog(
                 input,
               });
               if (result.status !== "completed") return yield* approvalRequired(result);
+              // The tool's result says it failed, as an MCP server's `isError` does. The program
+              // still gets the whole result; the call is reported as a failure.
+              if (result.toolError === true) yield* toolReportedError(progress);
               return result.value;
-            }).pipe(Effect.mapError((error) => toolError(diagnostic(error, entry.path)))),
+            }).pipe(
+              Effect.mapError((error) => toolError(diagnostic(error, site("call"), entry.path))),
+            ),
           ),
         );
     /**
@@ -1183,13 +1197,13 @@ function catalog(
                   // timed out. Give up on the app now, as discovery would after waiting.
                   if (Schema.is(ToolListingTimedOut)(error)) yield* stop(app.id);
                   yield* unloaded(error);
-                  return { kind: "failed", error: diagnostic(error) } as const;
+                  return { kind: "failed", error: diagnostic(error, site("discover")) } as const;
                 }),
               ),
             );
           }),
           Effect.catch((error) =>
-            Effect.succeed({ kind: "failed", error: diagnostic(error) } as const),
+            Effect.succeed({ kind: "failed", error: diagnostic(error, site("discover")) } as const),
           ),
         );
       });
@@ -1213,12 +1227,18 @@ function catalog(
           ? []
           : [
               {
-                namespace: `${app.slug}.${toolPath(router.path)}`,
+                // The app's own router failed only for some of its accounts: its tools stay
+                // callable, so the failure is reported without closing the app's namespace.
+                namespace: router.path === "" ? undefined : `${app.slug}.${toolPath(router.path)}`,
                 entry: {
                   app: app.id,
-                  name: `${app.name} ${router.title ?? router.path}`,
+                  name:
+                    router.path === "" ? app.name : `${app.name} ${router.title ?? router.path}`,
                   router: router.path,
-                  reason: diagnostic(routerFailure({ app: app.id, version }, router.error)),
+                  reason: diagnostic(
+                    routerFailure({ app: app.id, version }, router.error),
+                    site("discover"),
+                  ),
                 },
               },
             ],
@@ -1231,7 +1251,7 @@ function catalog(
     const accountRequired = (app: ListedApp) => ({
       app: app.id,
       name: app.name,
-      reason: diagnostic(new AppAccountRequired({ app: app.id })),
+      reason: diagnostic(new AppAccountRequired({ app: app.id }), site("discover")),
     });
 
     const project = (
@@ -1260,7 +1280,7 @@ function catalog(
         // so a call into it explains why instead of reporting an unknown tool.
         for (const { namespace, entry } of routerFailures(app, catalog.version, catalog.routers)) {
           failed.push(entry);
-          namespaces.set(namespace, entry);
+          if (namespace !== undefined) namespaces.set(namespace, entry);
         }
         const described: Target = {
           ...placeOf(app, linked),
@@ -1298,6 +1318,20 @@ function catalog(
           const { linked, value: searchable } = discovered;
           for (const { entry } of routerFailures(app, searchable.version, searchable.routers))
             failed.push(entry);
+          // The app's earlier tools are still searched; this says why they may be out of date.
+          if (searchable.stale !== undefined)
+            failed.push({
+              app: app.id,
+              name: app.name,
+              reason: diagnostic(
+                new ToolSearchStale({
+                  app: app.id,
+                  listedAt: searchable.stale.listedAt,
+                  cause: searchable.stale.failure.description,
+                }),
+                site("discover"),
+              ),
+            });
           found.push({
             ...placeOf(app, linked),
             listing: searchable.listing,
@@ -1420,7 +1454,7 @@ function catalog(
           "executor.discovery.tools": entries.length,
         });
         return entries;
-      }).pipe(Effect.withSpan("mcp.describe.discovery"));
+      }).pipe(withOperationSpan("mcp.describe.discovery"));
     /**
      * Report targets whose listing search no longer keeps, as discovery reports a target it could
      * not load, and leave them out of later searches.
@@ -1442,7 +1476,10 @@ function catalog(
           failed.push({
             app: app.id,
             name: app.name,
-            reason: diagnostic(new ToolSearchUnavailable({ app: app.id, reason: "removed" })),
+            reason: diagnostic(
+              new ToolSearchUnavailable({ app: app.id, reason: "removed" }),
+              site("discover"),
+            ),
           });
         }
         progress.unavailableApps = unavailableApps();
@@ -1464,7 +1501,7 @@ function catalog(
           "executor.discovery.targets": targets.length,
         });
         return targets;
-      }).pipe(Effect.withSpan("mcp.search.discovery"));
+      }).pipe(withOperationSpan("mcp.search.discovery"));
     const reachable = (names: ReadonlySet<string>) =>
       discovered.filter(({ app }) => names.has(app.slug));
     const slugs = new Set(apps.map((app) => app.slug));
@@ -1505,7 +1542,7 @@ function catalog(
             loaded === undefined ? 0 : Object.keys(loaded).length,
           );
           return loaded;
-        }).pipe(Effect.withSpan("mcp.discovery.namespace")),
+        }).pipe(withOperationSpan("mcp.discovery.namespace")),
       ).pipe(Effect.map((open) => ({ app: selected.app, open }))),
     );
     /** Namespaces for the program over every app it does not hold, each loaded on first use. */
@@ -1545,6 +1582,8 @@ export type ExecutionProgress = {
     readonly name: string;
     outcome: McpToolCall["outcome"] | "running";
     durationMs?: number;
+    /** The call returned a result that says the tool failed (`toolError`), so it did not succeed. */
+    toolError?: true;
   }>;
   /** The call index each running tool fiber serves, so the driver can mark its approval wait. */
   readonly callFibers: Map<number, number>;
@@ -1556,17 +1595,31 @@ export type ExecutionProgress = {
    * it when they happen reports them, with its own reporter and trace.
    */
   readonly failures: Array<Error>;
+  /**
+   * The trace of the request driving the program, the reference of each failure the program
+   * meets. Its driver sets it before the program runs again, so a failure after a resume names
+   * the resume that reports it, not the request that started the program.
+   */
+  reference: string | undefined;
 };
-export const executionProgress = (): ExecutionProgress => ({
+export const executionProgress = (reference: string | undefined): ExecutionProgress => ({
   calls: [],
   callFibers: new Map(),
   phase: "discovery",
   unavailableApps: [],
   failures: [],
+  reference,
 });
 const recordFailure = (progress: ExecutionProgress, error: Error) =>
   Effect.sync(() => {
     progress.failures.push(error);
+  });
+/** Mark the call this fiber makes as one whose result says its tool failed. */
+const toolReportedError = (progress: ExecutionProgress) =>
+  Effect.map(Effect.fiberId, (fiber) => {
+    const index = progress.callFibers.get(fiber);
+    const call = index === undefined ? undefined : progress.calls[index];
+    if (call !== undefined) call.toolError = true;
   });
 
 /** The canonical path CodeMode's UnknownTool diagnostic names. */
@@ -1631,7 +1684,8 @@ const unavailableMessage = (unavailable: typeof UnavailableApp.Type) =>
 
 /**
  * A snapshot for a result. A call still running when the execution ends is reported as
- * interrupted. A driver-assembled result lists only calls whose start was recorded.
+ * interrupted, and one whose result says its tool failed as a failure. A driver-assembled result
+ * lists only calls whose start was recorded.
  */
 export const reportedCalls = (progress: ExecutionProgress): Array<McpToolCall> =>
   progress.calls.flatMap((call) =>
@@ -1640,7 +1694,12 @@ export const reportedCalls = (progress: ExecutionProgress): Array<McpToolCall> =
       : [
           {
             name: call.name,
-            outcome: call.outcome === "running" ? "interrupted" : call.outcome,
+            outcome:
+              call.outcome === "running"
+                ? "interrupted"
+                : call.outcome === "success" && call.toolError === true
+                  ? "failure"
+                  : call.outcome,
             ...(call.durationMs === undefined ? {} : { durationMs: call.durationMs }),
           },
         ],
@@ -1763,7 +1822,7 @@ function runProgram(
         });
         return discovered;
       }).pipe(
-        Effect.withSpan("mcp.catalog"),
+        withOperationSpan("mcp.catalog"),
         Effect.map(Option.some),
         Effect.raceFirst(deadline.pipe(Effect.as(Option.none()))),
       );
@@ -1917,7 +1976,12 @@ function runProgram(
     }).pipe(
       Effect.catch((error) =>
         recordFailure(progress, error).pipe(
-          Effect.as(failure("ExecutionFailure", diagnostic(error))),
+          Effect.as(
+            failure(
+              "ExecutionFailure",
+              diagnostic(error, { operation: "discover", reference: progress.reference }),
+            ),
+          ),
         ),
       ),
     );
@@ -1972,7 +2036,7 @@ export function callTools(input: typeof CallInput.Type): Program {
           const entries = yield* discovered.described(named.filter((path) => path !== ""));
           return { discovered, entries };
         }).pipe(
-          Effect.withSpan("mcp.catalog"),
+          withOperationSpan("mcp.catalog"),
           Effect.map(Option.some),
           Effect.raceFirst(deadline.pipe(Effect.as(Option.none()))),
         );
@@ -2075,7 +2139,12 @@ export function callTools(input: typeof CallInput.Type): Program {
       }).pipe(
         Effect.catch((error) =>
           recordFailure(progress, error).pipe(
-            Effect.as(failure("ExecutionFailure", diagnostic(error))),
+            Effect.as(
+              failure(
+                "ExecutionFailure",
+                diagnostic(error, { operation: "discover", reference: progress.reference }),
+              ),
+            ),
           ),
         ),
       );
@@ -2091,7 +2160,7 @@ const readCatalog = <A>(
   read: (discovered: Effect.Success<ReturnType<typeof catalog>>) => Effect.Effect<A, Error>,
 ) =>
   Effect.gen(function* () {
-    const progress = executionProgress();
+    const progress = executionProgress(yield* failureReference);
     // No program runs, so no program deadline stops a load.
     return yield* catalog(backend, progress, Effect.never).pipe(
       Effect.flatMap((discovered) =>
@@ -2105,7 +2174,14 @@ const readCatalog = <A>(
       Effect.catch((error) =>
         reportFailure(error).pipe(
           Effect.andThen(
-            Effect.fail(new CatalogUnavailable({ message: diagnosticSummary(error) })),
+            Effect.fail(
+              new CatalogUnavailable({
+                message: diagnosticSummary(error, {
+                  operation: "discover",
+                  reference: progress.reference,
+                }),
+              }),
+            ),
           ),
         ),
       ),

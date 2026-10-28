@@ -27,6 +27,7 @@ export * from "./scheduler.ts";
 export * from "./source.ts";
 export * from "./public-files.ts";
 export * from "./registry.ts";
+export * from "./wire-revision.ts";
 export * from "./publications.ts";
 
 export * from "./analytics.ts";

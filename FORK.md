@@ -424,3 +424,80 @@ The execute output limit remains 65,536 bytes, including the prefix truncation
 notice and recovery guidance. The worker cap, drain, GC flags, error boundary,
 interceptors, analytics and shipped 4.0.2 migration remain in place. No patch is
 retired. The SDK storage version remains 4.0.15.
+
+## Upstream integration on 2026-10-28
+
+Upstream `v2` at `9edd4a510` adds 117 commits to `fe5728414`. Effect stays on
+upstream's 4.0.1 pin and the SDK storage version stays 4.0.15; upstream changed no
+storage schema or migration, so the shipped 4.0.2 analytics baseline is untouched.
+
+Upstream changes that matter here:
+
+- `execute` and `call` no longer limit result size, approval requests and app
+  questions are no longer refused for size, and `McpLimits.maxOutputBytes`,
+  `EXECUTOR_MCP_MAX_OUTPUT_BYTES` and `ApprovalTooLarge` are removed. A failure
+  that matches the runtime's 32 MiB Workers RPC limit now names that limit.
+- A remote MCP result with `isError: true` is listed as a `failure` in
+  `toolCalls` (`toolError` on the call's progress), for direct, program and
+  resumed calls.
+- MCP failures carry `phase` (`evaluate`, `discover`, `call`) and `reference`
+  (the request's trace ID) in the response and at the end of the summary line.
+  Resume reports `lost` and `malformed` requests and lists the caller's open
+  requests in `pending`.
+- Search rows older than `renewMillis` are served at once and renewed in the
+  background; a failed renewal is reported beside them as `ToolSearchStale`.
+  A router that lists only some accounts' tools (`PartialListing`) keeps their
+  tools and reports the others; such a listing is never kept.
+- Retry advice for a failed query requires a confirmed kind (`kindConfirmed`
+  from declared operations, `kinds`, OpenAPI methods or GraphQL operation
+  types), read only from a listing already kept.
+- `hostApi` keys a version's app cache and kept listings by the host API
+  document's SHA-256, so Executor's own management app reads a changed API.
+- Idle scheduler, provisioning and event-delivery polls no longer write traces,
+  so an idle self-host no longer fills the bundled Motel store. Failed polls are
+  traced as their own root spans.
+- Requests that fail schema validation get a declared `400 RequestInvalid`.
+  Workflow controls work again for apps built on `apps` 0.0.1-beta.91 or earlier.
+  OpenAPI and GraphQL failures quote the service's stated errors; secrets are
+  also redacted in their URL-encoded spelling. `mcpRouter` tolerates a refused
+  optional GET event stream. OAuth usable checks read all grants in one query.
+- Local runs one background Executor per data directory shared by the CLI and the
+  desktop app. Cloud adds the v1 import and deploy events. The `@effect/sql-pg`
+  patch grows and a `cloudflare-runtime` patch is added.
+
+Fork patches after this merge:
+
+- The 65,536-byte execute output budget (`163e32725`, `outputRecovery`) is kept
+  against upstream's removal. `McpLimits.maxOutputBytes`, its local
+  `EXECUTOR_MCP_MAX_OUTPUT_BYTES` setting, CodeMode's truncation, the prefix
+  truncation notice, `call`'s refusal of results over the budget, search pages
+  bounded to a quarter of it, the elicitation size check and `ApprovalTooLarge`
+  are restored. The code-mode skill and MCP docs keep the budget and add the
+  32 MiB RPC note. The upstream scenarios that assert unlimited results
+  (`mcpLargeResult`, `mcpLargeResultHosted`, `mcpLargeResultMemoryLimit`) fail by
+  design and stay outside the focused gate; `mcpRpcLimitForged` still applies.
+  `mcpDirectCalls` and `mcpExecuteApprovalSize` keep the fork's assertions and
+  join the focused gate.
+- The error boundary keeps operation attribution: `diagnostic(error, site,
+operation)` prefixes the callable path and appends upstream's phase and
+  reference. Assertions that named the operation now strip the phase and
+  reference with upstream's `siteless`. Reconnect errors keep the account label
+  in upstream's batched OAuth usable check.
+- `d616eaf1b` semantic failures stay beside upstream's equivalent `toolError`
+  marking. Upstream now covers direct, program and resumed calls; the patch can
+  be retired once `observabilityOutcomes` and `mcpExecuteToolReportedError`
+  (added to the focused gate) pass without it.
+- Live, summary-first discovery is unchanged. The live MCP search path returns
+  before upstream's aged-row renewal, so MCP search never serves aged rows or
+  reports `ToolSearchStale`; HTTP and SDK searches get upstream's renewal. The
+  upstream scenarios `mcpAgedSearchRows` and `mcpAgedRowsFailedRenewal` fail by
+  design, like `toolsIndexCache`, and are not in the focused gate. Listing kinds
+  are threaded through the renewal and the cold fill, and partial listings are
+  never stored. Upstream's confirmed-kind lookup (`listings.kept`) also reads the
+  live index MCP discovery keeps, so confirmed queries keep their retry advice.
+- The router's slow-catalog schema inclusion (`parts`) also carries upstream's
+  partial-account errors, including at the root.
+- The scoped-search guidance stays in all three execute descriptions beside
+  upstream's exact `skills({app:'executor',name:'executor'})` call.
+
+No patch is retired. Generated skill digests are rebuilt from the merged skills.

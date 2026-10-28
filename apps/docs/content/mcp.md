@@ -88,6 +88,14 @@ The agent can call several tools, join the results and return only the part it
 needs. That is the point: the whole result set never has to pass through the
 model's context.
 
+A remote MCP tool returns its whole MCP result: `content`, `structuredContent`
+and `isError`. `isError: true` is the tool saying it failed. The call returns
+that result instead of throwing, so programs that read `isError` keep working,
+and the result's `toolCalls` lists the call with outcome `failure`. The server
+may still have made changes. `call` lists it the same way. An outcome of
+`success` only means no tool error was reported; check the result before
+treating its action as done.
+
 The interpreter has no `fetch`, no `process`, no filesystem, no timers and no
 imports. Its only way out is a tool call, which enters the trusted runtime where your
 credentials live. Limits are cooperative, not process isolation. Discovery is
@@ -96,7 +104,9 @@ you add or reconfigure an app.
 
 Some limits are fixed by the server and a client cannot raise them: 65,536
 characters of program source, 100 tool calls, 5 minutes, and 65,536 bytes of
-output. Time spent waiting for your approval or input does not count toward the
+output. The runtime also limits one value crossing between an app and Executor,
+such as a tool's result, to 32 MiB; a failure Executor recognizes there names
+that limit. Time spent waiting for your approval or input does not count toward the
 5 minutes. Execute returns the result when the program ends, or sooner with a
 request for approval or input when the program pauses. An MCP client with a
 shorter tool-call timeout, often 60 seconds, may give up and cancel the program.

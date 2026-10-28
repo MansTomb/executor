@@ -21,6 +21,7 @@ import {
   parseMcpError,
   parseSkillLoadFailed,
 } from "./failure-detail.ts";
+import { PartialListing } from "./account-router.ts";
 import { parseProviderError } from "./provider-error.ts";
 import { joinPath, mergeMeta } from "./router.ts";
 import { skillFromFiles } from "./skill-files.ts";
@@ -132,6 +133,8 @@ const summaryFields = (
     description: operation.description ?? `${readOnly ? "Query" : "Mutate"} ${name}`,
     ...(operation.title === undefined ? {} : { title: operation.title }),
     readOnly,
+    // A declared operation's kind is the app's own, or its protocol's, such as an HTTP method.
+    kindConfirmed: true,
     annotations: { ...operation.annotations, readOnlyHint: readOnly },
   };
 };
@@ -256,7 +259,25 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
     const parts: Array<(summary: boolean) => Effect.Effect<HostedCatalogSummary, HostRouterError>> =
       [];
     const { wanted, secrets } = options;
-    /** One source's metadata and tools, named under `path`. `relative` limits a filtered read. */
+    /**
+     * A source's listing and, when it listed only some of its accounts' tools (`PartialListing`),
+     * the safe error of the accounts it could not list.
+     */
+    const listing = (read: () => Effect.Effect<readonly unknown[], unknown>) =>
+      sourced(
+        () =>
+          read().pipe(
+            Effect.map((tools) => ({ tools, error: undefined })),
+            Effect.catchIf(Schema.is(PartialListing), ({ tools, error }) =>
+              Effect.succeed({ tools, error: safeFailure(error, secrets) }),
+            ),
+          ),
+        secrets,
+      );
+    /**
+     * One source's metadata and tools, named under `path`, and the error of any of its accounts
+     * that could not list. `relative` limits a filtered read.
+     */
     const readSource = (source: DynamicRouter, path: string, relative?: readonly string[]) =>
       Effect.gen(function* () {
         const describe = source.describe;
@@ -266,11 +287,11 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
           summaries !== undefined &&
           (options.summary === true || describe !== undefined);
         // Read together, so a source that keeps both in one cached manifest reads it once.
-        const [meta, listed] = yield* Effect.all(
+        const [meta, { tools: listed, error }] = yield* Effect.all(
           [
             routerMeta(source, secrets),
             summaryRead && summaries !== undefined
-              ? sourced(summaries, secrets)
+              ? listing(summaries)
               : relative !== undefined && describe !== undefined
                 ? sourced(
                     () =>
@@ -278,8 +299,13 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
                         concurrency: "unbounded",
                       }),
                     secrets,
-                  ).pipe(Effect.map((tools) => tools.filter((tool) => tool !== undefined)))
-                : sourced(source.list, secrets),
+                  ).pipe(
+                    Effect.map((tools) => ({
+                      tools: tools.filter((tool) => tool !== undefined),
+                      error: undefined,
+                    })),
+                  )
+                : listing(source.list),
           ],
           { concurrency: "unbounded" },
         );
@@ -305,7 +331,7 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
             annotations: { ...tool.annotations, readOnlyHint: readOnly },
           });
         }
-        return { meta, found };
+        return { meta, found, error };
       });
     const describeFound = (
       source: DynamicRouter,
@@ -330,6 +356,12 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
           }),
         { concurrency: "unbounded" },
       );
+    /**
+     * Read a source into this catalog. The root is the whole app, so its failure fails the read,
+     * as a single-source app did before routers. Elsewhere the failure is returned for the entry.
+     * A source that listed only some accounts keeps their tools and returns the others' error,
+     * at the root too.
+     */
     const include = (source: DynamicRouter, path: string, relative?: readonly string[]) =>
       Effect.gen(function* () {
         const result = yield* Effect.result(readSource(source, path, relative));
@@ -339,14 +371,14 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
           tools: readonly (HostedTool | HostedToolSummary)[],
           error?: HostRouterError,
         ) =>
-          path !== "" || (wanted === undefined && meta !== undefined)
+          path !== "" || (wanted === undefined && (meta !== undefined || error !== undefined))
             ? entry(path, meta, error).pipe(Effect.map((router) => ({ tools, routers: [router] })))
             : Effect.succeed({ tools, routers: [] });
         parts.push((summary) =>
           Result.isFailure(result)
             ? part([], result.failure)
             : describeFound(source, path, result.success.found, summary).pipe(
-                Effect.flatMap((tools) => part(tools)),
+                Effect.flatMap((tools) => part(tools, result.success.error)),
                 Effect.catch((error) => (path === "" ? Effect.fail(error) : part([], error))),
               ),
         );
