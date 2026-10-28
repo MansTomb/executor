@@ -11,6 +11,7 @@ import { McpClient } from "../support/mcp-client.ts";
 import { requestGate } from "../support/request-gate.ts";
 import { clientCredentialsIssuer, machineClient } from "../support/client-credentials-issuer.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
+import { siteless } from "../support/failure-site.ts";
 
 const Failure = Schema.Struct({
   status: Schema.Literal("completed"),
@@ -95,7 +96,7 @@ throw new Error("Could not read the report",{cause:new Error("Report was deleted
           `return await tools[${JSON.stringify(app.slug)}].queries.read({privateValue:"synthetic-private-input"});`,
         );
         const failure = yield* body(Failure, { status: 200, body: result.structuredContent });
-        expect(failure.execution.error.message).toBe(
+        expect(siteless(failure.execution.error.message)).toBe(
           `${operation}: ToolCallFailed (HTTP 502): The app threw Error: Could not read the report (caused by Error: Report was deleted; token=[redacted]; private=[redacted]; {"password":"[redacted]","detail":"[redacted]","secret":"[redacted]"}) Recovery: Read the error to determine whether input, app code, configuration or Executor needs attention. Retryable (unchanged call): yes.`,
         );
         yield* evidence.json("thrown-app-error.json", result.structuredContent);
