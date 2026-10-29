@@ -1,5 +1,10 @@
 /** Self-host credentials and optional operator-owned OpenID Connect configuration. */
-import { authOptions, authSettings, singleResourceOrigin } from "@executor-js/hosted-server";
+import {
+  authOptions,
+  authSettings,
+  singleResourceOrigin,
+  type GrantObservers,
+} from "@executor-js/hosted-server";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
 import { organization } from "better-auth/plugins/organization";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
@@ -118,8 +123,9 @@ export const selfHostAuthOptions = (
   settings: Effect.Success<typeof selfHostAuthSettings>,
   ipAddressHeaders: string[],
   discovery: typeof SsoDiscovery.Type | null,
+  observers: GrantObservers = {},
 ) => {
-  const base = authOptions(settings, ipAddressHeaders);
+  const base = authOptions(settings, ipAddressHeaders, observers);
   return {
     ...base,
     emailAndPassword: { enabled: true, disableSignUp: true },

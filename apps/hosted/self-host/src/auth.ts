@@ -38,7 +38,15 @@ export const selfHostAuth = Effect.gen(function* () {
   const database = yield* AuthDatabase;
   const sql = yield* SqlClient.SqlClient;
   const discovery = yield* selfHostSsoDiscovery(settings);
-  const base = selfHostAuthOptions(settings, ["x-executor-client-ip"], discovery);
+  const logging = yield* Effect.context<never>();
+  const base = selfHostAuthOptions(settings, ["x-executor-client-ip"], discovery, {
+    onRefreshRejected: ({ reason, clientId }) =>
+      Effect.runSyncWith(logging)(
+        Effect.logWarning("auth.oauth.refresh.rejected").pipe(
+          Effect.annotateLogs({ reason, clientId, timestamp: new Date().toISOString() }),
+        ),
+      ),
+  });
   const options = {
     ...base,
     plugins: [...base.plugins, selfHostRegistration(settings)],

@@ -6,6 +6,17 @@ Upstream `main` currently contains the older 1.x architecture.
 
 The maintained branch is `selfhost`. Local patches:
 
+- Self-host logs `auth.oauth.refresh.rejected` at warning level through the existing
+  `onRefreshRejected` observer. Each event contains only the provider's reason code,
+  the requesting client ID, and an ISO UTC timestamp. The provider patch supplies
+  the extracted client ID for both body and HTTP Basic credentials, including
+  `unknown_token` and `rotation_lost`. Reasons are `unknown_token`, `other_client`,
+  `expired`, `replay_unavailable`, `superseded`, `reused`, and `rotation_lost`.
+  Token values, token hashes, client secrets and request bodies are never included.
+  Refresh policy and grant lifetimes are unchanged. The `mcpRefreshRejectionLog`
+  E2E scenario checks unknown-token refusals through body and Basic credentials;
+  the existing stale and late-refresh scenarios guard rotation and revocation.
+
 - The default Executor management app is an immutable deployment inside Executor.
   Replacing the Dokploy image does not rebuild its saved bundle or update its
   bundled framework; legacy deployments can retain obsolete behavior. After

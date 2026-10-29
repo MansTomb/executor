@@ -1,6 +1,7 @@
 /** MCP clients often run several instances that share one stored OAuth grant. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, FileSystem, Layer, Redacted, Schedule } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api } from "../support/api.ts";
@@ -10,8 +11,54 @@ import { Evidence } from "../support/evidence.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { serverControl } from "../support/server-control.ts";
+import { Target } from "../support/platform.ts";
 
 layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
+  it.effect(scenarios.mcpRefreshRejectionLog.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const http = yield* HttpClient.HttpClient;
+        const fs = yield* FileSystem.FileSystem;
+        const target = yield* Target;
+        for (const clientId of ["refresh-log-form-client", "refresh-log-basic-client"]) {
+          const token = `not-a-refresh-token-${clientId}`;
+          const basic = clientId === "refresh-log-basic-client";
+          const response = yield* http.execute(
+            HttpClientRequest.post(`${target.metadata.origin}/api/auth/oauth2/token`, {
+              headers: basic ? { authorization: `Basic ${btoa(`${clientId}:unused-secret`)}` } : {},
+            }).pipe(
+              HttpClientRequest.bodyUrlParams({
+                grant_type: "refresh_token",
+                refresh_token: token,
+                ...(basic ? {} : { client_id: clientId }),
+              }),
+            ),
+          );
+          expect(response.status).toBe(400);
+          expect(yield* response.json).toMatchObject({ error: "invalid_grant" });
+          const log = yield* fs.readFileString(`${target.directory}/server.log`).pipe(
+            Effect.map((text) =>
+              text
+                .split("\n")
+                .find(
+                  (line) => line.includes("auth.oauth.refresh.rejected") && line.includes(clientId),
+                ),
+            ),
+            Effect.filterOrFail(
+              (line) => line !== undefined,
+              () => new Error("Missing refresh rejection log"),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 20 }),
+          );
+          expect(log).toContain("unknown_token");
+          expect(log).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+          expect(log.includes(token)).toBe(false);
+          expect(log.includes("unused-secret")).toBe(false);
+        }
+      }),
+    ),
+  );
   it.effect(scenarios.mcpStaleRefresh.title, (context) =>
     withHostedCase(
       context,

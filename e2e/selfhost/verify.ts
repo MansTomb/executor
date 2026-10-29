@@ -52,6 +52,7 @@ const focused = [
       scenarios.mcpExecuteApprovalSize,
       scenarios.mcpExecuteToolReportedError,
       scenarios.mcpExecuteReach,
+      scenarios.mcpRefreshRejectionLog,
       scenarios.mcpResultContract,
       scenarios.thrownAppError,
       scenarios.mutationTimeoutBoundary,

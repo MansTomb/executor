@@ -9768,6 +9768,17 @@ export const scenarios = plan({
       local: na("Local has no organization members or hosted OAuth consent."),
     },
   },
+  mcpRefreshRejectionLog: {
+    fixtures: "actors",
+    file: "mcp-oauth-refresh.spec.ts",
+    title:
+      "Self-host logs safe refresh rejection reasons and client IDs for body and Basic credentials",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host stdout diagnostics; Cloud has its own auth observer."),
+      local: na("This scenario tests the hosted OAuth provider."),
+    },
+  },
   mcpStaleRefresh: {
     fixtures: "actors",
     file: "mcp-oauth-refresh.spec.ts",
