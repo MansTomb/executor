@@ -17,6 +17,8 @@ The maintained branch is `selfhost`. Local patches:
   characters across descriptions and signatures. Follow its `next` as the
   whole input and concatenate each path's fields to recover the complete
   description and signature. No result store or schema migration is added.
+  Measurements, verification and the production rollback record are in
+  [compact tool results](patches/compact-tool-results.md).
   The direct-call and concise-search scenarios cover single representation,
   original in-program values, distinct content, byte bounds and full recovery.
 
