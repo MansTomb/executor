@@ -34,8 +34,8 @@ repeating them in every item.
 
 `namespace` is an app slug, such as `gmail`, or a namespace inside it. Without
 it, search loads and searches every app, which is slower. A page holds at most
-`limit` items, 10 by default, and stops sooner at a quarter of the output limit
-(16 KB by default). `remaining` counts the matches after the page, and `next`
+`limit` items, five by default, and stops sooner at a quarter of the output
+limit, 16,384 bytes by default. `remaining` counts the matches after the page, and `next`
 is the input for the following page, or `null` after the last match: call
 `tools.search(next)` to continue.
 
@@ -46,8 +46,11 @@ pass up to 20 exact paths from search:
 return await tools.search.describe({ paths: ["<path from search>"] });
 ```
 
-`describe` returns `items` with the whole `description` and the TypeScript
-`signature`, with input and output types, plus their `namespaces`. A path that
+`describe` returns `items` with chunks of `description` and TypeScript
+`signature`, plus their `namespaces`. Each page holds at most 2,000 Unicode
+characters across these fields. Follow its `next` as the whole input and append
+each path's fields to recover the complete descriptions and signatures. Stop
+when `next` is null. Read only the chunks you need. A path that
 names no tool comes back in `missing` with the closest `matches`.
 
 Read a tool's input type before calling it; never guess argument names. Use

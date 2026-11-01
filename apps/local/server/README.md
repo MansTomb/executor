@@ -392,7 +392,7 @@ return await tools.search({ query: "Executor" });
 ```
 
 Search returns exact callable paths, one-line descriptions and input types;
-`tools.search.describe({ paths })` returns full signatures. The Executor app's
+`tools.search.describe({ paths })` returns bounded description and signature chunks. Follow `next` and append each path's fields for full detail. The Executor app's
 tools are generated from this server's management API, such as `apps.deploy`,
 `apps.list`, `accounts.list`, `appAccounts.userConnect` and `tools.list`.
 It calls this server's API through its linked account. The host uses

@@ -157,7 +157,17 @@ const deployApp = (client: Connection, organization?: string) =>
       "Discover the catalog, the apps release and create",
       `const find = async (query, path) => {
   const item = (await tools.search({ query, limit: 20 })).items.find((item) => item.path.endsWith(path));
-  return item === undefined ? undefined : (await tools.search.describe({ paths: [item.path] })).items[0];
+  if (item === undefined) return undefined;
+  const full = { path: item.path, description: "", signature: "" };
+  let page = await tools.search.describe({ paths: [item.path] });
+  while (true) {
+    for (const part of page.items) {
+      full.description += part.description;
+      full.signature += part.signature;
+    }
+    if (page.next === null) return full;
+    page = await tools.search.describe(page.next);
+  }
 };
 const found = await tools.search({ query: "framework.release" });
 const create = await find("appManagement.create", ".appManagement.create");

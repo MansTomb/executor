@@ -39,11 +39,11 @@ const Execution = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
-// Every revision carries the result as JSON text; 2025-03-26 predates structured tool output.
 const CallResult = Schema.Struct({
-  content: Schema.Tuple([
+  content: Schema.Array(
     Schema.Struct({ type: Schema.Literal("text"), text: Schema.fromJsonString(Execution) }),
-  ]),
+  ),
+  structuredContent: Schema.optionalKey(Execution),
 });
 const SessionId = Schema.NonEmptyString;
 
@@ -170,7 +170,11 @@ const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
           });
           expect(called.status).toBe(200);
           const result = yield* Schema.decodeUnknownEffect(CallResult)(called.reply?.result);
-          expect(result.content[0].text.execution.value).toBe(42);
+          expect(
+            result.structuredContent?.execution.value ?? result.content[0]?.text.execution.value,
+          ).toBe(42);
+          expect(result.content).toHaveLength(protocolVersion === "2025-03-26" ? 1 : 0);
+          expect(result.structuredContent === undefined).toBe(protocolVersion === "2025-03-26");
         }),
       );
     yield* evidence.json("negotiated-versions.json", negotiated);
@@ -429,7 +433,9 @@ const checkCancelledCalls = (
         );
         expect(called.status).toBe(200);
         const result = yield* Schema.decodeUnknownEffect(CallResult)(called.reply?.result);
-        expect(result.content[0].text.execution.value).toBe(42);
+        expect(
+          result.structuredContent?.execution.value ?? result.content[0]?.text.execution.value,
+        ).toBe(42);
         return {
           status: ended.status,
           contentType: ended.contentType,

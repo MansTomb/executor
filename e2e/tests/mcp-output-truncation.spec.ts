@@ -62,7 +62,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP output truncation", (it) =
               client.callTool({ name: "execute", arguments: { code } }, undefined, { signal }),
             );
             const response = yield* Schema.decodeUnknownEffect(Response)(result);
-            const text = response.content.map((block) => block.text).join("\n");
+            expect(response.content).toEqual([]);
+            const text = JSON.stringify(result);
             yield* evidence.json(`${label.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}.json`, {
               truncation: response.structuredContent.truncation,
               truncated: response.structuredContent.execution.truncated,
@@ -80,7 +81,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP output truncation", (it) =
           );
           expect(result.truncation?.notice).toContain("execution.ok reports that the program ran");
           const visible = result.text.slice(0, callerPrefixChars);
-          expect(visible.startsWith('{"status":"completed","truncation":{')).toBe(true);
+          expect(visible).toContain('"status":"completed","truncation":{');
+          expect(visible.indexOf('"truncation"')).toBeLessThan(visible.indexOf('"execution"'));
           expect(visible).toContain(`"outputLimitBytes":${outputLimitBytes}`);
           expect(visible).toContain("Output incomplete");
         };

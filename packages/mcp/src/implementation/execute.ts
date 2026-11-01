@@ -30,6 +30,7 @@ import {
   type ToolSearchTarget,
 } from "@executor-js/sdk/core";
 import { Clock, Deferred, Duration, Effect, Option, Schema, Semaphore } from "effect";
+import { compactResult } from "./compact-results.ts";
 import {
   diagnostic,
   diagnosticSummary,
@@ -828,9 +829,10 @@ const globalSearchPage = <E extends Error>(
 const describeTools = <E>(
   described: Described<E>,
   describe: Describe,
-  paths: ReadonlyArray<string>,
+  input: typeof DescribeInput.Type,
 ) =>
   Effect.gen(function* () {
+    const { paths } = input;
     const named = paths.map(canonical);
     const entries = yield* described(named.filter((path) => path !== ""));
     const byPath = new Map(entries.map((entry) => [entry.path, entry]));
@@ -870,7 +872,44 @@ const describeTools = <E>(
       for (const space of namespacesOf(entry.target, routerOf(entry)))
         namespaces.set(space.path, space);
     }
-    return { items, namespaces: [...namespaces.values()], missing };
+    let skip = input.offset ?? 0;
+    let remaining = 2_000;
+    let consumed = 0;
+    const page: typeof items = [];
+    for (const item of items) {
+      const description = Array.from(item.description);
+      const signature = Array.from(item.signature);
+      const length = description.length + signature.length;
+      if (skip >= length && length > 0) {
+        skip -= length;
+        consumed += length;
+        continue;
+      }
+      if (remaining === 0) break;
+      const descriptionPart = description.slice(skip, skip + remaining).join("");
+      const signaturePart = signature
+        .slice(
+          Math.max(0, skip - description.length),
+          Math.max(0, skip - description.length) + remaining - Array.from(descriptionPart).length,
+        )
+        .join("");
+      const count = Array.from(descriptionPart).length + Array.from(signaturePart).length;
+      page.push({ ...item, description: descriptionPart, signature: signaturePart });
+      consumed += skip + count;
+      skip = 0;
+      remaining -= count;
+      if (count < length && remaining === 0) break;
+    }
+    const total = items.reduce(
+      (sum, item) => sum + Array.from(item.description).length + Array.from(item.signature).length,
+      0,
+    );
+    return {
+      items: page,
+      namespaces: [...namespaces.values()],
+      missing,
+      next: consumed < total ? { paths, offset: consumed } : null,
+    };
   });
 
 /**
@@ -1856,10 +1895,10 @@ function runProgram(
       });
       const describe = Tool.make({
         description:
-          "Read the whole description and TypeScript signature, with input and output types, of tools at exact paths from tools.search.",
+          "Read bounded description and signature chunks at exact paths. Follow next as the whole input and append each path's fields until next is null.",
         input: DescribeInput,
         output: DescribeResult,
-        execute: ({ paths }) => real(describeTools(prepared.described, prepared.describe, paths)),
+        execute: (input) => real(describeTools(prepared.described, prepared.describe, input)),
       });
       const runtime = CodeMode.make({
         tools: {
@@ -2088,7 +2127,9 @@ export function callTools(input: typeof CallInput.Type): Program {
               .pipe(
                 Effect.matchEffect({
                   onSuccess: (value) =>
-                    finish("success").pipe(Effect.as<CallOutcome>({ path: name, ok: true, value })),
+                    finish("success").pipe(
+                      Effect.as<CallOutcome>({ path: name, ok: true, value: compactResult(value) }),
+                    ),
                   onFailure: (error) =>
                     finish("failure").pipe(
                       Effect.as(callFailure(name, "ToolFailure", error.message)),
@@ -2213,5 +2254,5 @@ export const searchCatalog = (
 /** The describe tool: full signatures for exact paths, as tools.search.describe returns them. */
 export const describeCatalog = (backend: McpBackend<Error>, input: typeof DescribeInput.Type) =>
   readCatalog(backend, (discovered) =>
-    describeTools(discovered.described, discovered.describe, input.paths),
+    describeTools(discovered.described, discovered.describe, input),
   ).pipe(Effect.map(({ value }) => value));

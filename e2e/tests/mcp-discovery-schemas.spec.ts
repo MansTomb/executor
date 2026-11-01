@@ -251,8 +251,16 @@ layer(HostedLive, { excludeTestServices: true })("MCP discovery schemas", (it) =
 const page = await tools.search(${JSON.stringify(options)});
 const detailed = [];
 for (let offset = 0; offset < page.items.length; offset += 20) {
-  const descriptions = await tools.search.describe({ paths: page.items.slice(offset, offset + 20).map(item => item.path) });
-  detailed.push(...descriptions.items);
+  let descriptions = await tools.search.describe({ paths: page.items.slice(offset, offset + 20).map(item => item.path) });
+  while (true) {
+    for (const item of descriptions.items) {
+      const previous = detailed.find(entry => entry.path === item.path);
+      if (previous) previous.signature += item.signature;
+      else detailed.push(item);
+    }
+    if (descriptions.next === null) break;
+    descriptions = await tools.search.describe(descriptions.next);
+  }
 }
 return { ...page, items: page.items.map(item => ({ ...item, signature: detailed.find(description => description.path === item.path)?.signature })) };`);
             expect(result.execution, JSON.stringify(result)).toMatchObject({ ok: true });

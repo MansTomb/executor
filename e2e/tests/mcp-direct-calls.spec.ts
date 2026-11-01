@@ -11,13 +11,17 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-const source = `import { defineApp, mutation, query, object, string, router } from "apps";
+const source = `import { defineApp, mutation, query, object, number, string, router } from "apps";
 import { always } from "apps/operations/approval";
 export default defineApp({}, async () => ({ tools: router({
   echo: query({ input: object({ text: string() }), description: "Echo text back to the caller" },
     async (_ctx, { text }) => ({ text })),
   oversized: query({ input: object({}), description: "Return more than the output limit" },
     async () => ({ data: "x".repeat(150000) })),
+  duplicated: query({ input: object({ size: number() }) }, async (_ctx, { size }) => {
+    const payload = { data: "x".repeat(size) };
+    return { content: [{ type: "text", text: JSON.stringify(payload) }, { type: "text", text: "Keep this context" }, { type: "image", data: "AA==", mimeType: "image/png" }], structuredContent: payload, isError: true, _meta: { receipt: "keep" }, annotated: { structuredContent: { kept: true }, content: [{ type: "text", text: '{"kept":true}', annotations: { audience: ["user"] } }, { type: "text", text: '{"kept":true}', _meta: { receipt: "block" } }] } };
+  }),
   review: mutation({ input: object({ note: string() }), approval: always(), description: "Record a reviewed note" },
     async (_ctx, { note }) => ({ reviewed: note })),
 }) }));`;
@@ -84,6 +88,7 @@ const callTool = (
     const result = yield* client.use(label, (client, signal) =>
       client.callTool({ name, arguments: args }, undefined, { signal }),
     );
+    expect(result.content).toEqual([]);
     yield* evidence.json(
       `${label.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}.json`,
       result.structuredContent,
@@ -139,6 +144,60 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
           ok: true,
           value: { path: echo, ok: true, value: { text: "hi" } },
           toolCalls: [{ name: echo, outcome: "success" }],
+        });
+
+        const duplicatePath = `tools[${JSON.stringify(app.slug)}].duplicated`;
+        for (const name of ["call", "execute"] as const) {
+          const reply = yield* client.use(`Compact ${name} result`, (client, signal) =>
+            client.callTool(
+              {
+                name,
+                arguments:
+                  name === "call"
+                    ? { calls: { path: duplicatePath, input: { size: 12000 } } }
+                    : {
+                        code: `const result = await ${duplicatePath}({size:12000}); return { sourceHadText: result.content.length === 3, result };`,
+                      },
+              },
+              undefined,
+              { signal },
+            ),
+          );
+          expect(reply.content).toEqual([]);
+          expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThan(16_000);
+          const expected = {
+            content: [
+              { type: "text", text: "Keep this context" },
+              { type: "image", data: "AA==", mimeType: "image/png" },
+            ],
+            structuredContent: { data: "x".repeat(12000) },
+            isError: true,
+            _meta: { receipt: "keep" },
+            annotated: {
+              structuredContent: { kept: true },
+              content: [
+                { type: "text", text: '{"kept":true}', annotations: { audience: ["user"] } },
+                { type: "text", text: '{"kept":true}', _meta: { receipt: "block" } },
+              ],
+            },
+          };
+          expect(reply.structuredContent).toMatchObject({
+            execution: {
+              ok: true,
+              value:
+                name === "call" ? { value: expected } : { sourceHadText: true, result: expected },
+            },
+          });
+        }
+
+        const largeDuplicate = yield* Schema.decodeUnknownEffect(Completed)(
+          yield* tool("Deduplicate before applying the call budget", "call", {
+            calls: { path: duplicatePath, input: { size: 40000 } },
+          }),
+        );
+        expect(largeDuplicate.execution.value).toMatchObject({
+          ok: true,
+          value: { structuredContent: { data: "x".repeat(40000) } },
         });
 
         // A batch keeps its order, and one call failing does not stop the others.

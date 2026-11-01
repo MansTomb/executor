@@ -35,7 +35,7 @@ const instructions = "Upstream instructions: always confirm the record identifie
 const tools = {};
 for (let n = 0; n < ${records}; n++)
   tools["record" + n] = query({
-    description: "Read synthetic concise record " + n + ".\\n\\n" + instructions,
+    description: "Read synthetic concise record " + n + ".\\n\\n" + instructions + (n === 0 ? "\\n" + "😀".repeat(2500) + "END" : ""),
     input: jsonSchema({ type: "object", properties: { id: { type: "string", description: "Record identifier" } }, required: ["id"], additionalProperties: false }),
     output,
   }, async (_ctx, input) => ({ outputOnlyField0: input.id }));
@@ -86,6 +86,7 @@ const Described = Schema.Struct({
   missing: Schema.Array(
     Schema.Struct({ path: Schema.String, matches: Schema.Array(Schema.String) }),
   ),
+  next: Schema.NullOr(Schema.Struct({ paths: Schema.Array(Schema.String), offset: Schema.Number })),
 });
 const Executed = <A, I>(value: Schema.Codec<A, I>) =>
   Schema.Struct({
@@ -237,16 +238,55 @@ return { items, namespaces: [], remaining: 0, next: null };`,
         // Describe returns what search leaves out: the whole description and input, and the
         // output type. A path that names no tool comes back with the closest paths.
         const unknown = record.path.replace(/record0$/, "recrod0");
-        const described = yield* execute(
-          "Describe exact paths",
-          `return await tools.search.describe({ paths: ${JSON.stringify([record.path, wide.path, unknown])} });`,
-          Described,
-        );
+        const chunks: Array<typeof Described.Type> = [];
+        let next: { readonly paths: ReadonlyArray<string>; readonly offset?: number } | null = {
+          paths: [record.path, wide.path, unknown],
+        };
+        while (next !== null) {
+          const chunk: { readonly value: typeof Described.Type } = yield* execute(
+            "Describe a bounded page",
+            `return await tools.search.describe(${JSON.stringify(next)});`,
+            Described,
+          );
+          expect(Buffer.byteLength(JSON.stringify(chunk.value))).toBeLessThan(12_000);
+          chunks.push(chunk.value);
+          if (chunk.value.next !== null)
+            expect(chunk.value.next.offset).toBeGreaterThan(next.offset ?? 0);
+          next = chunk.value.next;
+        }
+        expect(chunks.length).toBeGreaterThan(1);
+        const reconstructed = new Map<string, (typeof Described.Type.items)[number]>();
+        for (const chunk of chunks)
+          for (const item of chunk.items) {
+            const previous = reconstructed.get(item.path);
+            reconstructed.set(item.path, {
+              path: item.path,
+              description: (previous?.description ?? "") + item.description,
+              signature: (previous?.signature ?? "") + item.signature,
+            });
+          }
+        const described = {
+          value: { items: [...reconstructed.values()], missing: chunks[0]?.missing },
+        };
         expect(described.value.items.map((item) => item.path)).toEqual([record.path, wide.path]);
+        yield* evidence.json("description-reconstruction.json", described.value);
         const [full, wideFull] = described.value.items;
         expect(full?.description).toContain("Upstream instructions");
-        expect(full?.signature).toContain(`outputOnlyField29`);
-        expect(wideFull?.signature).toContain(`kind-value-${kinds - 1}`);
+        expect(full?.description).toContain("😀".repeat(2500) + "END");
+        expect(full?.signature).toBe(
+          "(input: {\n  /** Record identifier */\n  id: string,\n}): Promise<" +
+            Array.from(
+              { length: 30 },
+              (_, index) =>
+                `{\n    /** Output variant ${index} of a synthetic record, returned when the record has that shape. */\n    outputOnlyField${index}: string,\n    [key: string]: unknown,\n  }`,
+            ).join(" | ") +
+            ">",
+        );
+        expect(wideFull?.signature).toBe(
+          "(input: {\n  kind: " +
+            Array.from({ length: kinds }, (_, index) => `"kind-value-${index}"`).join(" | ") +
+            ",\n  [key: string]: unknown,\n}): Promise<unknown>",
+        );
         expect(described.value.missing).toEqual([
           { path: unknown, matches: expect.arrayContaining([record.path]) },
         ]);

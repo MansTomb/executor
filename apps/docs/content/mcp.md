@@ -70,8 +70,9 @@ Search returns a page of tools: each one's exact callable path, the first line
 of its description and its input type. Each app and its linked accounts are listed once.
 `tools.search(next)`, with the returned `next` as the whole input, reads the
 following page, and
-`tools.search.describe({ paths })` returns a tool's whole signature, including
-its output type. Every app is called by its slug, `tools.<app>.<tool>`. A call
+`tools.search.describe({ paths })` returns bounded description and signature
+chunks, including output types. Follow its `next` as the whole input and append
+each path's fields until `next` is null to recover full detail. Every app is called by its slug, `tools.<app>.<tool>`. A call
 uses the accounts you linked to the app: one for each single-account
 requirement, and every linked account for a `.many()` requirement. An app's own
 accounts, linked for everyone by people who can edit it, fill its app account

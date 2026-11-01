@@ -30,7 +30,7 @@ await tools.acme.issues.close({ id: "123" });
 ```
 
 `tools.search` returns that exact expression along with the input type, and
-`tools.search.describe` returns the whole signature with the output type, so an
+`tools.search.describe` returns signature chunks with a `next` continuation for full detail, so an
 agent does not have to guess.
 
 Which tools are available can depend on the app's configuration. A tool needing

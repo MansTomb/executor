@@ -6,6 +6,20 @@ Upstream `main` currently contains the older 1.x architecture.
 
 The maintained branch is `selfhost`. Local patches:
 
+- Compact MCP results on delivery. Revisions from 2025-06-18 return structured
+  content with an empty content array. Older revisions retain one JSON text
+  result. Embedded MCP envelopes lose only text blocks that repeat their
+  structured payload. Distinct text, media, errors and metadata remain, and
+  execute programs still receive the original app results. Direct calls remove
+  duplicates before applying the existing output budget.
+- Search defaults to five matches, input previews keep 600 characters, and
+  pages retain the existing quarter-output byte budget, 16,384 bytes by default. Describe returns at most 2,000 Unicode
+  characters across descriptions and signatures. Follow its `next` as the
+  whole input and concatenate each path's fields to recover the complete
+  description and signature. No result store or schema migration is added.
+  The direct-call and concise-search scenarios cover single representation,
+  original in-program values, distinct content, byte bounds and full recovery.
+
 - Self-host logs `auth.oauth.refresh.rejected` at warning level through the existing
   `onRefreshRejected` observer. Each event contains only the provider's reason code,
   the requesting client ID, and an ISO UTC timestamp. The provider patch supplies

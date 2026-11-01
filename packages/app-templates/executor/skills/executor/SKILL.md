@@ -19,8 +19,9 @@ This is the Executor app's `executor` skill. Read its other skills with
 ## Find and call tools
 
 `search({ query: "..." })` returns each tool's exact `path`, such as
-`tools.<slug>.<tool>`, and input type; `describe({ paths })` returns full
-signatures. Never guess argument names.
+`tools.<slug>.<tool>`, and input type. `describe({ paths })` returns bounded
+description and signature chunks. Follow its `next` as the whole input and
+append each path's fields until `next` is null. Never guess argument names.
 
 For a few independent calls, use `call({ calls: { path, input } })`; an array
 of calls runs concurrently. Each result has `ok` and its `value` or `error`.

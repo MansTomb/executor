@@ -406,9 +406,9 @@ export const SearchLimits = Schema.Struct({
 });
 export type SearchLimits = typeof SearchLimits.Type;
 export const defaultSearchLimits = SearchLimits.make({
-  defaultItems: 10,
+  defaultItems: 5,
   descriptionChars: 200,
-  inputChars: 1_000,
+  inputChars: 600,
   describePaths: 20,
 });
 
@@ -478,6 +478,7 @@ export const DescribeInput = Schema.Struct({
     Schema.isMinLength(1),
     Schema.isMaxLength(defaultSearchLimits.describePaths),
   ),
+  offset: Schema.optionalKey(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
 });
 /**
  * Full detail for each path found: the whole description and the TypeScript signature with its
@@ -491,6 +492,7 @@ export const DescribeResult = Schema.Struct({
   missing: Schema.Array(
     Schema.Struct({ path: Schema.String, matches: Schema.Array(Schema.String) }),
   ),
+  next: Schema.NullOr(DescribeInput),
 });
 /** One direct tool call: an exact path from search and the tool's JSON input. */
 export const CallRequest = Schema.Struct({
@@ -587,7 +589,7 @@ export const SearchTool = McpTool.make("search", {
 /** Full signatures for exact paths, as tools.search.describe returns them in a program. */
 export const DescribeTool = McpTool.make("describe", {
   description:
-    "Read the whole description and TypeScript signature, with input and output types, of tools at exact paths from search. Unknown paths are listed in missing with the closest paths.",
+    "Read descriptions and TypeScript signatures at exact paths from search. Results are bounded to 2,000 Unicode characters across description and signature fields. Follow next as the whole input and append each path's description and signature chunks until next is null. Unknown paths are listed in missing with the closest paths.",
   parameters: DescribeInput,
   success: DescribeResult,
   failure: CatalogUnavailable,
