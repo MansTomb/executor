@@ -148,6 +148,34 @@ interface SnapshotReads {
 }
 
 /**
+ * {@link SnapshotReads} for a snapshot nobody read ahead for: the app and the accounts its input
+ * names, at once. None when it names no accounts, which leaves a single read.
+ */
+const snapshotReads = (
+  db: Query,
+  input: {
+    readonly app: AppId;
+    readonly accounts?: AppAccounts | undefined;
+    readonly captured?: { readonly accounts: SelectedAccounts } | undefined;
+  },
+) => {
+  const ids =
+    input.captured !== undefined
+      ? selectionAccountIds(input.captured.accounts)
+      : input.accounts === undefined
+        ? []
+        : namedAccounts(input.accounts);
+  return ids.length === 0
+    ? Effect.succeed(undefined)
+    : Effect.all(
+        [Effect.result(readApp(db, input.app)), Effect.result(readSelectionAccounts(db, ids))],
+        {
+          concurrency: "unbounded",
+        },
+      ).pipe(Effect.map(([app, rows]): SnapshotReads => ({ app, accounts: { ids, rows } })));
+};
+
+/**
  * Resolve the app, pinned version and the named accounts before invoking authored code. The
  * snapshot keeps the current actor, so work it starts, such as a workflow, is checked against the
  * same subject later.
@@ -173,9 +201,10 @@ export function snapshot(
      */
     captured?: { readonly accounts: SelectedAccounts; readonly scope: AccountScope } | undefined;
   },
-  ahead?: SnapshotReads,
+  readAhead?: SnapshotReads,
 ) {
   return Effect.gen(function* () {
+    const ahead = readAhead ?? (yield* snapshotReads(db, input));
     const row =
       ahead !== undefined && answered(ahead.app)
         ? yield* Effect.fromResult(ahead.app)
@@ -1020,19 +1049,25 @@ export const makeTools = (
     kind: ToolKind | undefined,
   ) =>
     kind === undefined
-      ? listings.read(state, callListingOf(state), { refreshStale: false, resolved: context }).pipe(
-          Effect.map((listing) => listing.items.find((tool) => tool.name === name)),
-          // A listing that did not finish says nothing about the tool.
-          Effect.catchTag("ToolListingTimedOut", () => Effect.succeed(undefined)),
-          Effect.flatMap((listed) =>
-            listed === undefined ? catalogKind(state, context, name) : Effect.succeed(listed),
-          ),
-          Effect.map((tool): ToolKind | undefined =>
-            tool.readOnly === true ? "query" : "mutation",
-          ),
-          Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined)),
-          Effect.withSpan("sdk.tools.kind"),
-        )
+      ? listings
+          .read(state, callListingOf(state), {
+            refreshStale: false,
+            followChanges: false,
+            resolved: context,
+          })
+          .pipe(
+            Effect.map((listing) => listing.items.find((tool) => tool.name === name)),
+            // A listing that did not finish says nothing about the tool.
+            Effect.catchTag("ToolListingTimedOut", () => Effect.succeed(undefined)),
+            Effect.flatMap((listed) =>
+              listed === undefined ? catalogKind(state, context, name) : Effect.succeed(listed),
+            ),
+            Effect.map((tool): ToolKind | undefined =>
+              tool.readOnly === true ? "query" : "mutation",
+            ),
+            Effect.catchTag("ToolNotFound", () => Effect.succeed(undefined)),
+            Effect.withSpan("sdk.tools.kind"),
+          )
       : Effect.succeed(kind);
   /**
    * With the accounts the host's check resolved ({@link InvocationSelection}), make the call's

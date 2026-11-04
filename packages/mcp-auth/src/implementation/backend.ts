@@ -86,15 +86,12 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
   ): GrantRefusal | undefined =>
     appRefusal(policy, app) ??
     (permitsAccounts(policy, app, ids) ? undefined : targetRefusal(app, ids));
+  const appCheck = (policy: AuthorizationPolicy, app: AppId, accounts: AppAccounts | undefined) => {
+    const ids = named(accounts);
+    return refuse(ids.length === 0 ? appRefusal(policy, app) : accountsRefusal(policy, app, ids));
+  };
   const checkApp = (app: AppId, accounts: AppAccounts | undefined) =>
-    authority.pipe(
-      Effect.flatMap((policy) => {
-        const ids = named(accounts);
-        return refuse(
-          ids.length === 0 ? appRefusal(policy, app) : accountsRefusal(policy, app, ids),
-        );
-      }),
-    );
+    authority.pipe(Effect.flatMap((policy) => appCheck(policy, app, accounts)));
   /** The page's tools and routers this policy lets the caller discover. */
   const permittedPage = (policy: AuthorizationPolicy, app: AppId, page: ToolPage): ToolPage => ({
     ...page,

@@ -1,6 +1,6 @@
 /** MCP clients often run several instances that share one stored OAuth grant. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Redacted, Schedule } from "effect";
+import { Effect, FileSystem, Layer, Redacted, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -21,12 +21,39 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
         const http = yield* HttpClient.HttpClient;
         const fs = yield* FileSystem.FileSystem;
         const target = yield* Target;
-        for (const clientId of ["refresh-log-form-client", "refresh-log-basic-client"]) {
+        for (const basic of [false, true]) {
+          const registration = yield* HttpClientRequest.post(
+            `${target.metadata.origin}/api/auth/oauth2/register`,
+          ).pipe(
+            HttpClientRequest.bodyJson({
+              client_name: basic ? "Refresh log Basic client" : "Refresh log form client",
+              redirect_uris: ["http://127.0.0.1/callback"],
+              token_endpoint_auth_method: basic ? "client_secret_basic" : "none",
+              grant_types: ["authorization_code", "refresh_token"],
+              response_types: ["code"],
+            }),
+            Effect.flatMap(http.execute),
+          );
+          expect(registration.status).toBe(201);
+          const { client_id: clientId, client_secret: secret } = yield* registration.json.pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(
+                Schema.Struct({
+                  client_id: Schema.NonEmptyString,
+                  client_secret: Schema.optionalKey(Schema.RedactedFromValue(Schema.String)),
+                }),
+              ),
+            ),
+          );
+          if (basic && secret === undefined)
+            return yield* new Error("Missing registered client secret");
           const token = `not-a-refresh-token-${clientId}`;
-          const basic = clientId === "refresh-log-basic-client";
           const response = yield* http.execute(
             HttpClientRequest.post(`${target.metadata.origin}/api/auth/oauth2/token`, {
-              headers: basic ? { authorization: `Basic ${btoa(`${clientId}:unused-secret`)}` } : {},
+              headers:
+                basic && secret !== undefined
+                  ? { authorization: `Basic ${btoa(`${clientId}:${Redacted.value(secret)}`)}` }
+                  : {},
             }).pipe(
               HttpClientRequest.bodyUrlParams({
                 grant_type: "refresh_token",
@@ -54,7 +81,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
           expect(log).toContain("unknown_token");
           expect(log).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
           expect(log.includes(token)).toBe(false);
-          expect(log.includes("unused-secret")).toBe(false);
+          if (secret !== undefined) expect(log.includes(Redacted.value(secret))).toBe(false);
         }
       }),
     ),

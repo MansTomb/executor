@@ -13,7 +13,7 @@ import {
   type HostedCatalogSummary,
 } from "../contracts/host.ts";
 import type { AppOperation } from "../contracts/operations.ts";
-import type { AppRouter, DynamicRouter, RouterMeta } from "../contracts/router.ts";
+import type { AppNode, AppRouter, DynamicRouter, RouterMeta } from "../contracts/router.ts";
 import { skillFormatLimits, type AppSkillSource } from "../contracts/skills.ts";
 import {
   failureDetail,
@@ -256,8 +256,7 @@ const within = (wanted: ReadonlySet<string>, path: string) =>
  */
 export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options: CatalogOptions) =>
   Effect.gen(function* () {
-    const parts: Array<(summary: boolean) => Effect.Effect<HostedCatalogSummary, HostRouterError>> =
-      [];
+    type Part = (summary: boolean) => Effect.Effect<HostedCatalogSummary, HostRouterError>;
     const { wanted, secrets } = options;
     /**
      * A source's listing and, when it listed only some of its accounts' tools (`PartialListing`),
@@ -374,52 +373,68 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
           path !== "" || (wanted === undefined && (meta !== undefined || error !== undefined))
             ? entry(path, meta, error).pipe(Effect.map((router) => ({ tools, routers: [router] })))
             : Effect.succeed({ tools, routers: [] });
-        parts.push((summary) =>
+        const describe: Part = (summary) =>
           Result.isFailure(result)
             ? part([], result.failure)
             : describeFound(source, path, result.success.found, summary).pipe(
                 Effect.flatMap((tools) => part(tools, result.success.error)),
                 Effect.catch((error) => (path === "" ? Effect.fail(error) : part([], error))),
-              ),
-        );
+              );
+        return describe;
       });
-    const visit = (node: AppRouter, path: string): Effect.Effect<void, HostRouterError> =>
+    const child = (
+      node: AppNode,
+      name: string,
+      path: string,
+    ): Effect.Effect<readonly Part[], HostRouterError> =>
       Effect.gen(function* () {
-        if (path !== "" || (wanted === undefined && node.meta !== undefined)) {
-          const router = yield* entry(path, node.meta);
-          parts.push(() => Effect.succeed({ tools: [], routers: [router] }));
-        }
-        for (const [key, child] of Object.entries(node.children)) {
-          const name = joinPath(path, key);
-          switch (child.kind) {
-            case "query":
-            case "mutation":
-              if (options.scheduled === true && options.schedules(name).length === 0) break;
-              if (wanted === undefined || wanted.has(name))
-                parts.push((summary) =>
-                  (summary
-                    ? operationSummary(name, path, child, options.schedules(name))
-                    : operationDescription(name, path, child, options.schedules(name))
-                  ).pipe(Effect.map((tool) => ({ tools: [tool], routers: [] }))),
-                );
-              break;
-            case "router":
-              if (wanted === undefined || within(wanted, name).length > 0)
-                yield* visit(child, name);
-              break;
-            case "dynamic": {
-              if (options.scheduled === true) break;
-              const relative = wanted === undefined ? undefined : within(wanted, name);
-              if (relative !== undefined && relative.length === 0) break;
-              yield* include(child, name, relative);
-            }
+        switch (node.kind) {
+          case "query":
+          case "mutation":
+            if (options.scheduled === true && options.schedules(name).length === 0) return [];
+            if (wanted !== undefined && !wanted.has(name)) return [];
+            return [
+              (summary) =>
+                (summary
+                  ? operationSummary(name, path, node, options.schedules(name))
+                  : operationDescription(name, path, node, options.schedules(name))
+                ).pipe(Effect.map((tool) => ({ tools: [tool], routers: [] }))),
+            ];
+          case "router":
+            return wanted === undefined || within(wanted, name).length > 0
+              ? yield* visit(node, name)
+              : [];
+          case "dynamic": {
+            if (options.scheduled === true) return [];
+            const relative = wanted === undefined ? undefined : within(wanted, name);
+            if (relative !== undefined && relative.length === 0) return [];
+            return [yield* include(node, name, relative)];
           }
         }
       });
-    if (root?.kind === "router") yield* visit(root, "");
-    else if (root?.kind === "dynamic" && options.scheduled !== true) {
-      yield* include(root, "", wanted === undefined ? undefined : [...wanted]);
-    }
+    const visit = (
+      node: AppRouter,
+      path: string,
+    ): Effect.Effect<readonly Part[], HostRouterError> =>
+      Effect.gen(function* () {
+        const own: Part[] = [];
+        if (path !== "" || (wanted === undefined && node.meta !== undefined)) {
+          const router = yield* entry(path, node.meta);
+          own.push(() => Effect.succeed({ tools: [], routers: [router] }));
+        }
+        const children = yield* Effect.forEach(
+          Object.entries(node.children),
+          ([key, value]) => child(value, joinPath(path, key), path),
+          { concurrency: "unbounded" },
+        );
+        return [...own, ...children.flat()];
+      });
+    const parts =
+      root?.kind === "router"
+        ? yield* visit(root, "")
+        : root?.kind === "dynamic" && options.scheduled !== true
+          ? [yield* include(root, "", wanted === undefined ? undefined : [...wanted])]
+          : [];
     const summary = typeof options.summary === "boolean" ? options.summary : yield* options.summary;
     const described = yield* Effect.forEach(parts, (describe) => describe(summary));
     return {

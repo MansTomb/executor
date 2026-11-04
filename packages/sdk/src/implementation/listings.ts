@@ -88,6 +88,13 @@ interface ListingRead extends ToolListOptions {
    */
   readonly hosted?: boolean;
   /**
+   * Whether the read checks that what this process keeps of the app is from after its cached data
+   * last changed (`followChanges`), as it does by default. A call's own read of the tool's kind
+   * passes false: it runs before the call hands its work to the app, which resolves the tool
+   * against its live catalog, so it sends the supervisor nothing ahead of that.
+   */
+  readonly followChanges?: boolean;
+  /**
    * Serve no kept listing evaluated at or before this time, such as the one a renewal of search
    * rows evaluated then replaces: the read evaluates the app unless a newer listing is kept.
    */
@@ -504,6 +511,9 @@ export const makeListings = (options: {
               : undefined,
           ),
         );
+      // What this process keeps of the app from before its cached data changed is forgotten once
+      // the check this starts, if one is due, reads when that was.
+      if (read.followChanges !== false) yield* options.declarations.followChanges(state.app.id);
       const early = yield* keptListing;
       if (early?.value instanceof Listed && servable(early.at, early.value))
         return yield* serve(early.at, early.value, "memory");
@@ -820,7 +830,19 @@ export const makeListings = (options: {
         const now = yield* Clock.currentTimeMillis;
         // Read before the rows: an evaluation that ends while they are read wrote them first.
         const running = cache.pending(id);
-        const kept = policy.maxStaleMillis <= 0 ? undefined : yield* search.listing(state, listing);
+        // Rows from before the app's cached data last changed are not served; see `followChanges`.
+        yield* options.declarations.followChanges(state.app.id);
+        // The checks kept rows are served after run beside their read; only kept rows wait on them.
+        const [kept, access] =
+          policy.maxStaleMillis <= 0
+            ? ([undefined, undefined] as const)
+            : yield* Effect.all(
+                [
+                  search.listing(state, listing),
+                  Effect.result(options.declarations.authorize(state)),
+                ],
+                { concurrency: "unbounded" },
+              );
         // Rows missing, stale or removed are filled from an evaluation through the shared gate,
         // which keeps no decoded listing: rows are what later searches read. Readers of the same
         // listing share one evaluation, which the load bound stops like any other once nobody
@@ -846,13 +868,14 @@ export const makeListings = (options: {
           memory.at > kept.at;
         if (
           kept !== undefined &&
+          access !== undefined &&
           now - kept.at < policy.maxStaleMillis &&
           !cache.outdated(state.app.id, kept.at) &&
           !newer &&
           // Written only for the search that evaluated them; see `partial`.
           !partial(kept.routers)
         ) {
-          yield* options.declarations.authorize(state);
+          yield* Effect.fromResult(access);
           // A superseded listing is kept again unless cleanup removed it since it was read; then
           // it is written again like a missing one.
           if (kept.superseded === null || (yield* search.revive(listing))) {

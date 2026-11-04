@@ -528,3 +528,50 @@ operation)` prefixes the callable path and appends upstream's phase and
   upstream's exact `skills({app:'executor',name:'executor'})` call.
 
 No patch is retired. Generated skill digests are rebuilt from the merged skills.
+
+## Upstream integration on 2026-11-04
+
+Upstream `v2` at `04f358c97` adds 34 commits to `9edd4a510`. Effect stays
+at 4.0.1. Storage advances from 4.0.15 to 4.0.16 by adding three indexes for
+webhook and account-check queues. The shipped fork 4.0.2 analytics baseline
+and every earlier migration remain unchanged.
+
+Upstream changes that matter here:
+
+- Dynamic sibling routers load concurrently in router order; account routers
+  load up to eight accounts together, and catalog-cache writes keep up to four
+  independent parts in flight. Durable change markers invalidate kept catalogs
+  after their upstream data changes. An unknown tool triggers a bounded recheck.
+- Dashboard batches share session and membership reads within one request.
+  Each read retains its own caller, organization, and role.
+- App files are served before page preparation. The version watcher is inlined.
+  Telemetry exports traces and logs concurrently, and the bundled collector
+  reduces its store to a low-water mark at capacity.
+- OAuth refresh repeats the original redirect URI when present, while legacy
+  grants without one keep working. Better Auth and its plugins move to 1.7.16.
+  Self-host adds SSO connection controls. No production login or account is
+  changed by preparing this merge.
+- OpenAPI names remain stable when a refined sibling has the same name.
+  Credential hostnames accept underscores. App names reject control characters
+  and invisible-only values. Failed migrations report safe version and SQLSTATE
+  diagnostics. Cloud also updates its v1 import and query authentication.
+
+Every fork policy remains. Conflict resolution combines parallel router reads
+with deferred schema selection, preserves live grant checks after catalog reads,
+and retains callable error attribution, timeout outcomes, analytics storage, and
+refresh rejection client IDs in the rebased Better Auth patch. No patch is retired.
+The compact delivery and continuation contract, 65,536-byte budget, worker cap,
+drain, and GC flags are unchanged.
+
+The refresh-log scenario registers its clients before presenting an unknown
+refresh token, matching upstream's client-first validation. Migration diagnostics
+exercise the fork's credential-generation step at 4.0.3 rather than upstream's
+different 4.0.2 baseline.
+
+The focused gate now includes compact-search reconstruction, protocol versions,
+management contracts, batch authentication and isolation, migration diagnostics,
+collector retention, and OAuth refresh redirect compatibility.
+
+This image upgrades an existing 4.0.15 database to 4.0.16. The previous image
+rejects that version, so rollback requires a stopped-volume restore and the
+previous immutable image.

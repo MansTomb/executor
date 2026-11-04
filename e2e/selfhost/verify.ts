@@ -53,6 +53,12 @@ const focused = [
       scenarios.mcpExecuteToolReportedError,
       scenarios.mcpExecuteReach,
       scenarios.mcpRefreshRejectionLog,
+      scenarios.mcpProtocolVersions,
+      scenarios.appManagementContractsHosted,
+      scenarios.dashboardBatchAuthentication,
+      scenarios.dashboardBatchIsolation,
+      scenarios.storageMigrationDiagnostics,
+      scenarios.telemetryStoreIdleAtBound,
       scenarios.mcpResultContract,
       scenarios.thrownAppError,
       scenarios.mutationTimeoutBoundary,
@@ -76,7 +82,10 @@ const focused = [
       scenarios.activeVersionResume,
     ],
   },
-  { target: "local", scenarios: [scenarios.analytics] },
+  {
+    target: "local",
+    scenarios: [scenarios.analytics, scenarios.mcpSearchConcise, scenarios.oauthRefreshRedirectUri],
+  },
 ] as const;
 
 const nativeDirectory = "apps/hosted/self-host/native";
