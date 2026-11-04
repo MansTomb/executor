@@ -575,3 +575,29 @@ collector retention, and OAuth refresh redirect compatibility.
 This image upgrades an existing 4.0.15 database to 4.0.16. The previous image
 rejects that version, so rollback requires a stopped-volume restore and the
 previous immutable image.
+
+## Production rollout on 2026-11-04
+
+The November 4 upstream merge is deployed from source
+`285a173d0fa7f86d6e8688a0c1b0edf594cbfd4c`, using immutable image
+`sha256:6100bdd30305d43a2ed6b4dc71351167107d06ebbc84c43057ed07dc4d5c4b7b`.
+Production storage reports 4.0.16 and all three queue indexes are present.
+The management app was explicitly rebuilt from this revision's
+`defaultExecutorAppSource`. Its active deployment is
+`dpl_4cdc77c0-919e-4451-96e6-478e1a998a4d`; its deployed files and saved workspace
+match the generator, and its selected account link is unchanged. The fresh MCP
+catalog exposes 105 current operations with no obsolete profile paths, and both
+Executor skills load from the new deployment.
+
+Sixteen connected apps passed reads. Slack Files exposes only a mutation and
+passed catalog discovery. Stake Engine has no active deployment.
+The 15-minute watch passed 61 of 61 HTTP and container-health samples over 900.111 seconds. There were no restarts, container replacements or OOM events. Cgroup memory ranged from 615.4 to 1410.1 MiB and ended at 1408.7 MiB. Working memory peaked at 1357.0 MiB and ended at 1354.6 MiB, within the 4 GiB limit.
+Upgrade analytics retention remains unverified by the merge's previous-image
+scenario because its published framework cannot seed authored analytics.
+
+The previous image is
+`sha256:9002bd113dc9ad6a36d1604f4e13f1ae2d531014d0c72d68d5a8e0bfb1f045a2`.
+It rejects the upgraded schema, so rollback requires the verified stopped-volume
+backup and that image together. The deployment record, retained backups and exact
+recovery commands live in the Agents Executor operations record, linked by the
+weekly merge runbook. No Docker, Traefik or Dokploy daemon was restarted.

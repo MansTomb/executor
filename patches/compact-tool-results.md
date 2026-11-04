@@ -92,9 +92,9 @@ deployments, 200 MCP sessions and 500 searches. The final reviewed image repeate
 the upgrade and soak. The upgrade helper reports analytics retention unverified
 because the previous published framework exposes no authored analytics.
 
-The deployed Executor image is
+The November 1 rollout deployed image
 `registry.iwannalocal.duckdns.org/dokploy/executor@sha256:9002bd113dc9ad6a36d1604f4e13f1ae2d531014d0c72d68d5a8e0bfb1f045a2`.
-The previous image is
+Its previous image was
 `registry.iwannalocal.duckdns.org/dokploy/executor@sha256:4a806bef79f2b425a0fd0e3d6ed43bb6beb7ac34f638befac9d9ba108e57640d`.
 Dokploy deployment `iyPiFNSggB2gTPE_wpMeL` completed. Only the Compose image
 reference changed; private fetching, the volume and other settings were kept.
@@ -151,3 +151,10 @@ Broad instruction and native-record reads clipped in this task too. The
 stopped-volume backup dropped its own Executor MCP response; the independent
 Dokploy API verified completion. A clearer result-size contract, current fork
 instructions and direct deployment access would have shortened that path.
+
+
+The November 4 weekly rollout superseded this image with source `285a173d0`
+and immutable image
+`sha256:6100bdd30305d43a2ed6b4dc71351167107d06ebbc84c43057ed07dc4d5c4b7b`.
+The compact-result patch is unchanged. See `FORK.md` for the current deployment
+and schema rollback requirement.
