@@ -46,7 +46,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP OAuth refresh", (it) => {
             ),
           );
           if (basic && secret === undefined)
-            return yield* new Error("Missing registered client secret");
+            return yield* Effect.fail(new Error("Missing registered client secret"));
           const token = `not-a-refresh-token-${clientId}`;
           const response = yield* http.execute(
             HttpClientRequest.post(`${target.metadata.origin}/api/auth/oauth2/token`, {
