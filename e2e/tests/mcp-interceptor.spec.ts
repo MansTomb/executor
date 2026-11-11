@@ -225,7 +225,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP interceptor", (it) => {
         ) => {
           expect(response.status, JSON.stringify(response.body)).toBe(200);
           expect(response.body).toEqual({
-            content: [{ type: "text", text: JSON.stringify({ account, message, path: route }) }],
+            content:
+              route === "rest"
+                ? [{ type: "text", text: JSON.stringify({ account, message, path: route }) }]
+                : [],
             structuredContent: { account, message, path: route },
             ...(route === "rest" ? { _meta: { intercepted: true } } : {}),
           });

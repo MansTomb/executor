@@ -612,7 +612,9 @@ analytics migration and all subsequent migrations remain unchanged.
   callback URLs when `application_type` is absent, preserving native validation.
 - Remote MCP calls discard JSON text that duplicates their structured result.
   The fork's interceptor, per-call analytics and semantic error handling remain
-  around this path. Distinct text, metadata and media remain intact.
+  around this path. Distinct text, metadata and media remain intact. The
+  interceptor regression expects the upstream MCP path to omit the redundant
+  copy while retaining authored interceptor results unchanged.
 - App fetches supply `User-Agent: Executor` when the app supplies none.
   Credential forms show redacted app-check advice. Failed app evaluation stays
   confined to that app's previews and workflow catalog.
