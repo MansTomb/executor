@@ -601,3 +601,28 @@ It rejects the upgraded schema, so rollback requires the verified stopped-volume
 backup and that image together. The deployment record, retained backups and exact
 recovery commands live in the Agents Executor operations record, linked by the
 weekly merge runbook. No Docker, Traefik or Dokploy daemon was restarted.
+
+## Upstream integration on 2026-11-11
+
+Upstream `v2` at `dff3b77ca` adds 13 commits to `04f358c97`. Effect stays
+at 4.0.1 and the storage schema stays at 4.0.16. The shipped fork 4.0.2
+analytics migration and all subsequent migrations remain unchanged.
+
+- OAuth registration infers native clients from loopback and private-use
+  callback URLs when `application_type` is absent, preserving native validation.
+- Remote MCP calls discard JSON text that duplicates their structured result.
+  The fork's interceptor, per-call analytics and semantic error handling remain
+  around this path. Distinct text, metadata and media remain intact.
+- App fetches supply `User-Agent: Executor` when the app supplies none.
+  Credential forms show redacted app-check advice. Failed app evaluation stays
+  confined to that app's previews and workflow catalog.
+- Hosted request and credential-resolution spans record opaque caller and
+  account IDs and refusal reasons. Security actions emit audit records. Cloud
+  adds user deletion with organization ownership checks. Release tooling and
+  public development documentation also change.
+
+The README keeps upstream's new structure and the fork analytics reference.
+The MCP call conflict combines upstream's duplicate removal with the fork's
+interceptor and analytics. Every fork patch is kept; none is retired. The
+focused gate also covers registration inference, outbound User-Agent, app-load
+failure containment, credential-check advice and security observability.

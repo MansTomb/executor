@@ -23,6 +23,7 @@ import {
   lookupOrganizationSlug,
   resolveOrganizationReference,
   deleteOrganizationRecords,
+  deleteUserRecords,
   grantExpiry,
   authEndpointTemplates,
 } from "@executor-js/hosted-server";
@@ -94,6 +95,8 @@ export const selfHostAuth = Effect.gen(function* () {
       deleteOrganizationRecords(context.adapter, organizationId).pipe(
         Effect.withSpan("auth.removeOrganization"),
       ),
+    removeUser: (user) =>
+      deleteUserRecords(context.adapter, user).pipe(Effect.withSpan("auth.removeUser")),
   });
   const mcpIdentity = Layer.succeed(McpAuthentication, {
     ...origins,

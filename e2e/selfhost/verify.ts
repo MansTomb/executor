@@ -40,6 +40,11 @@ const focused = [
     target: "self-host",
     scenarios: [
       scenarios.appWorkerLifetime,
+      scenarios.oauthRegistrationApplicationType,
+      scenarios.appFetchUserAgent,
+      scenarios.appLoadFailureContainment,
+      scenarios.securityObservability,
+      scenarios.accountCheckFailureDetail,
       scenarios.mcpDiscoverySelection,
       scenarios.mcpDiscoverySchemas,
       scenarios.mcpSlowListing,

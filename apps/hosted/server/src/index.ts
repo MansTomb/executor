@@ -22,7 +22,26 @@ export {
   AuthenticationUnavailable,
   RequireUser,
   CurrentPrincipal,
+  AuthCredentialKind,
+  AuthFailureReason,
 } from "./contracts/auth.ts";
+export {
+  recordAuthFailure,
+  recordCaller,
+  recordCredential,
+  recordNoCredential,
+  recordNoSession,
+  recordUnclassifiedRefusals,
+  refuse,
+} from "./implementation/auth-telemetry.ts";
+export {
+  SecurityAuditAction,
+  auditFailureCodes,
+  type SecurityAuditEvent,
+  type SecurityAuditFailure,
+  type SecurityAuditOutcome,
+} from "./contracts/security-audit.ts";
+export { audited, recordSecurityAudit } from "./implementation/security-audit.ts";
 export { authOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
 export * from "./contracts/organization.ts";
 export {
@@ -55,6 +74,9 @@ export {
 } from "./implementation/organization-removal.ts";
 export { makeOrganizationRemovals } from "./implementation/organization-removals.ts";
 export { migrateOrganizationRemovals } from "./implementation/organization-removal-schema.ts";
+export * from "./contracts/user-removal.ts";
+export { previewUserRemoval, removeUser } from "./implementation/user-removal.ts";
+export { deleteUserRecords } from "./implementation/user-records.ts";
 
 export { hostedOAuthCallback } from "./implementation/accounts.ts";
 export * from "./contracts/oauth-client-metadata.ts";
