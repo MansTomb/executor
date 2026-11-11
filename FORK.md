@@ -628,3 +628,46 @@ The MCP call conflict combines upstream's duplicate removal with the fork's
 interceptor and analytics. Every fork patch is kept; none is retired. The
 focused gate also covers registration inference, outbound User-Agent, app-load
 failure containment, credential-check advice and security observability.
+
+## Production rollout on 2026-11-11
+
+The November 11 upstream merge is deployed from source
+`8990d83e6db83b7248fc849c602507ab64881d28`, using immutable image
+`sha256:a06234fc8156d210f66ad90a04dd2cad83e6c5222defbcf0d01c6205ee3a7d6b`.
+Every fork patch is kept. Effect remains 4.0.1 and production storage remains
+4.0.16. The production snapshot passed SQLite integrity checking and contains
+all three queue indexes.
+
+Format, lint, typecheck, static checks, all 49 focused scenarios, image build
+and native Go tests passed. The exact previous-image upgrade, two starts,
+18.504-second admitted-write drain and stopped-volume restore passed. The
+4 GiB soak completed 60 deployments, 200 sessions and 500 searches in
+129.729 seconds, with a 1.620 GiB cgroup peak and no restarts or OOMs.
+The previous published framework cannot seed authored analytics, so analytics
+retention across the upgrade remains unverified.
+
+The management app advanced to `dpl_e3b7452b-9cca-42e7-9372-a13383a27df2`
+from `dpl_4cdc77c0-919e-4451-96e6-478e1a998a4d`. All four deployed files
+and saved workspace commit `f0b522b6729920e67ca38420e953dbbfddd0af2e` match
+the current generator. The selected account link is unchanged. A fresh MCP
+session loaded all 105 management operations and both Executor skills.
+Sixteen connected apps passed reads. Slack Files has only a mutation and passed
+complete catalog discovery. Stake Engine still has no active deployment.
+
+The 15-minute watch passed 61 of 61 samples over 900.074 seconds,
+with no restarts, replacements or OOMs. Cgroup memory ranged from
+687.1 to 1347.9 MiB and ended at 693.8 MiB.
+Working memory peaked at 1330.5 MiB and ended at 661.4 MiB.
+No Docker, Dokploy or Traefik daemon was restarted.
+
+The previous image is
+`sha256:6100bdd30305d43a2ed6b4dc71351167107d06ebbc84c43057ed07dc4d5c4b7b`.
+Storage migrations are unchanged. Image-only rollback preserves subsequent data;
+the release gate rehearsed the stopped-volume restore path with synthetic data.
+The verified pre-server and pre-app backups, exact rollback helper and full
+rollout report are retained under
+`~/Work/Research/executor-weekly-20261111/` through November 25.
+
+Deep review found no self-host merge issue. Its Cloud-only user-deletion finding
+can unlink app accounts before an active workflow refuses account deletion;
+that endpoint is absent from self-host and remains outside this rollout.
