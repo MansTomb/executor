@@ -637,7 +637,8 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log", (it) => {
         const outcome = called.execution.value;
         expect(outcome.callLog.reference).toMatch(reference);
         expect(outcome.callLog.note).toBe(callLogNote);
-        expect(outcome.error.message).toContain(`The service refused ${marker}`);
+        expect(outcome.error.message).toContain("The service refused [redacted]");
+        expect(outcome.error.message).not.toContain(marker);
         expect(JSON.stringify(outcome.error)).not.toContain(outcome.callLog.reference);
         expect(called.execution.toolCalls).toEqual([
           expect.objectContaining({
@@ -673,7 +674,8 @@ try {
         );
         const caught = program.execution.value.caught;
         expect(caught.reference).toMatch(reference);
-        expect(caught.message).toContain(`The service refused ${marker}`);
+        expect(caught.message).toContain("The service refused [redacted]");
+        expect(caught.message).not.toContain(marker);
         expect(caught.message).not.toContain(caught.reference ?? "");
         expect(caught.name).not.toBe("none");
         expect(

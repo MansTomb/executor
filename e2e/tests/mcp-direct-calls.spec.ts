@@ -110,13 +110,14 @@ const callTool = (
   label: string,
   name: string,
   args: Record<string, unknown>,
+  content: ReadonlyArray<unknown> = [],
 ) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
     const result = yield* client.use(label, (client, signal) =>
       client.callTool({ name, arguments: args }, undefined, { signal }),
     );
-    expect(result.content).toEqual([]);
+    expect(result.content).toEqual(content);
     yield* evidence.json(
       `${label.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}.json`,
       result.structuredContent,
@@ -174,6 +175,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
           toolCalls: [{ name: echo, outcome: "success" }],
         });
 
+        const image = { type: "image", data: "AA==", mimeType: "image/png" };
         const duplicatePath = `tools[${JSON.stringify(app.slug)}].duplicated`;
         for (const name of ["call", "execute"] as const) {
           const reply = yield* client.use(`Compact ${name} result`, (client, signal) =>
@@ -191,12 +193,12 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
               { signal },
             ),
           );
-          expect(reply.content).toEqual([]);
+          expect(reply.content).toEqual([image]);
           expect(Buffer.byteLength(JSON.stringify(reply))).toBeLessThan(16_000);
           const expected = {
             content: [
               { type: "text", text: "Keep this context" },
-              { type: "image", data: "AA==", mimeType: "image/png" },
+              { type: "image", mimeType: "image/png", contentIndex: 0 },
             ],
             structuredContent: { data: "x".repeat(12000) },
             isError: true,
@@ -219,9 +221,13 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
         }
 
         const largeDuplicate = yield* Schema.decodeUnknownEffect(Completed)(
-          yield* tool("Deduplicate before applying the call budget", "call", {
-            calls: { path: duplicatePath, input: { size: 40000 } },
-          }),
+          yield* callTool(
+            client,
+            "Deduplicate before applying the call budget",
+            "call",
+            { calls: { path: duplicatePath, input: { size: 40000 } } },
+            [image],
+          ),
         );
         expect(largeDuplicate.execution.value).toMatchObject({
           ok: true,
