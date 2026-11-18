@@ -350,7 +350,10 @@ upstream provides the same behavior and the scenario that guards it passes on
 upstream's implementation. Resolve conflicts by keeping upstream's structure and
 reapplying the patch's policy, as the October merge did for `app-worker-residency.ts`.
 
-Verify the merged tree with one command, from a checkout with `bun install` done:
+Use the Node version in the self-host Dockerfile and the Rust toolchain pinned in
+`packages/telemetry/collector/rust-toolchain.toml`. They run the E2E driver and
+build the bundled collector. After `bun install`, verify the merged tree with
+one command.
 
 Run one release gate at a time on this host. The test containers use host networking,
 and concurrent gates can collide on workerd's internal ports.
@@ -689,3 +692,43 @@ the compact delivery contract. Legacy clients still receive one JSON text block.
 The fork's output budget, OAuth refresh rejection logging, worker capacity, GC
 flags and HTTP drain remain in force. The focused gate covers media delivery,
 call log references and shared account migration.
+
+## Production rollout on 2026-11-18
+
+Dokploy deployment `Fnd_3uiHsr0PrtL-YvL6U` runs source `eac9df9cc7aeff93e23a3fe307996c603b7f3c0d` at immutable image
+`sha256:aa3f1fc3d1a2c15a883ed275dd4088fa473c76505b5a5f762bafbe265ed7a5aa`. Production storage reports 4.0.17, with the analytics table and
+the new subscription index present. Both stopped-volume backups passed
+readback. An old-image rollback requires the verified pre-server volume and
+the previous digest, `sha256:a06234fc8156d210f66ad90a04dd2cad83e6c5222defbcf0d01c6205ee3a7d6b`, together.
+
+Format, lint, typecheck, all 53 focused scenarios, image build and native Go
+tests passed. The exact previous-image upgrade and standalone volume restore
+passed. The admitted 16-second write drained in 29.270 seconds and completed once.
+The 4 GiB soak completed 60 deployments, 200 MCP sessions and 500 searches in
+254.263 seconds. Cgroup memory peaked at 1.099 GiB with zero
+restarts or OOM events.
+
+The management app advanced from `dpl_e3b7452b-9cca-42e7-9372-a13383a27df2` to
+`dpl_8662ceeb-b1b1-4ea0-8e51-34eb927400e1`. The saved workspace and active deployment each match
+all 4 generated files. The selected account links
+are the same. A fresh MCP session found all 106 management
+operations and loaded both skills. Sixteen connected apps passed a read. Slack
+Files passed catalog discovery and only exposes a write tool. Stake Engine
+has no active deployment.
+
+ClickUp analytics returned 808 MCP attempts, 805 successes
+and 3 errors in the same seven-day window, both before and after
+the upgrade. The retained event count was 1616
+for each of the upstream-request and tool-invocation queries. Retention is
+30 days, and coverage is best effort.
+
+The 15-minute watch passed all 61 samples over
+900.136 seconds, with zero restarts, replacements, or OOM events.
+Cgroup memory ranged from 646.7 to
+1274.3 MiB and ended at
+648.6 MiB. Working memory peaked at
+1255.4 MiB.
+
+The backups, rollout evidence and rollback command are retained in
+`~/Work/Research/executor-weekly-20261118/` through December 2. The prior
+rollback image and its evidence are retained through November 25.
