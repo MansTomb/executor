@@ -5,6 +5,8 @@ import { McpRequestContext } from "effect/ai/McpSchema";
 const isArray = (value: Schema.Json | undefined): value is ReadonlyArray<Schema.Json> =>
   Array.isArray(value);
 
+const isJson = Schema.is(Schema.Json);
+
 export const compactResult = (value: Schema.Json): Schema.Json => {
   if (isArray(value)) return value.map(compactResult);
   if (value === null || typeof value !== "object") return value;
@@ -51,17 +53,21 @@ export const compactToolkit = <Tools extends Record<string, Tool.Any>>(
               Effect.gen(function* () {
                 const request = yield* McpRequestContext;
                 const result = yield* options.handle(payload);
-                if (!("structuredContent" in result) || result.structuredContent === undefined)
+                if (!("structuredContent" in result) || !isJson(result.structuredContent))
                   return result;
                 const value = compactResult(result.structuredContent);
+                const encoded = JSON.stringify(result.structuredContent);
+                const distinct = result.content.filter(
+                  (block) => block.type !== "text" || block.text !== encoded,
+                );
                 if (request.protocolVersion < "2025-06-18") {
                   const { structuredContent: _structured, ...rest } = result;
                   return {
                     ...rest,
-                    content: [{ type: "text" as const, text: JSON.stringify(value) }],
+                    content: [...distinct, { type: "text" as const, text: JSON.stringify(value) }],
                   };
                 }
-                return { ...result, content: [], structuredContent: value };
+                return { ...result, content: distinct, structuredContent: value };
               }),
           }),
       })),

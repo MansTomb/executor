@@ -1,6 +1,7 @@
 /** Cloud's app runtime: the shared runner in the AppData Worker, with R2 and the Cache API as build store. */
 import { traceHeaders } from "@executor-js/telemetry";
 import {
+  BlobStoreError,
   BuildId,
   RuntimeBuildFailed,
   BuildMemoryExceeded,
@@ -15,6 +16,7 @@ import {
   assembleWorkerBundle,
   declarationFailed,
   remoteAppRunner,
+  RunnerUnanswered,
   runsInFacet,
 } from "@executor-js/sdk/workerd";
 import { HostRequirementsError, DeclaredRequirements, HostResponse } from "apps/contracts";
@@ -163,12 +165,18 @@ export const cloudRuntime = Effect.fn(function* (
                 duration: compilerDeadline,
                 orElse: () => compilerDidNotAnswer,
               }),
+              // The compiler answers every build it judged, failed ones included; a call that
+              // failed without an answer is the host's failure, not the source's.
               Effect.catchTag("RpcCallError", (error) => {
                 const cause = error.cause;
                 return Effect.fail(
                   cause instanceof Error && /^Worker exceeded memory limit\.?$/.test(cause.message)
                     ? new BuildMemoryExceeded()
-                    : failed("compile", cause instanceof Error ? cause : error),
+                    : new RuntimeBuildFailed({
+                        stage: "compile",
+                        message: describeBuildCause(cause instanceof Error ? cause : error),
+                        unanswered: true,
+                      }),
                 );
               }),
               // Builds share a compiler isolate, so another build can exhaust its memory. The
@@ -198,8 +206,17 @@ export const cloudRuntime = Effect.fn(function* (
                         Effect.flatMap(Effect.fail),
                       ),
                 ),
+                // The runner answers every declaration it ran, the app's own failure included; a call
+                // that failed without an answer is the host's failure, not the source's. Its message
+                // is the same either way.
                 Effect.mapError((cause) =>
-                  declarationFailed(cause, { mainModule: bundle.mainModule, sourceMap, files }),
+                  cause instanceof RunnerUnanswered
+                    ? declarationFailed(
+                        cause.failure,
+                        { mainModule: bundle.mainModule, sourceMap, files },
+                        true,
+                      )
+                    : declarationFailed(cause, { mainModule: bundle.mainModule, sourceMap, files }),
                 ),
                 Effect.withSpan("runtime.cloud.requirements"),
               );
@@ -219,13 +236,15 @@ export const cloudRuntime = Effect.fn(function* (
           }).pipe(
             Effect.tapError((error) =>
               Effect.annotateCurrentSpan({
-                "build.stage": Schema.is(BuildMemoryExceeded)(error)
-                  ? "compile"
-                  : Schema.is(RuntimeProtocolUnsupported)(error)
-                    ? "protocol"
-                    : Schema.is(RuntimeAppsDependencyMissing)(error)
-                      ? "dependencies"
-                      : error.stage,
+                "build.stage": Schema.is(BlobStoreError)(error)
+                  ? "retain"
+                  : Schema.is(BuildMemoryExceeded)(error)
+                    ? "compile"
+                    : Schema.is(RuntimeProtocolUnsupported)(error)
+                      ? "protocol"
+                      : Schema.is(RuntimeAppsDependencyMissing)(error)
+                        ? "dependencies"
+                        : error.stage,
                 // The message quotes the deployer's source and its compiler errors, which only the
                 // deployer receives; the span records which failure it was.
                 "build.error": error._tag,

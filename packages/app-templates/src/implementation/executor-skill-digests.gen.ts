@@ -3,19 +3,19 @@
 /** SHA-256 of each file the Executor app publishes as a skill, keyed by `<skill>/<file>`. */
 export const executorSkillDigests: Readonly<Record<string, string>> = {
   "app-authoring/SKILL.md": "09694ffe3aa62cbaec0ea9fead118392107440267dd3b6f4676595e45e1eba6e",
-  "app-authoring/accounts.md": "a0ac083c813faa53739f3ea1af54dbb7b8467f51237dc167b46f0b829ad539ab",
-  "app-authoring/deploy.md": "2df76fb22f6b0b04032c28c3b589199ca1aea91fd36548944ce797d32f8154af",
-  "app-authoring/events.md": "8f7465e35c6c94b06978b89680181df60c741225de3ba8158f22f76ee7e91a5a",
-  "app-authoring/integrations.md": "8cebbe564eb0ed589be0894ccd3765941f3d80f0aea2db434fd9c99ce21135da",
+  "app-authoring/accounts.md": "3d29ca0463e894356626561df11da1ddccd328b04ac4ee65603e1327dfa15f2a",
+  "app-authoring/deploy.md": "11d69a371903f8ba051ee6b844a890604c5d90c12a69340b4b5feb62d2c2e3f4",
+  "app-authoring/events.md": "421c322f147a6da7a0bdc5513367e25b96667cf34f74b71918c84fdbe91727d1",
+  "app-authoring/integrations.md": "1788ddee892c69a9d895a2d8c7bec63f1d41963ed5b00ed3e6f0b5c4a671d867",
   "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
   "app-authoring/storage.md": "d2c2288c8a6dafa0a88f09e7e91409d9afc08158205ea6d25064d0dee67a33df",
-  "app-authoring/tools.md": "460eed5aaf4f84071945f891b955765a39d5372773cb6fff4f4e5d0d99e68a14",
+  "app-authoring/tools.md": "4989b66449f047bcd90acb4164d3969eee50371c54e0d3d78cf62535d650f597",
   "app-authoring/ui.md": "2b6e53b38d05f11a8eef9c4f06f96f3a447f92e359d9e31d143670b51ea6a7b1",
   "app-authoring/upgrades/0.0.1-beta.38.md": "0e0e38e0334fbece5bdb8264a32be4f36cef9c51705e8f6b749dc0d3b86dcdb5",
   "app-authoring/upgrades/0.0.1-beta.90.md": "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
   "app-authoring/webhooks.md": "8b6e4fa3fbc1641bfa741bc449d8ff1b1db7c7923c2ddec0a134be7a2f7de5d8",
   "app-authoring/workflows.md": "96f6e59d62314916d8a06f7063e5966ba506340cfff82c2648166006d0058669",
-  "code-mode/SKILL.md": "ece064f148b6094dfe93398aa68b1e11f655f72b88a032e75a22b524276de582",
-  "executor/SKILL.md": "354620fddf4468bf1ca9d13801d7622b960d808688f0fffb3af1978b8a121d85",
+  "code-mode/SKILL.md": "5056417080cde9aa15f8325c983152a719b27bc1cf39007c8fc4c23b2865685c",
+  "executor/SKILL.md": "fdae82e3f457384122ec3734f0f7f509cc5d6060539d1ab2593e3fb7ab82bd4e",
   "executor/feedback.md": "11397bd260917e5a21e92897a19368d0426bf5944a7c081adc2c061d1ea797cd"
 };

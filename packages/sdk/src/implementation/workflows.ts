@@ -1,6 +1,8 @@
 import { CurrentActor } from "../contracts/executor.ts";
 /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
-import { Cause, Clock, Effect, Exit, Redacted, Result, Schema, type Crypto } from "effect";
+import { Cause, Clock, Effect, Exit, Redacted, Result, Schema } from "effect";
+import { Digest } from "effect/crypto";
+import type { HostCrypto } from "./host-crypto.ts";
 import { Hex } from "effect/encoding";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import {
@@ -141,7 +143,7 @@ export const makeWorkflowRuns = (
   runtime: Runtime,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   declarations: Declarations,
   backend?: WorkflowRuntime,
 ) => {
@@ -295,8 +297,8 @@ export const makeWorkflowRuns = (
                   replay: {
                     key: input.stepId,
                     fingerprint: Hex.encode(
-                      yield* crypto.digest(
-                        "SHA-256",
+                      yield* crypto.digest.digest(
+                        Digest.sha256,
                         new TextEncoder().encode(
                           stable({
                             version: current.version,
@@ -379,9 +381,23 @@ export const makeWorkflowRuns = (
         "execution",
       ).pipe(Effect.result);
       if (Result.isFailure(result)) {
-        if (result.failure.reason === "engine" && result.failure.retryable)
-          return yield* result.failure;
         const detail = workflowFailureDetail(result.failure);
+        if (result.failure.reason === "engine" && result.failure.retryable) {
+          // The engine retries steps, not the body, so this failure ends the run. One whose cause
+          // is known is recorded now, for its owner to read, while the engine reports the run
+          // running or waiting. A paused, terminated or other run is left to the engine, and an
+          // unreadable status to the next status read, as before.
+          if (detail !== undefined && backend !== undefined) {
+            const state = yield* backend.status(run).pipe(Effect.result);
+            if (
+              Result.isSuccess(state) &&
+              (state.success.status === "running" || state.success.status === "waiting")
+            )
+              // A failed write leaves the run to the next status read, which records the reason.
+              yield* finish(run, { ok: false, error: "engine", detail }).pipe(Effect.ignore);
+          }
+          return yield* result.failure;
+        }
         yield* finish(run, {
           ok: false,
           error: result.failure.reason,
@@ -449,9 +465,7 @@ export const makeWorkflowRuns = (
     Effect.gen(function* () {
       if (backend === undefined) return yield* unavailable();
       yield* storedApp(db, { app: input.app });
-      const id = WorkflowRunId.make(
-        `wfr_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-      );
+      const id = WorkflowRunId.make(`wfr_${yield* crypto.random.uuidV4()}`);
       const key = input.key ?? id;
       const actor = inherited === undefined ? yield* CurrentActor : inherited.actor;
       // A key is the caller's within one scope: a run started without a caller never answers a

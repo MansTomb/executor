@@ -482,12 +482,19 @@ const cloudReport = (surface: Surface) =>
     );
     yield* Effect.addFinalizer(() => surface.cleanup(app).pipe(Effect.ignore));
     const passes = dataStepPasses(log, step);
-    // The traces of ticks that found the step waiting out its backoff.
+    // The traces of ticks that found the step waiting out its backoff. A data step runs once for
+    // the whole Cloud, so its ticks and dispatches are the Cloud's, not this scenario's.
     const waiting = telemetry
-      .search("data_step.advance", { "data_step.name": step, "data_step.status": "waiting" })
+      .searchWholeEnvironment("data_step.advance", {
+        "data_step.name": step,
+        "data_step.status": "waiting",
+      })
       .pipe(Effect.map((found) => new Set(found.data.map(({ traceId }) => traceId))));
     const dispatches = (attributes: Readonly<Record<string, string>>) =>
-      telemetry.search("job.dispatch", { "executor.job": "data-steps", ...attributes });
+      telemetry.searchWholeEnvironment("job.dispatch", {
+        "executor.job": "data-steps",
+        ...attributes,
+      });
     const tick = Effect.scoped(
       http
         .get(
@@ -576,7 +583,7 @@ const cloudReport = (surface: Surface) =>
       Effect.flatMap((found) => {
         const fresh = found.data.filter(({ traceId }) => !dispatched.has(traceId));
         return fresh.length === 0
-          ? Effect.fail(new Error("No dispatch with failed items has reached Motel"))
+          ? Effect.fail(new Error("No dispatch with failed items has reached the collector"))
           : Effect.succeed(fresh);
       }),
       Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),

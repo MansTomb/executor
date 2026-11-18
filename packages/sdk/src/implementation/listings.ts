@@ -1,5 +1,5 @@
 /** Evaluated tool listings, reused across requests through the declaration store. */
-import { Cause, Clock, Effect, Exit, Fiber, Option, Semaphore } from "effect";
+import { Cause, Clock, Effect, Exit, Fiber, Option, Result, Schema, Semaphore } from "effect";
 import {
   defaultToolListingPolicy,
   durableHeadStartMillis,
@@ -9,6 +9,7 @@ import {
   type ToolListingPolicy,
 } from "../contracts/declarations.ts";
 import {
+  refusedHostApi,
   type Tool,
   ToolListingTimedOut,
   ToolSearchListing,
@@ -19,12 +20,13 @@ import {
   type ToolRouter,
 } from "../contracts/tools.ts";
 import type { AppAccounts } from "../contracts/apps.ts";
-import type { VersionId } from "../contracts/shared.ts";
+import { OAuthReconnectRequired } from "../contracts/oauth.ts";
+import type { OwnerId, VersionId } from "../contracts/shared.ts";
 import type { Declarations } from "./declarations.ts";
 import { makeHandoff } from "./handoff.ts";
 import { decodeListing, shareListing } from "./listing-json.ts";
 import type { makeOAuth } from "./oauth.ts";
-import { resolve, type InvocationSnapshot } from "./tools.ts";
+import { reconnectReported, resolve, type InvocationSnapshot } from "./tools.ts";
 import type { ToolSearch } from "./tool-search.ts";
 
 /** Every tool of one app for one invocation state, sorted by name. */
@@ -69,6 +71,16 @@ const liveRetentionMillis = 30_000;
  * the tools they select live. Each is kept under its own declaration key.
  */
 type ListingKind = "tools.list" | "tools.index";
+/**
+ * What `searchable` reads for one state before it decides whether kept rows can be served, read
+ * ahead together with other states' (see `searchablePrefetch`): the evaluation running when its
+ * rows were read, the rows, and the outcome of the access check that precedes serving them.
+ */
+export interface SearchableAhead {
+  readonly running: PendingLoad | undefined;
+  readonly kept: Effect.Success<ReturnType<ToolSearch["listing"]>> | undefined;
+  readonly access: Result.Result<void, Effect.Error<ReturnType<Declarations["authorize"]>>>;
+}
 
 /** How an in-process caller reads a listing. */
 interface ListingRead extends ToolListOptions {
@@ -309,6 +321,11 @@ export const makeListings = (options: {
             outcome.at - load.started < policy.slowFailureMillis
           )
             return;
+          // Executor refused the app a host API document of another revision. That says what the
+          // host served at that moment, not how the app lists: the caller is told to retry in a
+          // few seconds, and the retry must read the document again rather than this refusal.
+          if (outcome.error._tag === "AppEvaluationFailed" && refusedHostApi(outcome.error.failure))
+            return;
           const current = yield* cache.get(id);
           // A live read is never served a listing past its retention, so only one it may still be
           // served hides the failure from it.
@@ -379,6 +396,7 @@ export const makeListings = (options: {
               Effect.map(
                 (at): Outcome => new Evaluated(shareListing(listing), at, at - load.started),
               ),
+              Effect.withSpan("sdk.tools.listing.share"),
             ),
           ),
           Effect.catch((error) =>
@@ -706,7 +724,41 @@ export const makeListings = (options: {
       );
       if (!(yield* background(work))) cache.renewed();
     });
+  /**
+   * The reads `searchable` makes for each state before it decides whether kept rows can be served,
+   * for many states of one owner at once, in order: each state's running evaluation is read and
+   * its app's changes followed, as `searchable` does first, then every state's rows in one
+   * statement beside the access checks of all of them (`authorizeAll`). Undefined for every state
+   * when no listing may be served kept, as `searchable` then reads nothing either. A failure of
+   * either read fails the whole call; nothing is decided from it.
+   */
+  const searchablePrefetch = (owner: OwnerId, states: ReadonlyArray<InvocationSnapshot>) =>
+    Effect.gen(function* () {
+      if (policy.maxStaleMillis <= 0 || states.length === 0)
+        return states.map((): SearchableAhead | undefined => undefined);
+      const reads = yield* Effect.forEach(states, (state) =>
+        Effect.map(options.declarations.key("tools.list", state), (id) => ({
+          state,
+          listing: ToolSearchListing.make(id),
+          running: cache.pending(id),
+        })),
+      );
+      yield* Effect.forEach(
+        new Set(states.map((state) => state.app.id)),
+        (app) => options.declarations.followChanges(app),
+        { concurrency: "unbounded", discard: true },
+      );
+      const [kept, access] = yield* Effect.all(
+        [search.listings(reads), options.declarations.authorizeAll(owner, states)],
+        { concurrency: "unbounded" },
+      );
+      return reads.map(({ running }, index): SearchableAhead | undefined => {
+        const outcome = access[index];
+        return outcome === undefined ? undefined : { running, kept: kept[index], access: outcome };
+      });
+    }).pipe(Effect.withSpan("sdk.tools.searchable.prefetch"));
   return {
+    searchablePrefetch,
     /** The host API revision this version's invocations are bound to; listings are keyed by it. */
     hostApi: options.declarations.hostApi,
     /**
@@ -810,6 +862,8 @@ export const makeListings = (options: {
       evaluate: Evaluate,
       read: ListingRead = {},
       kind: ListingKind = "tools.list",
+      /** These reads made ahead for the state by `searchablePrefetch`, in place of its own. */
+      ahead?: SearchableAhead,
     ) =>
       Effect.gen(function* () {
         const id = yield* options.declarations.key(kind, state);
@@ -829,20 +883,36 @@ export const makeListings = (options: {
         }
         const now = yield* Clock.currentTimeMillis;
         // Read before the rows: an evaluation that ends while they are read wrote them first.
-        const running = cache.pending(id);
+        const running = ahead === undefined ? cache.pending(id) : ahead.running;
         // Rows from before the app's cached data last changed are not served; see `followChanges`.
-        yield* options.declarations.followChanges(state.app.id);
+        if (ahead === undefined) yield* options.declarations.followChanges(state.app.id);
         // The checks kept rows are served after run beside their read; only kept rows wait on them.
         const [kept, access] =
           policy.maxStaleMillis <= 0
             ? ([undefined, undefined] as const)
-            : yield* Effect.all(
-                [
-                  search.listing(state, listing),
-                  Effect.result(options.declarations.authorize(state)),
-                ],
-                { concurrency: "unbounded" },
-              );
+            : ahead !== undefined
+              ? ([ahead.kept, ahead.access] as const)
+              : yield* Effect.all(
+                  [
+                    search.listing(state, listing),
+                    Effect.result(options.declarations.authorize(state)),
+                  ],
+                  { concurrency: "unbounded" },
+                );
+        yield* Effect.annotateCurrentSpan("executor.search.read_ahead", ahead !== undefined);
+        // The access check fails for an account that must reconnect exactly when resolving it
+        // would (see `usableAll`): neither kept rows nor an evaluation could be served, so fail
+        // now rather than evaluate the app only to fail the same way, naming the reconnect as
+        // resolving would. Only a read ahead decides this: its check rechecks the actor's app
+        // access before any grant, as resolving does, while the live check runs both together and
+        // could report a reconnect to an actor who lost the app.
+        if (
+          ahead !== undefined &&
+          access !== undefined &&
+          Result.isFailure(access) &&
+          Schema.is(OAuthReconnectRequired)(access.failure)
+        )
+          return yield* Effect.fail(reconnectReported(state)(access.failure));
         // Rows missing, stale or removed are filled from an evaluation through the shared gate,
         // which keeps no decoded listing: rows are what later searches read. Readers of the same
         // listing share one evaluation, which the load bound stops like any other once nobody

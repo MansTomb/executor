@@ -29,6 +29,8 @@ export {
   type AppRuntime,
   type ResolvedAppRuntime,
 } from "./implementation/runtime.ts";
+/** Host-only: a retained version's source read straight from the given store, past any cache. */
+export { readVersionSource } from "./implementation/version-source.ts";
 export { executorDatabase } from "./implementation/storage-migrations.ts";
 export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
 export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
@@ -57,6 +59,15 @@ export {
   type WorkflowDriver,
 } from "./contracts/workflow-runtime.ts";
 export { decodeWorkflowFailure, workflowFailureMessage } from "./contracts/workflow-errors.ts";
+export { nativeEngineFailure } from "./implementation/native-engine-failure.ts";
+export {
+  EngineFaults,
+  engineFaultError,
+  engineFaultFor,
+  engineLateFor,
+  type EngineFaultList,
+  type EngineFault,
+} from "./contracts/engine-faults.ts";
 
 export { AppRepositoryRecovery } from "./implementation/initial-source.ts";
 export { asciiJson } from "./implementation/ascii-json.ts";

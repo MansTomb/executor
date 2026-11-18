@@ -12,7 +12,6 @@ storage, UI, accounts and background work. Agents reach every app through the
 MCP tools `skills`, `search`, `describe`, `call` and `execute`, with each app's
 slug as its namespace. Credentials go only through Executor's secure connection
 links, never through chat or source code. Some calls pause for user approval.
-
 This is the Executor app's `executor` skill. Read its other skills with
 `skills({app: "executor", name: "code-mode"})`; `skills({})` lists them all.
 
@@ -27,9 +26,9 @@ For a few independent calls, use `call({ calls: { path, input } })`; an array
 of calls runs concurrently. Each result has `ok` and its `value` or `error`.
 
 Write a JavaScript program for `execute` when one call's result feeds another,
-or a large result should be filtered before it reaches you. Inside it, the same
-paths are async functions, and `tools.search` and `tools.search.describe` work
-as above. Return only the data you need. For depth, read the `code-mode` skill.
+or you need to filter a large result. The same paths are async functions, and
+`tools.search` and `tools.search.describe` work as above. Return only the data
+you need. Read the `code-mode` skill for images, audio and files tools return.
 When `call` or `execute` pauses for approval or input, show the request to the
 user and resume it; never repeat the call or run the program again.
 

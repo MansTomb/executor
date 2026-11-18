@@ -671,3 +671,21 @@ rollout report are retained under
 Deep review found no self-host merge issue. Its Cloud-only user-deletion finding
 can unlink app accounts before an active workflow refuses account deletion;
 that endpoint is absent from self-host and remains outside this rollout.
+
+## Upstream integration on 2026-11-18
+
+Upstream `v2` at `48162199b` adds 313 commits since `dff3b77ca`. Effect moves
+to 4.1.4 and workerd to 1.20261117.1. Upstream replaces the bundled Motel
+collector with a Rust process, updates the native host's proxy and stall
+handling, adds MCP revisions and a hosted tool call log, and converts shared
+accounts to personal ownership. Storage 4.0.17 adds event subscription
+selections. The fork's shipped 4.0.2 analytics migration is unchanged.
+
+All fork policies stay in place. The merge keeps live summary-first MCP
+discovery, callable error attribution and safe timeout guidance alongside the
+new call log. Modern MCP clients receive tool media in its own content blocks
+plus structured JSON with matching content indices. Ordinary JSON results keep
+the compact delivery contract. Legacy clients still receive one JSON text block.
+The fork's output budget, OAuth refresh rejection logging, worker capacity, GC
+flags and HTTP drain remain in force. The focused gate covers media delivery,
+call log references and shared account migration.

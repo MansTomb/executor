@@ -1,4 +1,4 @@
-import { Clock, Effect, Schema } from "effect";
+import { Array as Arr, Clock, Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import { AnalyticsRecord } from "@executor-js/telemetry";
 import { AnalyticsInputs, AnalyticsSummary } from "../contracts/analytics.ts";
@@ -40,7 +40,7 @@ export const makeAnalyticsStorage = (sql: SqlClient.SqlClient) => {
             status_code: "statusCode" in record.value ? (record.value.statusCode ?? null) : null,
             duration_ms: "durationMs" in record.value ? (record.value.durationMs ?? null) : null,
           }));
-        if (rows.length > 0)
+        if (Arr.isArrayNonEmpty(rows))
           yield* sql`INSERT INTO executor_analytics_events ${sql.insert(rows)} ON CONFLICT (id) DO NOTHING`;
         yield* prune;
       }).pipe(

@@ -130,6 +130,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   const tokenContentTypes: Array<string | undefined> = [];
   /** The `scope` parameter of the latest authorization request. */
   let authorizationScope: string | null | undefined;
+  /** Whether the latest authorization request carried a PKCE challenge. */
+  let authorizationChallenged: boolean | undefined;
   /**
    * The RFC 8707 `resource` parameter of the latest authorization request, code exchange and
    * refresh; null when it named none.
@@ -172,18 +174,28 @@ export const oauthSetupIssuer = Effect.gen(function* () {
    * or Mailchimp's `scope: null`. It receives the standard members and whether this is a refresh.
    */
   let tokenShape: TokenShape | undefined;
-  let authorizeError: string | undefined;
+  /** An RFC 6749 error code the callback returns instead of a code, and its `error_description`. */
+  let authorizeError: string | { readonly error: string; readonly description: string } | undefined;
   /** The ID-token subject issued on refresh. */
   let refreshSubject = "synthetic-subject";
   /** Lifetime of renewed tokens; unset, they last `expiresIn` like the first ones. */
   let refreshedExpiresIn: number | undefined;
-  /** An RFC 7009 endpoint that records calls, or one that always fails. */
-  let revocation: "none" | "recorded" | "failing" = "none";
+  /**
+   * An RFC 7009 endpoint that records calls, one that always fails, or one that records each call
+   * and never answers it until the issuer closes.
+   */
+  let revocation: "none" | "recorded" | "failing" | "stalled" = "none";
   const revocations: Array<{
     readonly token: "refresh" | "access" | "unknown";
     readonly hint: string | null;
     readonly clientAuthenticated: boolean;
   }> = [];
+  /**
+   * Revocation requests that reached the service, counted by the arrival gate below as each one's
+   * headers arrive, and the waits for a number of them.
+   */
+  let revocationArrivals = 0;
+  const arrivalWaits = new Set<() => void>();
   const keyPair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   let rsaKey: KeyObject | undefined;
   /** Refresh tokens issued for each client; unless rotation is configured, refreshes keep them. */
@@ -240,7 +252,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     {
       clientId: string;
       redirect: string;
-      challenge: string;
+      challenge: string | null;
       nonce: string | null;
       scope: string | null;
     }
@@ -289,6 +301,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
    * section 2.3.1. "literal" compares them as sent, as Google and PlanetScale (Doorkeeper) do.
    */
   let basicCredentials: "form-decoded" | "literal" = "form-decoded";
+  /**
+   * "required" refuses an authorization request without an S256 challenge. "refused" models
+   * LinkedIn's web flow: a token request that carries `code_verifier` fails client authentication
+   * with 401 `invalid_client`, even with the right secret and challenge.
+   */
+  let pkce: "required" | "refused" = "required";
+  /** Token requests, as received, whose client authentication was refused. */
+  let refusedClientAuthentications = 0;
   /** Credentials issued by the next registrations; unset issues numbered synthetic clients. */
   let registeredClient: { readonly clientId: string; readonly clientSecret: string } | undefined;
   /** RFC 6749 section 2.3.1 client authentication presented at the token or revocation endpoint. */
@@ -397,13 +417,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (
           clientId === null ||
           redirect === null ||
-          challenge === null ||
-          params.get("code_challenge_method") !== "S256" ||
+          (pkce === "required" &&
+            (challenge === null || params.get("code_challenge_method") !== "S256")) ||
           !clients.get(clientId)?.redirects.includes(redirect)
         )
           return HttpServerResponse.empty({ status: 400 });
         const code = randomUUID();
         nonceRequested = params.get("nonce") !== null;
+        authorizationChallenged = challenge !== null;
         authorizationScope = params.get("scope");
         authorizationResource = params.get("resource");
         const requested = authorizationScope?.split(" ") ?? [];
@@ -422,7 +443,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             scope: params.get("scope"),
           });
           callback.searchParams.set("code", code);
-        } else callback.searchParams.set("error", refusal);
+        } else if (typeof refusal === "string") callback.searchParams.set("error", refusal);
+        else {
+          callback.searchParams.set("error", refusal.error);
+          callback.searchParams.set("error_description", refusal.description);
+        }
         callback.searchParams.set("state", params.get("state") ?? "");
         if (callbackIssuer !== undefined) callback.searchParams.set("iss", callbackIssuer);
         // The managed host advertises a separate callback relay; model its browser return.
@@ -528,10 +553,19 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             redirect: issued !== undefined && input.get("redirect_uri") === issued.redirect,
             pkce:
               issued !== undefined &&
-              verifier !== null &&
-              createHash("sha256").update(verifier).digest("base64url") === issued.challenge,
+              (pkce === "refused"
+                ? verifier === null && issued.challenge === null
+                : verifier !== null &&
+                  createHash("sha256").update(verifier).digest("base64url") === issued.challenge),
             ...authChecks,
           };
+        if (!refreshing && pkce === "refused" && verifier !== null) {
+          refusedClientAuthentications++;
+          return yield* HttpServerResponse.json(
+            { error: "invalid_client", error_description: "Client authentication failed" },
+            { status: 401 },
+          );
+        }
         if (
           clientId === undefined ||
           client === undefined ||
@@ -842,6 +876,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             client.secret !== null &&
             presented.secret === client.secret,
         });
+        if (revocation === "stalled") {
+          const released = yield* Deferred.make<void>();
+          releases.push(released);
+          yield* Deferred.await(released);
+        }
         return revocation === "failing"
           ? HttpServerResponse.empty({ status: 503 })
           : HttpServerResponse.empty({ status: 200 });
@@ -944,6 +983,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     ),
   );
   const listener = yield* Effect.sync(() => createServer());
+  // The arrival gate counts a revocation request when Node reads its headers, before the router's
+  // handler runs. A caller that gives up on the request closes it, which interrupts that handler,
+  // so a count kept there would depend on how soon this process ran it; this one does not.
+  listener.prependListener("request", (request) => {
+    if (request.method !== "POST" || request.url?.split("?")[0] !== "/revoke") return;
+    revocationArrivals++;
+    for (const wait of arrivalWaits) wait();
+  });
   const services = yield* Layer.build(
     HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
       Layer.provideMerge(NodeHttpServer.layer(() => listener, { host: "127.0.0.1", port })),
@@ -1024,16 +1071,21 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly tokenError?: typeof tokenError | null;
       /** Reshape token responses like a real service; null restores the standard shape. */
       readonly tokenShape?: TokenShape | null;
-      /** Return this RFC 6749 error code to the callback instead of a code; null restores codes. */
-      readonly authorizeError?: string | null;
+      /**
+       * Return this RFC 6749 error code, alone or with an `error_description`, to the callback
+       * instead of a code; null restores codes.
+       */
+      readonly authorizeError?: typeof authorizeError | null;
       /** The ID-token subject issued on refresh. */
       readonly refreshSubject?: string;
       /** Lifetime of renewed tokens; null makes them last `expiresIn`. */
       readonly refreshedExpiresIn?: number | null;
-      /** Advertise an RFC 7009 endpoint that records calls, or one that always fails. */
+      /** Advertise an RFC 7009 endpoint that records calls, always fails, or never answers. */
       readonly revocation?: typeof revocation;
       /** How the token and revocation endpoints read HTTP Basic client credentials. */
       readonly basicCredentials?: typeof basicCredentials;
+      /** Whether sign-in requires PKCE or, like LinkedIn's web flow, refuses it. */
+      readonly pkce?: typeof pkce;
       /** Credentials issued by the next registrations; null restores numbered synthetic clients. */
       readonly registeredClient?: typeof registeredClient | null;
       /** The token request encoding the service accepts; it refuses the other one. */
@@ -1122,6 +1174,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             input.refreshedExpiresIn === null ? undefined : input.refreshedExpiresIn;
         if (input.revocation !== undefined) revocation = input.revocation;
         if (input.basicCredentials !== undefined) basicCredentials = input.basicCredentials;
+        if (input.pkce !== undefined) pkce = input.pkce;
         if (input.registeredClient !== undefined)
           registeredClient = input.registeredClient === null ? undefined : input.registeredClient;
       }),
@@ -1159,6 +1212,18 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     expireAccessTokens: Effect.sync(() => {
       for (const token of issuedAccessTokens) expiredAccessTokens.add(token);
     }),
+    /** Wait until `count` revocation requests have reached the service (see the arrival gate). */
+    revocationArrivals: (count: number) =>
+      Effect.callback<void>((resume) => {
+        const wait = () => {
+          if (revocationArrivals < count) return;
+          arrivalWaits.delete(wait);
+          resume(Effect.void);
+        };
+        arrivalWaits.add(wait);
+        wait();
+        return Effect.sync(() => arrivalWaits.delete(wait));
+      }),
     /** Answer every held request; one held before processing stays unprocessed. */
     release: Effect.suspend(() => {
       const pending = releases;
@@ -1181,6 +1246,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       tokenChecks,
       tokenContentTypes: [...tokenContentTypes],
       authorizationScope,
+      authorizationChallenged,
       authorizationResource,
       exchangeResource,
       refreshResource,
@@ -1188,8 +1254,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       refreshes,
       refreshChecks,
       lastExchangeAuth,
+      refusedClientAuthentications,
       nonceRequested,
       revocations: [...revocations],
+      revocationArrivals,
       revokedRefreshTokens: [...revokedRefreshTokens],
       resourceRequests: { ...resourceRequests },
       resourceAuthorizations: [...resourceAuthorizations],
