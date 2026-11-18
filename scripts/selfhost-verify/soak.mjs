@@ -134,7 +134,9 @@ const mcp = ({ organization, key }) => {
       headers: headers({
         "content-type": "application/json",
         accept: "application/json, text/event-stream",
-        ...(sessionId === undefined ? {} : { "mcp-session-id": sessionId }),
+        ...(sessionId === undefined
+          ? {}
+          : { "mcp-session-id": sessionId, "mcp-protocol-version": protocolVersion }),
       }),
       body: JSON.stringify({ jsonrpc: "2.0", id: ++sequence, method, params }),
       signal: AbortSignal.timeout(60_000),
@@ -171,7 +173,7 @@ const mcp = ({ organization, key }) => {
     if (sessionId === undefined) return;
     const response = await fetch(`${base}/mcp`, {
       method: "DELETE",
-      headers: headers({ "mcp-session-id": sessionId }),
+      headers: headers({ "mcp-session-id": sessionId, "mcp-protocol-version": protocolVersion }),
       signal: AbortSignal.timeout(30_000),
     });
     await response.text();
@@ -181,7 +183,10 @@ const mcp = ({ organization, key }) => {
   };
   const execute = async (code) => {
     const { result } = await call("tools/call", { name: "execute", arguments: { code } });
-    assert.equal(result.isError, false, JSON.stringify(result).slice(0, 400));
+    assert(
+      result.isError === undefined || result.isError === false,
+      JSON.stringify(result).slice(0, 400),
+    );
     const outcome =
       result.structuredContent ??
       JSON.parse(result.content.find((item) => item.type === "text").text);
