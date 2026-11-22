@@ -14,6 +14,15 @@ The maintained branch is `selfhost`. Local patches:
   structured payload. Distinct text, media, errors and metadata remain, and
   execute programs still receive the original app results. Direct calls remove
   duplicates before applying the existing output budget.
+- Offline MCP grants outlive their approving browser session. Cherry-picked from
+  upstream `d3bbe6820` before the weekly merge: a refresh named the expired browser
+  session on the new access token, so every `offline_access` grant answered 401 about
+  seven days after that session was last used (Claude Code logged "Server returned 401
+  after re-authentication" from 2026-11-20). The oauth-provider patch combines it with
+  the fork's refresh rejection observer; `patches/better-auth-refresh-expired-session.md`
+  explains it. `localMcpOfflineGrantLifetime` and `localMcpExpiredSessionGrant` are in
+  the focused local scenarios. Drop this note when the weekly merge brings the same
+  commit.
 - Search defaults to five matches, input previews keep 600 characters, and
   pages retain the existing quarter-output byte budget, 16,384 bytes by default. Describe returns at most 2,000 Unicode
   characters across descriptions and signatures. Follow its `next` as the

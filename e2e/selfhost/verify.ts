@@ -93,7 +93,13 @@ const focused = [
   },
   {
     target: "local",
-    scenarios: [scenarios.analytics, scenarios.mcpSearchConcise, scenarios.oauthRefreshRedirectUri],
+    scenarios: [
+      scenarios.analytics,
+      scenarios.mcpSearchConcise,
+      scenarios.oauthRefreshRedirectUri,
+      scenarios.localMcpOfflineGrantLifetime,
+      scenarios.localMcpExpiredSessionGrant,
+    ],
   },
 ] as const;
 
