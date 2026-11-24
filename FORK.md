@@ -734,3 +734,30 @@ Cgroup memory ranged from 646.7 to
 The backups, rollout evidence and rollback command are retained in
 `~/Work/Research/executor-weekly-20261118/` through December 2. The prior
 rollback image and its evidence are retained through November 25.
+
+## Production rollout on 2026-11-24
+
+Dokploy deployment `jUOLziSoYkp0blverpLqz` runs source `722784b87` at immutable image
+`sha256:80327c3e8398484e815c0e4854146d396ed201db79403c86ff35e4ea8f9d8787`. The change returns compact
+results as JSON text as well to `antigravity-client`, which reads only content blocks. Storage
+stays 4.0.17, so image-only rollback to the previous digest
+`sha256:aa3f1fc3d1a2c15a883ed275dd4088fa473c76505b5a5f762bafbe265ed7a5aa` is valid.
+
+Format, lint, typecheck, 50 self-host and 3 local focused scenarios, native Go tests, the
+exact previous-image upgrade and volume restore, and the soak passed. The admitted
+16-second write drained in 20.396 seconds and completed once. The soak completed 60
+deployments, 200 sessions and 500 searches. Without the patch the direct-calls scenario
+fails with empty content for `antigravity-client`.
+
+The pre-deploy stopped-volume backup
+`rustfs:backups/compose-parse-online-port-xjtnok_executor/compose-parse-online-port-xjtnok_executor-v2-data-2026-11-24T17-23-46-570Z.tar`
+read back 1,013,422,080 bytes with SHA-256
+`f8d034d66b7551439f6e6651f7ffce36d03f81f49bd2b54e22e111b006fdbf7f`. Sixteen connected apps passed
+a read before and after the deploy and after the watch, and the ClickUp analytics window
+matched. The management app was not redeployed because its source did not change.
+
+The 15-minute watch passed all 61 samples over 900.104 seconds with no restarts,
+replacements or OOM events. Cgroup memory ranged from 1055.9 to 1233.6 MiB and ended at
+1080.2 MiB. Antigravity CLI on `main` and `server-1` receives Executor search results.
+Evidence and the rollback helper are in `~/Work/Research/executor-antigravity-20261124/`,
+retained through December 8.
