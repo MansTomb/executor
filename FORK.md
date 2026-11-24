@@ -770,3 +770,19 @@ replacements or OOM events. Cgroup memory ranged from 1055.9 to 1233.6 MiB and e
 1080.2 MiB. Antigravity CLI on `main` and `server-1` receives Executor search results.
 Evidence and the rollback helper are in `~/Work/Research/executor-antigravity-20261124/`,
 retained through December 8.
+
+## Production rollout on 2026-11-24 (offline grants)
+
+Dokploy deployment `2mDV8Dgw6vf3PRAvYff8c` runs source `970ac9098` at immutable image
+`sha256:ef53d092f594147a86058ef662b01dcab78730348db0a479d89c37055176a762`. It carries upstream `d3bbe6820`: offline MCP grants keep refreshing after
+the browser session that approved them expires. Storage stays 4.0.17, so image-only
+rollback to `sha256:80327c3e8398484e815c0e4854146d396ed201db79403c86ff35e4ea8f9d8787` is valid.
+
+The gate passed check, 50 self-host and 5 local focused scenarios (including
+`localMcpOfflineGrantLifetime` and `localMcpExpiredSessionGrant`), native Go tests, the
+exact previous-image upgrade and volume restore, and the soak. The pre-deploy
+stopped-volume backup `rustfs:backups/compose-parse-online-port-xjtnok_executor/compose-parse-online-port-xjtnok_executor-v2-data-2026-11-24T19-25-56-985Z.tar` read back 965,509,120 bytes with SHA-256
+`7e613b1cfb5ffc1a22b4b2be8eb9381260e7cf8f88f2b32103d8e50aea009351`. Sixteen connected apps passed a read before and after the deploy and
+after the watch. The 15-minute watch passed all 61 samples with no restarts,
+replacements or OOM events; memory ranged from 1007.0 to 1097.5 MiB.
+Evidence is in `~/Work/Research/executor-offline-grants-20261124/`, retained through December 8.
