@@ -871,3 +871,13 @@ stopped-volume backup `rustfs:backups/compose-parse-online-port-xjtnok_executor/
 after the watch. The 15-minute watch passed all 61 samples with no restarts,
 replacements or OOM events; memory ranged from 1007.0 to 1097.5 MiB.
 Evidence is in `~/Work/Research/executor-offline-grants-20261124/`, retained through December 8.
+
+## Production rollout on 2026-11-24 (fc9b068b7)
+
+Dokploy deployment `xuLxc5cqxra4usD9UNXPf` runs source `fc9b068b7` at immutable image `sha256:4dc9760389e4be4323ea47da62d3220acbb067b70b5a8779114faa09120db966`, released with `bun run selfhost:release` in the light lane. Storage is unchanged, so image-only rollback to `sha256:ef53d092f594147a86058ef662b01dcab78730348db0a479d89c37055176a762` is valid.
+
+The light lane gate passed check (34 s), upgrade (40 s, analytics retention not verified: the previous framework exposes no authored analytics).
+
+The pre-deploy stopped-volume backup `rustfs:backups/compose-parse-online-port-xjtnok_executor/compose-parse-online-port-xjtnok_executor-v2-data-2026-11-24T20-43-55-350Z.tar` read back 948,357,120 bytes with SHA-256 `a3ef9f3adf55592bdb00732e7ac8771e45fdcc56bce3b597c32dfddd5212713a`. All 17 connected apps passed a read or catalog check before and after the deploy and after the watch. The clickup analytics window matched before and after. The management app was not redeployed because its source did not change.
+
+The 15-minute watch passed 61 samples over 900.2 seconds with no restarts, replacements or OOM events; cgroup memory ranged from 988.1 to 1041.8 MiB and ended at 1001.5 MiB. Evidence is in `~/Work/Research/executor-release-20261124-fc9b068b7`, retained through 2026-12-08.
