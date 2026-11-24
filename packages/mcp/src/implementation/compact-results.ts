@@ -7,6 +7,8 @@ const isArray = (value: Schema.Json | undefined): value is ReadonlyArray<Schema.
 
 const isJson = Schema.is(Schema.Json);
 
+const contentOnlyClients: ReadonlySet<string> = new Set(["antigravity-client"]);
+
 export const compactResult = (value: Schema.Json): Schema.Json => {
   if (isArray(value)) return value.map(compactResult);
   if (value === null || typeof value !== "object") return value;
@@ -60,13 +62,13 @@ export const compactToolkit = <Tools extends Record<string, Tool.Any>>(
                 const distinct = result.content.filter(
                   (block) => block.type !== "text" || block.text !== encoded,
                 );
+                const text = { type: "text" as const, text: JSON.stringify(value) };
                 if (request.protocolVersion < "2025-06-18") {
                   const { structuredContent: _structured, ...rest } = result;
-                  return {
-                    ...rest,
-                    content: [...distinct, { type: "text" as const, text: JSON.stringify(value) }],
-                  };
+                  return { ...rest, content: [...distinct, text] };
                 }
+                if (contentOnlyClients.has(request.clientInfo?.name ?? ""))
+                  return { ...result, content: [...distinct, text], structuredContent: value };
                 return { ...result, content: distinct, structuredContent: value };
               }),
           }),

@@ -29,9 +29,11 @@ const make = Effect.gen(function* () {
         readonly origin?: string;
         /** Another MCP path than `/mcp`, such as one of Executor v1's URLs Cloud's edge serves. */
         readonly path?: string;
+        readonly clientName?: string;
       } = {},
     ) =>
       Effect.gen(function* () {
+        const clientInfo = { name: options.clientName ?? "executor-e2e", version: "1" };
         const requests: { method: string; protocol: string | null; status: number }[] = [];
         /** When each response's body ended, or the client stopped reading it, after its request. */
         const bodies: Array<{
@@ -44,7 +46,7 @@ const make = Effect.gen(function* () {
           Effect.sync(
             () =>
               new Client(
-                { name: "executor-e2e", version: "1" },
+                clientInfo,
                 options.mode === "native" ? { capabilities: { elicitation: { form: {} } } } : {},
               ),
           ),
@@ -161,7 +163,7 @@ const make = Effect.gen(function* () {
         const compatible: Omit<StreamableHTTPClientTransport, "sessionId"> = transport;
         yield* Effect.addFinalizer(() =>
           evidence.json(`mcp-${label}.json`, {
-            client: { name: "executor-e2e", version: "1" },
+            client: clientInfo,
             server: client.getServerVersion(),
             capabilities: client.getServerCapabilities(),
             requests,

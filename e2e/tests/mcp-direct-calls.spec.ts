@@ -234,6 +234,41 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
           value: { structuredContent: { data: "x".repeat(40000) } },
         });
 
+        const contentOnly = yield* mcp.connect(key.key, "direct-calls-content-only", {
+          organization,
+          clientName: "antigravity-client",
+        });
+        const contentOnlyCall = (label: string, name: string, args: Record<string, unknown>) =>
+          contentOnly.use(label, (client, signal) =>
+            client.callTool({ name, arguments: args }, undefined, { signal }),
+          );
+        const searched = yield* contentOnlyCall("Content-only search", "search", {
+          namespace: app.slug,
+          query: "echo",
+        });
+        expect(searched.content).toEqual([
+          { type: "text", text: JSON.stringify(searched.structuredContent) },
+        ]);
+        expect(
+          (yield* Schema.decodeUnknownEffect(SearchResult)(searched.structuredContent)).items[0],
+        ).toMatchObject({ path: echo });
+        const echoed = yield* contentOnlyCall("Content-only call", "call", {
+          calls: { path: echo, input: { text: "hi" } },
+        });
+        expect(echoed.content).toEqual([
+          { type: "text", text: JSON.stringify(echoed.structuredContent) },
+        ]);
+        expect(
+          (yield* Schema.decodeUnknownEffect(Completed)(echoed.structuredContent)).execution,
+        ).toMatchObject({ ok: true, value: { path: echo, ok: true, value: { text: "hi" } } });
+        const withMedia = yield* contentOnlyCall("Content-only media call", "call", {
+          calls: { path: duplicatePath, input: { size: 12000 } },
+        });
+        expect(withMedia.content).toEqual([
+          image,
+          { type: "text", text: JSON.stringify(withMedia.structuredContent) },
+        ]);
+
         // A batch keeps its order, and one call failing does not stop the others.
         const batch = yield* Schema.decodeUnknownEffect(Completed)(
           yield* tool("Call a batch", "call", {

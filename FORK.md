@@ -8,7 +8,9 @@ The maintained branch is `selfhost`. Local patches:
 
 - Compact MCP results on delivery. Revisions from 2025-06-18 return structured
   content with an empty content array. Older revisions retain one JSON text
-  result. Embedded MCP envelopes lose only text blocks that repeat their
+  result. Clients that read only content blocks, currently `antigravity-client`
+  (the Antigravity CLI), also receive that JSON text next to the structured
+  content; the direct-calls scenario covers search, call and media. Embedded MCP envelopes lose only text blocks that repeat their
   structured payload. Distinct text, media, errors and metadata remain, and
   execute programs still receive the original app results. Direct calls remove
   duplicates before applying the existing output budget.
