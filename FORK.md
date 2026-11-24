@@ -46,11 +46,9 @@ The maintained branch is `selfhost`. Local patches:
 
 - The default Executor management app is an immutable deployment inside Executor.
   Replacing the Dokploy image does not rebuild its saved bundle or update its
-  bundled framework; legacy deployments can retain obsolete behavior. After
-  each weekly server rollout, deploy the current `defaultExecutorAppSource`
-  separately, preserve its account links, and verify the new deployment's tools
-  and skills through a fresh MCP session. The production procedure is in
-  `~/Work/Agents/projects/executor/weekly-merge.md`.
+  bundled framework; legacy deployments can retain obsolete behavior. The release
+  command redeploys it from the current `defaultExecutorAppSource` whenever that
+  source differs from the active deployment (see Releasing).
 - `433ab7f6f`, `c77c0baec`: retain up to 16 idle app workers for five minutes.
   The October upstream merge ports this policy to `app-worker-residency.ts`;
   upstream capacity eviction is retained, with the fork limit and idle expiry.
@@ -345,29 +343,114 @@ the identical `4c9392fed` baseline. Fetch `upstream/v2` and merge it into `selfh
 Never rebase or re-export `selfhost` after a merge, and never force-push it. Fetch,
 merge anything new on `origin/selfhost`, and push as a fast-forward.
 
-The home Dokploy service uses raw Compose and has no Git push trigger. A server
-image deploy does not replace the saved management app. Treat the current
-`defaultExecutorAppSource` as a second deploy artifact on each weekly rollout.
-Back up `/app/data` before deploying the app, record its previous deployment,
-and verify its complete MCP catalog plus `executor` and `code-mode` skills
-afterward. Do not use a pre-deploy hosted migration as the release trigger: the
-old Cloud worker can complete its queued job before the replacement server is
-active. Follow the production steps in the weekly
-merge runbook for the exact Dokploy and app operations.
-
 Effect follows upstream only: take the `effect` version and APIs upstream ships, and
 do not pin a different build here. Keep every patch listed above. Drop one only when
 upstream provides the same behavior and the scenario that guards it passes on
 upstream's implementation. Resolve conflicts by keeping upstream's structure and
 reapplying the patch's policy, as the October merge did for `app-worker-residency.ts`.
 
-Use the Node version in the self-host Dockerfile and the Rust toolchain pinned in
-`packages/telemetry/collector/rust-toolchain.toml`. They run the E2E driver and
-build the bundled collector. After `bun install`, verify the merged tree with
-one command.
+Do not use a pre-deploy hosted migration as the release trigger: the old Cloud worker
+can complete its queued job before the replacement server is active. A merged and
+pushed `selfhost` is released with the command below.
 
-Run one release gate at a time on this host. The test containers use host networking,
-and concurrent gates can collide on workerd's internal ports.
+## Releasing
+
+Production is a Dokploy raw Compose service with no Git trigger that runs one pinned
+image digest, so the tested image is exactly the deployed one and rollback is a digest.
+Release a commit on `origin/selfhost` from `server-1` with Node 24.22 (host Node 26
+breaks the E2E driver):
+
+```sh
+cd ~/.cache/executor-release
+mise exec node@24.22.0 -- bun run selfhost:release [--commit <ref>] [--full] [--dry-run]
+```
+
+`--commit` defaults to `origin/selfhost`. `--dry-run` runs everything up to and
+including the gate and the image push, makes only read-only production calls, and
+accepts commits that are not on `origin/selfhost`. `--workers` overrides the E2E
+workers (4 in the light lane, 2 in the full lane).
+
+`~/.cache/executor-release` is the persistent release worktree of the `server-1`
+checkout. The command creates it when missing, refuses to touch it when it has
+uncommitted changes, checks out the candidate detached, runs `bun install
+--frozen-lockfile`, and then runs the candidate's own copy of the command. Its
+`.local/selfhost-release.lock` allows one release or watch at a time. Installation
+facts (the Dokploy service name, the organization, one read per connected app, the
+analytics app, the backup remote, the funnel and the availability record) are in
+`~/Work/Agents/projects/executor/release.json`; `--config` names another file.
+
+The command:
+
+1. Reads the production image digest from the Dokploy compose and the production
+   source commit from that image: the `org.opencontainers.image.revision` label, or
+   `EXECUTOR_BUILD_VERSION` for images built before the label. No digest is stored.
+2. Chooses the lane from the diff between that source and the candidate and prints
+   each path's classification. `e2e/selfhost/release-scenarios.ts` holds the path
+   rules, the smoke set and the full focused list; the first matching rule wins.
+   - The full lane runs `prepare`, `check`, the full focused list plus the change's
+     own scenarios, `go`, `upgrade` and `soak`. It applies to storage schema or
+     migration paths, a changed storage version, `bun.lock`, `patches/`, package
+     manifest changes other than `scripts`, the Dockerfile, the entrypoint, the
+     native host, the packaging scripts, workerd configuration, the collector, the
+     management app source or a management app that differs from its active
+     deployment, merge commits (upstream merges), a candidate that does not contain
+     the production source, any path no rule maps, and `--full`.
+   - Otherwise the light lane runs `check`, the scenarios mapped to the changed
+     paths, the scenarios of changed spec files and changed `e2e/test-plan.ts`
+     entries, the smoke set, and `upgrade` against the production digest. A diff of
+     only documentation, release tooling, package scripts and code outside the
+     self-host image tests nothing beyond `check` and `upgrade`.
+3. Builds the image from `git archive` of the candidate with the dedicated BuildKit
+   builder `executor-release` (docker-container driver, cache in the volume
+   `buildx_buildkit_executor-release0_state`), labels it with the source revision,
+   pushes `<repository>:selfhost-<date>-<sha9>` (`candidate-...` for a commit that is
+   not on `origin/selfhost`), and pulls the pushed digest into the daemon. The build
+   runs while the source steps of the gate run. Dokploy's nightly Docker cleanup
+   prunes the default builder's cache and unused images; it does not reach this
+   builder. The Dockerfile is unchanged: `ARG EXECUTOR_BUILD_VERSION` heads the
+   build stage and the sources are copied before `bun install`, so each new commit
+   rebuilds that stage (about two minutes) and reuses the collector, native and
+   system stages.
+4. Runs the image steps of the gate against the pushed digest.
+5. Unless `--dry-run`: requires a passing connected-app sweep and records the
+   analytics window, runs the enabled stopped-volume backup and verifies its readback
+   (size, SHA-256, database, `encryption.key`, `auth-secret.key`), switches only the
+   image through `compose.update` and `compose.deploy` with `freshVolumes: false`,
+   waits for health, and repeats the sweep and the analytics comparison. In the full
+   lane with a changed management app it backs up again, deploys the app from the
+   generated source with its existing ID, and checks the files, workspace, account
+   links, MCP catalog and both Executor skills.
+6. Prints "Released" with the digest, the backup and the rollback command, and starts
+   the 15-minute watch as the user unit `executor-release-watch-*`
+   (`journalctl --user -u <unit>`). The watch samples the container identity, Docker
+   health, restarts, OOM kills, `/` and cgroup memory every 15 seconds and repeats the
+   sweep and analytics comparison.
+
+A failure after the switch, including in the watch, rolls back by image only when the
+release changed no storage schema. When the schema changed the previous image refuses
+the database, so the command alerts and prints
+`release.ts rollback --evidence <dir> --restore`, which stops Executor, moves the
+volume contents aside, restores the pre-deploy archive and deploys the previous digest,
+discarding writes made after the backup. Every outcome, success included, is emitted
+to the funnel (`executor.release.passed` or `executor.release.failed`, urgent on
+failure). After a passing watch the command appends a "Production rollout on <date>"
+section to this file and pushes it as a fast-forward, and appends a section to the
+Agents availability record, committing only that file. Evidence, the state file and
+the local backup copy are in `~/Work/Research/executor-release-<date>-<sha9>/`,
+retained 14 days.
+
+`release.ts rehearse-watch --image <candidate> --previous <image>` runs the watch,
+the rollback decision and the funnel notification against a disposable
+`agent-test-executor-watch-*` container; `--schema-changed` rehearses the alert path
+and `--notify-scope background` keeps the notification from waking anyone.
+
+### The gate
+
+`bun run selfhost:verify` is the gate the release command runs in two parts. Run one
+gate at a time on this host: the test containers use host networking, and concurrent
+gates can collide on workerd's internal ports. Use the Node version above and the Rust
+toolchain pinned in `packages/telemetry/collector/rust-toolchain.toml`, which builds
+the bundled collector.
 
 ```sh
 bun run selfhost:verify --evidence <new directory> \
@@ -377,9 +460,10 @@ bun run selfhost:verify --evidence <new directory> \
 The command runs, in order: `e2e:prepare`, `check`, the focused scenarios, a
 candidate image build from the checkout (or `--image <reference>` to reuse one), the
 native Go tests in the Dockerfile's Go image, the persisted upgrade and drain, and
-the soak. `--steps prepare,check,...` selects a subset and `--workers` bounds the E2E
-workers. `--evidence` must not exist yet; logs, `summary.json` and the upgrade and
-soak reports are written there with private permissions.
+the soak. `--steps prepare,check,...` selects a subset, `--scenarios <key,...>`
+replaces the focused list, and `--workers` bounds the E2E workers. `--evidence` must
+not exist yet; logs, `summary.json` and the upgrade and soak reports are written there
+with private permissions.
 
 `summary.json` carries a top-level `status`: `incomplete` while steps run, `passed`
 only after every selected step passed its validation, and `failed` on any failure,
@@ -396,9 +480,10 @@ stalls, other than a resource that is already gone, turns `status` into `failed`
 every step passed. `status` stays `incomplete`, and "Verified" is not printed, until the
 finalizers have finished.
 
-- The focused scenarios are listed by key in `e2e/selfhost/verify.ts`, so a renamed
-  or deleted scenario fails the typecheck. Add a patch's regression there. A
-  scenario must also be registered in `e2e/test-plan.ts` to execute. The step fails
+- The focused scenarios are listed by key in `e2e/selfhost/release-scenarios.ts`, so a
+  renamed or deleted scenario fails the typecheck. Add a patch's regression there and
+  map the paths it guards. A scenario runs on self-host when it is scheduled there,
+  otherwise on local, and must be registered in `e2e/test-plan.ts`. The step fails
   and records the count unless every selected scenario ran and passed.
 - The upgrade seeds the immutable previous image with an app, an encrypted account,
   analytics and generated keys, then starts the candidate twice on that volume,
@@ -441,9 +526,9 @@ finalizers have finished.
   default. An image the command built is removed again. A helper killed with SIGKILL cannot
   clean up; the daily `agent-test-*` cleanup removes what it leaves.
 
-The helpers are in `scripts/selfhost-verify/` because `e2e/check-boundary.ts` forbids
-Node I/O and async code under `e2e/`. Machine-specific rollout is not here; it lives
-in the Agents project runbook.
+The helpers are in `scripts/selfhost-verify/` and the release command in
+`scripts/selfhost-release/` because `e2e/check-boundary.ts` forbids Node I/O and async
+code under `e2e/`.
 
 ## Upstream integration on 2026-10-21
 

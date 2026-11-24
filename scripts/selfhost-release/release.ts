@@ -595,6 +595,7 @@ const rollbackCommand = async () => {
   const compose = await readCompose(dokploy, state.service.composeId);
   const result = compose.composeFile.includes(previous)
     ? await (async () => {
+        await must("docker", ["pull", "--quiet", previous], { timeoutSeconds: 900 });
         await dokploy.post("compose.deploy", {
           composeId: state.service.composeId,
           title: "Restore previous Executor",

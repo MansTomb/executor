@@ -319,6 +319,7 @@ export const switchImage = async (
   const compose = await readCompose(dokploy, service.composeId);
   if (composeFingerprint(compose, service, from) !== expectedFingerprint)
     throw new Error("The Executor compose changed outside this release");
+  await must("docker", ["pull", "--quiet", to], { timeoutSeconds: 900 });
   const query = { composeId: service.composeId };
   const known = await knownJobs(dokploy, "deployment.allByCompose", query);
   await dokploy.post("compose.update", {
