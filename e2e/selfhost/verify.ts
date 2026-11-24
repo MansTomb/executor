@@ -18,6 +18,7 @@ import { FetchHttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { localNpmRegistry } from "../support/npm-registry.ts";
 import { scenarios } from "../test-plan.ts";
+import { focused, runTarget, type ScenarioKey } from "./release-scenarios.ts";
 
 const stepNames = ["prepare", "check", "focused", "image", "go", "upgrade", "soak"] as const;
 type StepName = (typeof stepNames)[number];
@@ -34,74 +35,6 @@ const deadlines = {
 
 const childKillGrace = Duration.seconds(90);
 const cleanupBudget = Duration.seconds(60);
-
-const focused = [
-  {
-    target: "self-host",
-    scenarios: [
-      scenarios.appWorkerLifetime,
-      scenarios.oauthRegistrationApplicationType,
-      scenarios.appFetchUserAgent,
-      scenarios.appLoadFailureContainment,
-      scenarios.securityObservability,
-      scenarios.accountCheckFailureDetail,
-      scenarios.mcpDiscoverySelection,
-      scenarios.mcpDiscoverySchemas,
-      scenarios.mcpSlowListing,
-      scenarios.mcpSlowRouter,
-      scenarios.mcpSlowRouterSummaries,
-      scenarios.mcpSlowListingRecovery,
-      scenarios.mcpOutputRecovery,
-      scenarios.mcpOutputTruncation,
-      scenarios.mcpDirectCalls,
-      scenarios.mcpMediaContent,
-      scenarios.toolCallLogMcp,
-      scenarios.mcpExecuteApprovalSize,
-      scenarios.mcpExecuteToolReportedError,
-      scenarios.mcpExecuteReach,
-      scenarios.mcpRefreshRejectionLog,
-      scenarios.mcpProtocolVersions,
-      scenarios.appManagementContractsHosted,
-      scenarios.dashboardBatchAuthentication,
-      scenarios.dashboardBatchIsolation,
-      scenarios.storageMigrationDiagnostics,
-      scenarios.personalAccountsMigration,
-      scenarios.personalAccountsAppLinkConversion,
-      scenarios.telemetryStoreIdleAtBound,
-      scenarios.mcpResultContract,
-      scenarios.thrownAppError,
-      scenarios.mutationTimeoutBoundary,
-      scenarios.expiredAccountBoundary,
-      scenarios.observabilityOutcomes,
-      scenarios.appFetchUnsupportedOption,
-      scenarios.mcpInterceptor,
-      scenarios.clickupFresh,
-      scenarios.openapiPaths,
-      scenarios.sharedAuthorization,
-      scenarios.apiGrantRestrictions,
-      scenarios.liveGrantRestrictions,
-      scenarios.readOnlyGrantLiveKind,
-      scenarios.readOnlyGrantRetainedMetadata,
-      scenarios.toolCallHeldCheck,
-      scenarios.toolCallHeldAccess,
-      scenarios.patMcpApprovals,
-      scenarios.scopedConnectionAccess,
-      scenarios.scopedConnectionAccounts,
-      scenarios.activeVersionTools,
-      scenarios.activeVersionResume,
-    ],
-  },
-  {
-    target: "local",
-    scenarios: [
-      scenarios.analytics,
-      scenarios.mcpSearchConcise,
-      scenarios.oauthRefreshRedirectUri,
-      scenarios.localMcpOfflineGrantLifetime,
-      scenarios.localMcpExpiredSessionGrant,
-    ],
-  },
-] as const;
 
 const nativeDirectory = "apps/hosted/self-host/native";
 const helpers = "scripts/selfhost-verify";
@@ -177,6 +110,7 @@ const verify = Effect.fn("selfhostVerify.verify")(function* (options: {
   readonly previousApi: string;
   readonly image: string;
   readonly steps: string;
+  readonly scenarios: string;
   readonly workers: number;
   readonly deadlineSeconds: Option.Option<number>;
 }) {
@@ -193,6 +127,28 @@ const verify = Effect.fn("selfhostVerify.verify")(function* (options: {
       });
     selected.add(step);
   }
+  const groups = { "self-host": new Set<ScenarioKey>(), local: new Set<ScenarioKey>() };
+  const requested = options.scenarios === "" ? focused : options.scenarios.split(",");
+  for (const name of requested.map((value) => value.trim())) {
+    const key = (Object.keys(scenarios) as Array<ScenarioKey>).find(
+      (candidate) => candidate === name,
+    );
+    if (key === undefined)
+      return yield* new VerificationFailed({
+        step: "options",
+        message: `Unknown scenario ${name}; use a key of scenarios in e2e/test-plan.ts`,
+      });
+    const target = runTarget(key);
+    if (target === undefined)
+      return yield* new VerificationFailed({
+        step: "options",
+        message: `Scenario ${name} is scheduled neither on self-host nor on local`,
+      });
+    groups[target].add(key);
+  }
+  const focusedGroups = (["self-host", "local"] as const)
+    .filter((target) => groups[target].size > 0)
+    .map((target) => ({ target, scenarios: [...groups[target]].map((key) => scenarios[key]) }));
   if (selected.has("upgrade") && !/@sha256:[0-9a-f]{64}$/.test(options.previous))
     return yield* new VerificationFailed({
       step: "options",
@@ -363,7 +319,7 @@ const verify = Effect.fn("selfhostVerify.verify")(function* (options: {
         args: ["run", "check"],
       });
     if (selected.has("focused"))
-      for (const group of focused) {
+      for (const group of focusedGroups) {
         const pattern = `^(${group.scenarios.map((scenario) => escapePattern(scenario.title)).join("|")})$`;
         yield* execute({
           step: `focused-${group.target}`,
@@ -531,6 +487,7 @@ const command = Command.make(
     ),
     image: Flag.String("image").pipe(Flag.withDefault("")),
     steps: Flag.String("steps").pipe(Flag.withDefault(stepNames.join(","))),
+    scenarios: Flag.String("scenarios").pipe(Flag.withDefault("")),
     workers: Flag.Int("workers").pipe(Flag.withDefault(2)),
     deadlineSeconds: Flag.Int("deadline-seconds").pipe(Flag.optional),
   },
