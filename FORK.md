@@ -381,8 +381,8 @@ The command:
    - The full lane runs `prepare`, `check`, the full focused list plus the change's
      own scenarios, `go`, `upgrade` and `soak`. Comment-only spec changes select no
      scenarios. Scenarios that assert behavior this fork deliberately changes stay
-     outside automatic release selection. The full lane applies to storage schema or
-     migration paths, a changed storage version, `bun.lock`, `patches/`, package
+     outside automatic release selection. The full lane applies to executable storage
+     schema or migration changes, a changed storage version, `bun.lock`, `patches/`, package
      manifest changes other than `scripts`, the Dockerfile, the entrypoint, the
      native host, the packaging scripts, workerd configuration, the collector, the
      management app source or a management app that differs from its active

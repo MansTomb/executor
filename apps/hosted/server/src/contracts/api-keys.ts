@@ -2,11 +2,14 @@ import { Schema } from "effect";
 import { OrganizationId } from "./organization.ts";
 export const managedKeyName = "Executor app (created automatically)";
 export const isManagedKey = (key: {
+  readonly name: string | null;
   readonly metadata?:
     | { readonly organization?: string | undefined; readonly executorApp?: true | undefined }
     | null
     | undefined;
-}) => key.metadata?.executorApp === true && key.metadata.organization !== undefined;
+}) =>
+  key.metadata?.organization !== undefined &&
+  (key.metadata.executorApp === true || key.name === managedKeyName);
 export const ApiKeyId = Schema.NonEmptyString.pipe(Schema.brand("ApiKeyId"));
 export const ApiKeyMetadata = Schema.Struct({
   organization: Schema.optional(OrganizationId),

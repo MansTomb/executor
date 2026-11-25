@@ -60,16 +60,35 @@ const show = async (worktree: string, revision: string, file: string) => {
 const runnable = (keys: ReadonlyArray<ScenarioKey>) =>
   keys.filter((key) => runTarget(key) !== undefined && !differsOnSelfhostFork.includes(key));
 
-const changedSpecs = async (
+const sourceSyntax = (file: string, text: string) => {
+  if (!file.endsWith(".ts")) return text;
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.ESNext);
+  const syntax: Array<string | number> = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isJSDoc(node)) return;
+    const children = node.getChildren(source);
+    const end =
+      node.kind === ts.SyntaxKind.SyntaxList && children.at(-1)?.kind === ts.SyntaxKind.CommaToken
+        ? children.length - 1
+        : children.length;
+    syntax.push(node.kind);
+    if (children.length === 0 && node.kind !== ts.SyntaxKind.SyntaxList) {
+      syntax.push(node.getText(source));
+    }
+    for (const child of children.slice(0, end)) visit(child);
+    syntax.push(-1);
+  };
+  visit(source);
+  return JSON.stringify(syntax);
+};
+
+const changedSources = async (
   worktree: string,
   production: string,
   candidate: string,
   files: ReadonlyArray<string>,
 ) => {
   const changed = new Set<string>();
-  const printer = ts.createPrinter({ removeComments: true });
-  const executable = (file: string, source: string) =>
-    printer.printFile(ts.createSourceFile(file, source, ts.ScriptTarget.ESNext));
   for (let start = 0; start < files.length; start += 8) {
     const changes = await Promise.all(
       files.slice(start, start + 8).map(async (file) => {
@@ -79,7 +98,7 @@ const changedSpecs = async (
         ]);
         return before === undefined ||
           after === undefined ||
-          executable(file, before) !== executable(file, after)
+          sourceSyntax(file, before) !== sourceSyntax(file, after)
           ? file
           : undefined;
       }),
@@ -161,21 +180,21 @@ const classify = async (
   production: string,
   candidate: string,
   file: string,
-  specsWithChanges: ReadonlySet<string>,
+  executableChanges: ReadonlySet<string>,
 ): Promise<PathDecision> => {
   const rule = ruleFor(file);
   if (rule === undefined)
     return { path: file, kind: "unclassified", reason: "no rule maps this path", scenarios: [] };
   if (rule.kind === "manifest") return manifest(worktree, production, candidate, file);
+  if ((rule.kind === "spec" || rule.kind === "schema") && !executableChanges.has(file))
+    return { path: file, kind: "untested", reason: "comments or formatting only", scenarios: [] };
   if (rule.kind === "spec")
-    return specsWithChanges.has(file)
-      ? {
-          path: file,
-          kind: "spec",
-          reason: rule.reason,
-          scenarios: runnable(scenariosInFile(path.basename(file))),
-        }
-      : { path: file, kind: "untested", reason: "scenario comments only", scenarios: [] };
+    return {
+      path: file,
+      kind: "spec",
+      reason: rule.reason,
+      scenarios: runnable(scenariosInFile(path.basename(file))),
+    };
   if (rule.kind === "plan") {
     const plan = await planScenarios(worktree, production, candidate);
     return {
@@ -208,14 +227,17 @@ export const decide = async (options: {
   )
     .split("\n")
     .filter((line) => line !== "");
-  const specsWithChanges = await changedSpecs(
+  const executableChanges = await changedSources(
     worktree,
     production,
     candidate,
-    files.filter((file) => ruleFor(file)?.kind === "spec"),
+    files.filter((file) => {
+      const kind = ruleFor(file)?.kind;
+      return kind === "spec" || kind === "schema";
+    }),
   );
   const paths = await Promise.all(
-    files.map((file) => classify(worktree, production, candidate, file, specsWithChanges)),
+    files.map((file) => classify(worktree, production, candidate, file, executableChanges)),
   );
   const descends =
     (await run("git", ["-C", worktree, "merge-base", "--is-ancestor", production, candidate]))
