@@ -248,7 +248,7 @@ export default defineApp({}, async () => {
         const client = yield* (yield* McpClient).connect(
           Redacted.make(Redacted.value(key.key)),
           "observability",
-          { organization: actors.organization.id },
+          { organization: actors.organization.id, mode: "model" },
         );
         const execute = (label: string, code: string) =>
           client.use(label, (client, signal) =>

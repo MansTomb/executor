@@ -889,6 +889,11 @@ MCP grants now follow upstream's refresh policy, including its session binding
 for grants without `offline_access`. The provider patch retains the requesting
 client ID in the fork's refresh rejection observer.
 
+API keys on plain `/mcp` now use automatic approval. Existing clients that rely
+on Executor pausing a call can choose their approval mode in the endpoint URL.
+The observability fixture uses model mode to cover failure recording across a
+paused and resumed call.
+
 The merge keeps compact delivery including Antigravity's JSON text fallback,
 the 65,536-byte output and approval limit, live summary-first discovery and
 post-read grant checks, callable diagnostics and timeout outcomes, operation
