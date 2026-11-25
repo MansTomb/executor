@@ -1,5 +1,4 @@
 import { makeAnalyticsStorage } from "./analytics-storage.ts";
-/** Runtime storage and the explicit, transactional migration boundary. */
 import { Effect, Option } from "effect";
 import { SqlClient } from "effect/sql";
 import { sqlAdapter } from "fumadb-effect/sql";
@@ -17,10 +16,8 @@ import {
 import { storageMigrationFailed } from "./storage-migration-error.ts";
 import { makeToolSearchStore } from "./tool-search-store.ts";
 
-/** The version a new database is created at, reported when creating it fails. */
 const latestVersion = storageSchemas.at(-1)?.version;
 
-/** Capture caller-owned SQL. Migrations accept only fresh or supported version 4 databases. */
 export const makeExecutorStorage = (options: { readonly provider: SqlProvider }) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -43,9 +40,6 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
         const migrator = yield* client.createMigrator;
         const version = yield* migrator.version;
         if (Option.isNone(version)) {
-          // A new database needs the current layout and all of its indexes, not
-          // historical data conversions. FumaDB's direct diff omits custom steps.
-          // Its tables are empty, so no index build waits on or blocks a writer.
           yield* Effect.gen(function* () {
             yield* (yield* migrator.migrateToLatest()).execute;
             yield* Effect.forEach(
@@ -58,9 +52,6 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
           }).pipe(Effect.mapError((cause) => storageMigrationFailed(cause, latestVersion)));
           return;
         }
-        // Execute every registered upgrade in order. A direct diff to latest can skip
-        // an intermediate guard, data conversion, or custom index operation. The pending
-        // versions are known here, so nothing reads the database after the last upgrade.
         const current = storageSchemas.findIndex((entry) => entry.version === version.value);
         for (const entry of storageSchemas.slice(current + 1)) {
           if (stopAt.has(entry.version)) return;
@@ -73,10 +64,8 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.mapError((cause) => storageMigrationFailed(cause)),
       );
-    /** Every upgrade except the trailing index-only versions, which `migrate` then runs. */
     const migrateTables = upgrade(trailingStorageIndexVersions);
     const migrate = upgrade(new Set());
-    /** The version the database records; none before its first migration. */
     const version = Effect.gen(function* () {
       const migrator = yield* client.createMigrator;
       return Option.getOrUndefined(yield* migrator.version);
@@ -88,7 +77,6 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
       analytics: makeAnalyticsStorage(sql),
       orm: (_version: "4.0.17") => db,
       reactivity,
-      // Search rows are derived data no reactive reader watches, ranked by SQL the ORM cannot express.
       toolSearch: makeToolSearchStore(sql),
       checkMigration,
       migrateTables,
@@ -96,5 +84,4 @@ export const makeExecutorStorage = (options: { readonly provider: SqlProvider })
       version,
     };
   });
-/** Caller-owned, Effect-native persistence with commit-driven subscriptions. */
 export type ExecutorDatabase = Effect.Success<ReturnType<typeof makeExecutorStorage>>;

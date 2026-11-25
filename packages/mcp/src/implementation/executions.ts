@@ -1,5 +1,4 @@
 import type { ExecutionRejected } from "../contracts/execute.ts";
-/** Execution-owned tool invocations and pending interactions. Delivery never owns the continuation. */
 import type { CodeMode } from "@opencode-ai/codemode";
 import {
   ElicitationFailed,
@@ -72,21 +71,13 @@ class McpExecutionFailed extends Schema.TaggedError<McpExecutionFailed>()(
   {},
 ) {}
 
-/** Why a request stopped being pending before or without a resume answering it. */
 type Ended = InteractionEnd;
-/** Ended requests are remembered as long as an answer to them can plausibly still arrive. */
 const endedRetentionMs = 30 * 60 * 1000;
-/** Bounds that memory however many requests a host issues. */
 const maxEnded = 4096;
 
-/** Whether a call runs with no account in either scope. */
 const accountFree = (accounts: NonNullable<InteractionTool["accounts"]>) =>
   Object.keys(accounts.app).length === 0 && Object.keys(accounts.user ?? {}).length === 0;
 
-/**
- * The asking call's identity. A call without accounts in either scope omits the key; MCP results
- * are JSON.
- */
 const interactionTool = (call: {
   readonly app: InteractionTool["app"];
   readonly tool: InteractionTool["tool"];
@@ -97,20 +88,9 @@ const interactionTool = (call: {
   ...(call.accounts === undefined || accountFree(call.accounts) ? {} : { accounts: call.accounts }),
 });
 
-/**
- * How a run's pending interactions reach a person, which decides what must fit the output budget.
- * Model and browser delivery return the whole interaction as the execute result; browser delivery
- * also adds its review link, a few hundred bytes the budget does not count. Native delivery sends
- * only the prompt, as the client's own elicitation request.
- */
 export type PendingTransport = "result" | "prompt";
-/**
- * Who answers a policy approval: the user through a pending interaction (`ask`), or the MCP client,
- * which already confirmed the destructive tool call that started the run (`client`).
- */
 export type ApprovalMode = "ask" | "client";
 const jsonBytes = (value: unknown) => new TextEncoder().encode(JSON.stringify(value)).byteLength;
-/** UTF-8 bytes of the JSON a transport sends for this interaction. */
 const sentBytes = (transport: PendingTransport, request: PendingInteraction) =>
   jsonBytes(transport === "prompt" ? request.elicitation : request);
 
@@ -126,7 +106,6 @@ type Pending = {
       readonly kind: "approval";
       readonly request: typeof ToolPending.Type;
       readonly response: Deferred.Deferred<ToolCallResult, Error>;
-      /** The program's call index, reported as awaiting approval until this is answered. */
       readonly call: number | undefined;
     }
   | {
@@ -152,22 +131,15 @@ type Run = {
   readonly pending: Map<InteractionId, Pending>;
   readonly operations: Set<Operation>;
   readonly progress: ExecutionProgress;
-  /** Completed once when the active-time budget is spent; the program observes it as its timeout. */
   readonly expired: Deferred.Deferred<void>;
   remainingMs: number;
   busy: boolean;
   closed: boolean;
 };
 
-/**
- * Programs running in this process, across every execution store in it. On Cloud the process is
- * an isolate that several MCP session objects share, and every program there counts against its
- * one memory limit, parked ones included.
- */
 const live = { programs: 0 };
 export const runningPrograms = () => live.programs;
 
-/** Both transports drive this bounded, host-owned store. Closing it cancels programs and their tools. */
 export const makeExecutions = (
   limits: McpLimits,
   beforeExecute: Effect.Effect<void, ExecutionRejected> = Effect.void,
@@ -181,24 +153,12 @@ export const makeExecutions = (
       Context.add(Scheduler.Scheduler, scheduler),
     );
     const runs = new Set<Run>();
-    /** Ended runs whose tools are still being cancelled; they count toward the execution limit. */
     const closing = new Set<Run>();
     const requests = new Map<InteractionId, Pending>();
-    /**
-     * Why each recently pending request stopped being pending, kept for its caller only, so a late
-     * resume learns whether it was answered, expired or ended rather than only that it is gone.
-     */
     const ended = new Map<
       InteractionId,
       { readonly caller: string; readonly reason: Ended; readonly until: number }
     >();
-    /**
-     * Why the caller cannot answer this ID, from Executor's own records only: the ID's form, this
-     * store's memory of ended requests, then the host's record of issued ones. A request the host
-     * recorded for this caller with no end, that memory no longer holds, is `lost`. That is most
-     * often a restart that cleared its program, but a failed write can also leave its end out,
-     * so it never shows that the request went unanswered or expired, whatever its deadline.
-     */
     const reasonFor = (caller: string, requestId: InteractionId) => {
       if (!issuedInteractionId.test(requestId)) return "malformed" as const;
       const known = ended.get(requestId);
@@ -207,7 +167,6 @@ export const makeExecutions = (
       if (issued === undefined || issued.caller !== caller) return "not-found";
       return issued.end ?? "lost";
     };
-    /** The caller's requests that a resume can still answer. */
     const open = (caller: string, now: number): OpenInteraction[] =>
       [...requests.values()]
         .filter((pending) => pending.run.caller === caller && pending.request.expiresAt > now)
@@ -251,7 +210,6 @@ export const makeExecutions = (
       execution: { ok: false, error: { kind, message }, toolCalls: reportedCalls(run.progress) },
       unavailableApps: run.progress.unavailableApps,
     });
-    /** The program did not deliver its own timeout result; report what the driver recorded. */
     const timedOut = (run: Run) =>
       Effect.gen(function* () {
         yield* Effect.annotateCurrentSpan({
@@ -265,11 +223,9 @@ export const makeExecutions = (
         );
       });
     const wake = (run: Run) => Queue.offer(run.events, { kind: "wake" });
-    /** Stop offering a request. Only the first end of a still pending request is remembered. */
     const forget = (pending: Pending, reason: Ended) => {
       const id = pending.request.requestId;
       if (requests.get(id) === pending) {
-        // Map order is insertion order: drop the oldest records beyond the bound.
         ended.delete(id);
         ended.set(id, {
           caller: pending.run.caller,
@@ -284,10 +240,8 @@ export const makeExecutions = (
       }
       requests.delete(id);
       pending.run.pending.delete(pending.request.requestId);
-      // Wake collectors atomically with removal; an already recorded answer is never overwritten.
       Deferred.doneUnsafe(pending.browserAnswer, Effect.succeed(undefined));
     };
-    /** End the run at once: no new work, answers or resumes. Returns false if it had already ended. */
     const detach = (run: Run) => {
       if (run.closed) return false;
       run.closed = true;
@@ -298,9 +252,6 @@ export const makeExecutions = (
     };
     const stop = (run: Run) =>
       Effect.suspend(() => (detach(run) ? Scope.close(run.scope, Exit.void) : Effect.void));
-    // Closing a run interrupts its unfinished tools and waits for their cancellation. A result
-    // or a caller's cancellation never waits for that: the host scope owns it, shutting the host
-    // down still waits for it, and closing runs count toward the execution limit until done.
     const release = (run: Run) =>
       Effect.suspend(() => {
         if (!detach(run)) return Effect.void;
@@ -314,14 +265,12 @@ export const makeExecutions = (
           hostScope,
         ).pipe(Effect.asVoid);
       });
-    /** Report a call as awaiting approval while it waits, and as running once it is answered. */
     const approvalWait = (run: Run, index: number | undefined, waiting: boolean) => {
       const call = index === undefined ? undefined : run.progress.calls[index];
       if (call === undefined) return;
       if (waiting && call.outcome === "running") call.outcome = "awaiting-approval";
       if (!waiting && call.outcome === "awaiting-approval") call.outcome = "running";
     };
-    /** A completed call whose tool reported an error is a failure, even when the program handles it. */
     const semanticFailure = (
       run: Run,
       index: number | undefined,
@@ -330,7 +279,6 @@ export const makeExecutions = (
       const call = index === undefined ? undefined : run.progress.calls[index];
       if (result.toolError === true && call !== undefined) call.outcome = "failure";
     };
-    /** The active-time budget is spent: nothing new may start, park or resume. */
     const expired = (run: Run) => Deferred.isDoneUnsafe(run.expired);
     yield* Effect.addFinalizer(() =>
       Effect.forEach([...runs], stop, { concurrency: "unbounded", discard: true }),
@@ -378,8 +326,6 @@ export const makeExecutions = (
             elicitation: form.request,
             expiresAt: (yield* Clock.currentTimeMillis) + defaultElicitationLimits.timeoutMs,
           };
-          // The app's question cannot reach anyone, so its request is invalid. The app learns only
-          // that; the span keeps the size, for operators.
           const bytes = sentBytes(run.transport, request);
           if (bytes > limits.maxOutputBytes) {
             yield* Effect.annotateCurrentSpan({
@@ -400,7 +346,6 @@ export const makeExecutions = (
           };
           operation.waiting.add(request.requestId);
           return yield* record(pending).pipe(
-            // Recording fails only once the run has ended.
             Effect.mapError(() => new ElicitationFailed({ reason: "unavailable" })),
             Effect.andThen(Deferred.await(response)),
             Effect.raceFirst(
@@ -416,8 +361,6 @@ export const makeExecutions = (
                 const abandoned = requests.get(request.requestId) === pending;
                 forget(pending, "ended");
                 operation.waiting.delete(request.requestId);
-                // A transport can cancel a question after its drive has returned.
-                // Close from the host scope: this callback is itself owned by run.scope.
                 if (abandoned && !run.busy && !run.closed) {
                   yield* Effect.forkIn(stop(run), hostScope);
                 } else yield* wake(run);
@@ -426,8 +369,6 @@ export const makeExecutions = (
           );
         });
 
-    // An admitted operation owns its resources until completion, including while a tool awaits input.
-    // New operations and answers always use the currently driving request's backend.
     const launch = (run: Run, backend: McpBackend<Error>, work: Work) =>
       Effect.gen(function* () {
         const operation: Operation = { waiting: new Set() };
@@ -441,10 +382,6 @@ export const makeExecutions = (
         );
       });
 
-    /**
-     * Accept a policy approval at once, for a run whose MCP client already confirmed the call. The
-     * approved call runs as a resumed one does, so its failures reach the caller the same way.
-     */
     const approveNow = (
       run: Run,
       backend: McpBackend<Error>,
@@ -490,12 +427,6 @@ export const makeExecutions = (
             ),
           ),
         );
-    /**
-     * The approval request as `run` sends it. A native client is sent only the prompt, so it shows
-     * the exact arguments whenever that prompt fits the budget, and the saved shortened one
-     * otherwise. A request over the budget is never offered: the saved call is cancelled, so it can
-     * never run, and the call fails with the request's size.
-     */
     const offer = (
       run: Run,
       backend: McpBackend<Error>,
@@ -516,7 +447,6 @@ export const makeExecutions = (
             : saved;
         const bytes = sentBytes(run.transport, request);
         if (bytes <= limits.maxOutputBytes) return request;
-        // Its ID never leaves the host, but consuming it means no answer could ever run it.
         yield* Effect.ignore(backend.resumeInvocation(saved, { action: "cancel" }), {
           log: "Warn",
           message: "Cancelling an oversized approval request failed",
@@ -539,7 +469,6 @@ export const makeExecutions = (
         ) => Deferred.succeed(response, value).pipe(Effect.asVoid),
       ) =>
         Effect.gen(function* () {
-          // Propagate only trace parentage across the broker, never captured authority.
           const parent = yield* Effect.currentSpan.pipe(Effect.option);
           const queued = yield* Clock.currentTimeMillis;
           const response = yield* Deferred.make<A, Error>();
@@ -570,6 +499,8 @@ export const makeExecutions = (
         });
       return {
         listSkills: (input, options) => exchange((backend) => backend.listSkills(input, options)),
+        bundleSkills: (input, options) =>
+          exchange((backend) => backend.bundleSkills(input, options)),
         readSkill: (input) => exchange((backend) => backend.readSkill(input)),
         listApps: (input) => exchange((backend) => backend.listApps(input)),
         listAccounts: (input) => exchange((backend) => backend.listAccounts(input)),
@@ -584,7 +515,6 @@ export const makeExecutions = (
         callTool: (input) =>
           Effect.gen(function* () {
             const call = run.progress.callFibers.get(yield* Effect.fiberId);
-            // The driving request makes the call; the program's call hears its reference.
             const recorded = yield* ToolCallRecorded;
             return yield* exchange(
               (backend, operation) =>
@@ -629,16 +559,10 @@ export const makeExecutions = (
             );
           }),
         authorizeElicitation: () => Effect.fail(new ElicitationFailed({ reason: "unavailable" })),
-        // Only the execution manager answers approvals; program code never reaches this.
         resumeInvocation: () => Effect.die("A program cannot resume an approval request"),
       };
     };
 
-    // The program runs only while a request drives it, and that request reports what it found:
-    // the request that started the program may have ended, and its reporter with it.
-    // Taking and reporting are one uninterruptible step: cancellation, a client disconnect or the
-    // timeout race could otherwise stop the batch after taking it, and the finalizer would find no
-    // failures left. Reporters run synchronously and only buffer, so the step is bounded.
     const report = (run: Run) =>
       Effect.uninterruptible(
         Effect.suspend(() =>
@@ -653,7 +577,6 @@ export const makeExecutions = (
     ): Effect.Effect<McpExecutionResult> =>
       Effect.gen(function* () {
         run.busy = true;
-        // Failures the program meets from here are this request's to report, so they name its trace.
         run.progress.reference = yield* failureReference;
         run.scheduling.resume();
         const started = yield* Clock.currentTimeMillis;
@@ -672,7 +595,6 @@ export const makeExecutions = (
                     "Execution ended; its continuation is unavailable",
                   );
             const completed = yield* Match.value(event).pipe(
-              // After the deadline, work the program queued before its interruption never starts.
               Match.when({ kind: "operation" }, ({ handle }) =>
                 expired(run)
                   ? Effect.succeed(undefined)
@@ -693,8 +615,6 @@ export const makeExecutions = (
               Match.exhaustive,
             );
             if (completed !== undefined) return completed;
-            // Calls awaiting input remain owned by run.scope. Other admitted work must finish before parking.
-            // An expired run never parks: it only waits for the program's own timeout result.
             if (
               !expired(run) &&
               run.pending.size > 0 &&
@@ -715,7 +635,6 @@ export const makeExecutions = (
           Effect.raceFirst(
             Effect.sleep(Math.max(0, run.remainingMs)).pipe(
               Effect.andThen(Deferred.succeed(run.expired, undefined)),
-              // The program normally delivers its own timeout result, with logs, well within this.
               Effect.andThen(Effect.sleep(timeoutDeliveryMs)),
               Effect.andThen(release(run)),
               Effect.andThen(timedOut(run)),
@@ -727,7 +646,6 @@ export const makeExecutions = (
               yield* report(run);
               run.remainingMs -= Math.max(0, (yield* Clock.currentTimeMillis) - started);
               run.busy = false;
-              // A run that parked as its budget ran out must not resume before its timer fires.
               if (run.remainingMs <= 0) yield* Deferred.succeed(run.expired, undefined);
             }),
           ),
@@ -746,20 +664,15 @@ export const makeExecutions = (
         return pending;
       });
     return {
-      /** Programs this store holds, running or waiting for an answer. */
       live: () => runs.size,
-      /** Whether a program this store holds, running or waiting for an answer, has a matching caller. */
       holds: (caller: (id: string) => boolean) => {
         for (const run of runs) if (caller(run.caller)) return true;
         return false;
       },
-      /** Why the caller has no such request to answer. */
       unavailable: (caller: string, id: InteractionId) =>
         Effect.sync(() => unavailable(caller, id)),
-      /** Inspect a caller-owned live request, including one whose browser answer is recorded. */
       pendingInteraction: (caller: string, id: InteractionId) =>
         current(caller, id).pipe(Effect.map((pending) => pending?.request)),
-      /** Read the exact interaction without creating a second approval store. */
       browserView: (caller: string, id: InteractionId): Effect.Effect<BrowserApprovalView> =>
         Effect.gen(function* () {
           const pending = yield* current(caller, id);
@@ -768,7 +681,6 @@ export const makeExecutions = (
             ? { status: "answered" }
             : { status: "pending", request: pending.request };
         }),
-      /** Validate before recording. A browser answer does not consume or execute the pending invocation. */
       answerInBrowser: (
         caller: string,
         id: InteractionId,
@@ -783,7 +695,6 @@ export const makeExecutions = (
           yield* Deferred.succeed(pending.browserAnswer, response);
           return { status: "answered" };
         }),
-      /** Wait without claiming the program. Cancellation or a polling deadline leaves the interaction intact. */
       browserAnswer: (caller: string, id: InteractionId, pollMs: number) =>
         Effect.gen(function* () {
           const pending = yield* current(caller, id);
@@ -798,7 +709,6 @@ export const makeExecutions = (
             }),
           );
         }),
-      /** Discard all interactions and live work for the caller's program, without awaiting cleanup. */
       discard: (caller: string, requestId: InteractionId): Effect.Effect<void> =>
         Effect.suspend(() => {
           const pending = requests.get(requestId);
@@ -806,10 +716,6 @@ export const makeExecutions = (
             ? release(pending.run)
             : Effect.void;
         }),
-      /**
-       * Start one program or batch of direct calls. Policy consent and tool input return the same
-       * pending-interaction union.
-       */
       execute: (
         caller: string,
         backend: McpBackend<Error>,
@@ -845,7 +751,6 @@ export const makeExecutions = (
           }
           runs.add(run);
           yield* Effect.annotateCurrentSpan("executor.execution.id", run.id);
-          // Ends at once, so it is exported even when the process dies while the program runs.
           yield* Effect.withSpan(Effect.void, "mcp.execution.started", {
             attributes: {
               "executor.execution.id": run.id,
@@ -887,7 +792,6 @@ export const makeExecutions = (
             Effect.onInterrupt(() => stop(run)),
           );
         }),
-      /** Validate, claim and answer one interaction. Neither variant reruns the program or replays results. */
       resume: (
         caller: string,
         backend: McpBackend<Error>,
@@ -910,7 +814,6 @@ export const makeExecutions = (
           }
           if (requests.get(input.requestId) !== pending)
             return unavailable(caller, input.requestId);
-          // A run parks only before its deadline; never let an answer start work after it.
           if (expired(run)) {
             yield* release(run);
             return unavailable(caller, input.requestId);
@@ -935,7 +838,6 @@ export const makeExecutions = (
                     ),
                   })
                   .pipe(
-                    // The approved call runs here, so this span carries its Executor time.
                     toolCallSpan("mcp.tool.resume", {
                       attributes: {
                         "executor.app.id": pending.request.invocation.app,
@@ -954,7 +856,6 @@ export const makeExecutions = (
                         Match.when({ status: "cancelled" }, () =>
                           Deferred.fail(pending.response, new ApprovalCancelled()),
                         ),
-                        // Storage failed before Executor could confirm the reviewed call, so it was not resumed.
                         Match.when(
                           { status: "failed", reason: "execution-failed", context: "unconfirmed" },
                           () =>
@@ -963,7 +864,6 @@ export const makeExecutions = (
                               new ApprovalUnavailable({ reason: "context-unconfirmed" }),
                             ),
                         ),
-                        // Resuming the approved call failed: the program sees that failure, as for a live call.
                         Match.when({ status: "failed", reason: "execution-failed" }, ({ error }) =>
                           Deferred.fail(pending.response, error),
                         ),

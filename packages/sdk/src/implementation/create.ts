@@ -14,7 +14,6 @@ import { defaultToolListingPolicy } from "../contracts/declarations.ts";
 import { storedApp } from "./apps.ts";
 import { initializeAppRepository, recoverAppRepositories } from "./initial-source.ts";
 import { makeWorkflowRuns } from "./workflows.ts";
-/** Compose native operations once for in-process and HTTP callers. */
 import { Effect, Schema } from "effect";
 import type { Digest, SecureRandom } from "effect/crypto";
 import { hostCrypto } from "./host-crypto.ts";
@@ -44,7 +43,6 @@ import { makeToolSearch } from "./tool-search.ts";
 import { makeEvents } from "./events.ts";
 import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/runtime.ts";
 
-/** Capture host cryptography; caller owns database and platform resource lifetimes. */
 export const createExecutor = (
   options: ExecutorOptions,
 ): Effect.Effect<Executor, CredentialsError, SecureRandom.SecureRandom | Digest.Digest> =>
@@ -53,7 +51,6 @@ export const createExecutor = (
     const credentials =
       options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
     const db = database(options.database);
-    // Each write of the executor's own (sources, public files) has a span with its kind and size.
     const blobs = withTracedPuts(options.blobs);
     const sources = gitSourceStorage(options.git);
     const origin = options.origin ?? hostedExecutorOrigin;
@@ -72,7 +69,6 @@ export const createExecutor = (
       options: options.events,
       background: options.background,
     });
-    // Every invocation reports the events it emitted here, whichever operation started it.
     const sink: typeof AppEventSink.Service = {
       emitted: (input) =>
         events
@@ -82,7 +78,6 @@ export const createExecutor = (
             Effect.mapError(() => new RuntimeProtocolFailed({ reason: "data" })),
           ),
     };
-    // Analytics are best-effort: an app that no longer exists, or a failed write, records nothing.
     const base = toEffectRuntime(options.runtime, options.blobs, cache, (app, records) =>
       query(() =>
         db.findFirst("apps", { where: (b) => b("id", "=", Schema.decodeUnknownSync(AppId)(app)) }),
@@ -101,7 +96,6 @@ export const createExecutor = (
       mutate: (input) => base.mutate(input).pipe(Effect.provideService(AppEventSink, sink)),
       webhook: (input) => base.webhook(input).pipe(Effect.provideService(AppEventSink, sink)),
     };
-    // The operator's own OAuth clients, by ID; their tokens are managed.
     const firstPartyClients = new Map(
       (options.oauth?.firstPartyClients ?? []).map((client) => [client.id, client] as const),
     );
@@ -210,11 +204,6 @@ export const createExecutor = (
       removeManaged: webhooks.removeManaged,
       accountNeedingReconnect: tools.accountNeedingReconnect,
     });
-    // App source defines schedules. Each activation removes saved settings for schedules the new
-    // version no longer declares and retimes those whose timing changed. The activation has
-    // committed, so a version that cannot be evaluated keeps them and the activation still
-    // succeeds. Webhook sources reconcile in the
-    // background.
     const activated = (app: AppId) =>
       schedules
         .activated(app)
@@ -320,7 +309,6 @@ export const createExecutor = (
         activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
         checkCredentials,
       },
-      // The purge's caller waits for its revocations, so they never join background work.
       owners: makeOwners(db, oauth.revokeGrant, options.ownerRevocationBudget),
       publications: catalog.publications,
       registry: catalog.registry,
@@ -344,7 +332,6 @@ export const createExecutor = (
     };
   });
 
-/** Remote transport is not implemented yet; it will expose the same native contract. */
 export const createRemoteExecutor = (
   _options: RemoteExecutorOptions,
 ): Effect.Effect<Executor, NotImplemented> =>

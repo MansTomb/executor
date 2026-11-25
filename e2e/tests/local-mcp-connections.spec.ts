@@ -1,4 +1,3 @@
-/** The paired local operator's scoped connection limits a real OAuth client and revokes it. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Exit, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
@@ -18,6 +17,7 @@ import {
   consentTo,
   issuedTokens,
   readWriteAppFiles,
+  refreshGrant,
   revokeClientGrants,
   type IssuedTokens,
 } from "../support/mcp-connections.ts";
@@ -29,15 +29,10 @@ import { siteless } from "../support/failure-site.ts";
 import { serverControl } from "../support/server-control.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
 
-/**
- * MCP clients print a refused request's body after their own prefix, such as "Error POSTing to
- * endpoint:", so the JSON-RPC error names the grant's own reason for the refusal.
- */
 const refusal = (message: string) => ({
   jsonrpc: "2.0",
   id: null,
   error: {
-    // JSON-RPC Invalid Request, as for the MCP transport's own rejections.
     code: -32600,
     message: `GrantForbidden (HTTP 403): ${message} Retryable (unchanged call): no.`,
     data: { code: "GrantForbidden", status: 403 },
@@ -53,7 +48,6 @@ const Pending = Schema.Struct({
   status: Schema.Literal("approval-required"),
   requestId: Schema.String,
 });
-/** A resumed call that failed, with the refusal's one-line summary. */
 const Refused = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({
@@ -64,7 +58,6 @@ const Refused = Schema.Struct({
     }),
   }),
 });
-/** An app with one keyed account whose `review` waits for the client to approve it. */
 const reviewAppFiles = (provider: string) => [
   {
     path: "index.ts",
@@ -81,7 +74,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({
   },
   appsManifest,
 ];
-/** An account-free app whose `review` waits for the client to approve it. */
 const accountFreeReviewAppFiles = [
   {
     path: "index.ts",
@@ -98,7 +90,6 @@ export default defineApp({}, async () => ({
   appsManifest,
 ];
 
-/** A client the paired operator authorized with `offline_access` on a new scoped connection. */
 const offlineGrant = Effect.gen(function* () {
   const api = yield* Api,
     target = yield* Target,
@@ -117,7 +108,6 @@ const offlineGrant = Effect.gen(function* () {
   expect(consent.status).toBe(200);
   return {
     original: yield* consent.credentials,
-    /** Refresh the grant and return its new tokens; a refused refresh fails the case. */
     refresh: (current: IssuedTokens) =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -135,7 +125,6 @@ const offlineGrant = Effect.gen(function* () {
           return yield* issuedTokens(yield* response.json);
         }),
       ).pipe(Effect.timeout("30 seconds")),
-    /** Tool names an MCP session lists with these tokens; fails when the token is refused. */
     listTools: (current: IssuedTokens, name: string) =>
       mcp.connect(current.accessToken, name, { connection: connection.id, mode: "native" }).pipe(
         Effect.flatMap((client) =>
@@ -155,15 +144,12 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           evidence = yield* Evidence;
         const before = yield* grant.listTools(grant.original, "before-eight-days");
         expect(before.length).toBeGreaterThan(0);
-        // Better Auth's default session lasts seven days. A refresh after it expires must
-        // issue tokens that do not name it.
         yield* serverControl("clock/advance", 200, { milliseconds: 8 * 24 * 3600_000 });
         const renewed = yield* evidence.step(
           "An offline grant refreshes after its approving session expired",
           grant.refresh(grant.original),
         );
         expect(yield* grant.listTools(renewed, "after-eight-days")).toEqual(before);
-        // The rotated refresh token still refreshes.
         const again = yield* grant.refresh(renewed);
         expect(yield* grant.listTools(again, "after-second-refresh")).toEqual(before);
       }).pipe(Effect.provide(McpClient.layer)),
@@ -175,8 +161,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
       Effect.gen(function* () {
         const grant = yield* offlineGrant;
         const before = yield* grant.listTools(grant.original, "before-upgrade");
-        // Earlier versions refused every token that named an expired approving session, and
-        // refreshing copied that session to the new tokens.
         const [expired] = yield* legacyStorage(
           [
             {
@@ -265,7 +249,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
         expect(read.execution).toEqual({ ok: true, value: { read: receipt } });
         expect(write.execution.ok).toBe(false);
         expect(excluded.execution.ok).toBe(false);
-        // The administrative key keeps full access on the plain URL but cannot enter a connection.
         const adminMoved = yield* Effect.exit(
           mcp.connect(Redacted.make(Redacted.value(target.apiKey)), "admin-connection", {
             connection: connection.id,
@@ -289,7 +272,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
                 `This credential has full access and no sign-in record, so it cannot be limited to the connection ${connection.id} that this MCP URL names. Recovery: Use the MCP URL without the connection parameter, or sign the client in through OAuth and choose the connection, then retry.`,
               ),
             );
-            // At the plain URL the connection's grant still reaches only its connection.
             const plain = yield* mcp.connect(token, "local-scoped-plain");
             const [plainRead, plainExcluded] = yield* Effect.all(
               [
@@ -329,7 +311,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
             );
             expect(plainRead.execution).toEqual({ ok: true, value: { read: receipt } });
             expect(plainExcluded.execution.ok).toBe(false);
-            // A malformed URL names no MCP address, so it is invalid rather than refused.
             const malformed = yield* api.request(
               anonymous,
               "POST",
@@ -415,7 +396,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
                   Schema.decodeUnknownEffect(SearchPage)(execution.value),
                 ),
               );
-        // Every tool of the app matches its name, so a page of one would count the other.
         const full = search(
           yield* mcp.connect(Redacted.make(Redacted.value(target.apiKey)), "local-full"),
         );
@@ -529,10 +509,8 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           Schema.decodeUnknownEffect(SearchPage)(value).pipe(
             Effect.map(({ items }) => items.map((item) => item.path)),
           );
-        // Computed names, so neither app is named statically.
         const computed = (slug: string) => `[${JSON.stringify(slug)}][0]`;
 
-        // With full access, the dynamic path reaches the write tool.
         const full = runner(
           yield* mcp.connect(Redacted.make(Redacted.value(target.apiKey)), "local-lazy-full"),
         );
@@ -636,7 +614,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           consentTo(operator, undefined),
         );
         clients.push(consent.clientId);
-        // The consent page names the plain MCP URL the grant is bound to.
         expect(consent.consentResources).toEqual([`${target.metadata.origin}/mcp`]);
         expect(consent.status).toBe(200);
         const token = yield* consent.tokens;
@@ -652,7 +629,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           "search",
           "skills",
         ]);
-        // The grant's record holds model mode; an address naming another mode is served in it.
         const native = yield* mcp.connect(token, "local-without-resource-native-address", {
           mode: "native",
         });
@@ -660,7 +636,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           "An address naming native mode serves the grant's model mode",
           (client) => client.listTools(),
         );
-        // Native mode has no resume tool; model mode lists it.
         expect(nativeListed.tools.map((tool) => tool.name).sort()).toEqual([
           "call",
           "describe",
@@ -679,7 +654,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
         yield* evidence.step(
           "A grant whose approval mode is model cannot be narrowed to browser approval",
           Effect.gen(function* () {
-            // Its own approval mode cannot ask for browser approval, so no request could use it.
             const narrowed = yield* api.request(operator, "POST", "/api/auth/mcp/grants/narrow", {
               id: yield* clientGrantId(operator, consent.clientId),
               policy: { kind: "tools", apps: [], approval: "browser" },
@@ -714,7 +688,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           mcp = yield* McpClient;
         const operator = yield* pairLocalOperator;
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
-        // Connection links are issued to agents: a request with a browser origin is refused.
         const agent: Session = {
           ...operator,
           send: (method, path, data, extra = {}) => {
@@ -739,8 +712,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
               yield* operator.send("DELETE", `/v1/accounts/${account}`, undefined, headers);
           }).pipe(Effect.orDie),
         );
-        // Connecting from the app links the account, replacing the one linked before; both stay
-        // saved. Calls use the linked account.
         const connect = (token: string) =>
           Effect.gen(function* () {
             const { id: account } = yield* connectLocalAccount(agent, {
@@ -800,7 +771,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
             ),
           );
         const pending = yield* Effect.all([review, review, review], { concurrency: 3 });
-        // Each approval is answered after the connection stops including part of the call.
         const refusedAfter = (requestId: string, apps: unknown) =>
           Effect.gen(function* () {
             const saved = yield* save(apps);
@@ -838,8 +808,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
         yield* evidence.step(
           "A connection that runs the app only with another account names the account it excludes",
           Effect.gen(function* () {
-            // A connection names only accounts linked to the app. Linking the other account
-            // replaces the one the waiting call started with.
             yield* linkLocal(agent, app.id, "service", other);
             expect(
               yield* refusedAfter(pending[1].requestId, [
@@ -910,7 +878,6 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
             ),
         );
         const pending = yield* Schema.decodeUnknownEffect(Pending)(paused.structuredContent);
-        // Some clients open a new MCP session for every tool call, so each resume below uses one.
         const resume = (label: string, token: typeof owner, name: string) =>
           Effect.gen(function* () {
             const session = yield* mcp.connect(token, name);
@@ -961,6 +928,137 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           ),
         ).toBe("unavailable");
       }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.localMcpOfflineGrantOutlivesSession.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          target = yield* Target,
+          evidence = yield* Evidence,
+          http = yield* HttpClient.HttpClient;
+        const minute = 60_000;
+        const advance = (milliseconds: number) =>
+          Effect.gen(function* () {
+            yield* serverControl("stop");
+            yield* serverControl("clock/advance", 200, { milliseconds });
+            yield* serverControl("start");
+          });
+        const mcpStatus = (access: Redacted.Redacted<string>) =>
+          Effect.scoped(
+            Effect.gen(function* () {
+              const response = yield* http.execute(
+                HttpClientRequest.post(`${target.metadata.origin}/mcp`).pipe(
+                  HttpClientRequest.bodyJsonUnsafe({
+                    jsonrpc: "2.0",
+                    id: 1,
+                    method: "initialize",
+                    params: {
+                      protocolVersion: "2025-06-18",
+                      capabilities: {},
+                      clientInfo: { name: "Offline grant", version: "1.0.0" },
+                    },
+                  }),
+                  HttpClientRequest.setHeaders({
+                    authorization: `Bearer ${Redacted.value(access)}`,
+                    accept: "application/json, text/event-stream",
+                  }),
+                ),
+              );
+              return response.status;
+            }),
+          ).pipe(Effect.timeout("30 seconds"), Effect.orDie);
+        const clients: string[] = [];
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            const operator = yield* pairLocalOperator;
+            const listed = yield* body(
+              Schema.Array(
+                Schema.Struct({
+                  clientId: Schema.String,
+                  grant: Schema.Struct({ id: Schema.String }),
+                }),
+              ),
+              yield* api.request(operator, "GET", "/api/auth/mcp/grants"),
+            );
+            for (const grant of listed.filter((grant) => clients.includes(grant.clientId)))
+              yield* api.request(operator, "POST", "/api/auth/mcp/grants/revoke", {
+                id: grant.grant.id,
+              });
+          }).pipe(Effect.orDie),
+        );
+        const operator = yield* pairLocalOperator;
+        const approve = Effect.gen(function* () {
+          const consent = yield* consentTo(operator, undefined);
+          clients.push(consent.clientId);
+          expect(consent.status).toBe(200);
+          const { accessToken, refreshToken } = yield* consent.credentials;
+          return { clientId: consent.clientId, access: accessToken, refresh: refreshToken };
+        });
+        const idle = yield* evidence.step("Approve a client that stays idle", approve);
+        const refreshing = yield* evidence.step("Approve a client that refreshes", approve);
+        yield* advance(7 * 24 * 60 * minute - 30 * minute);
+        const beforeExpiry = yield* evidence.step(
+          "The refreshing client refreshes half an hour before the session expires",
+          refreshGrant(refreshing.clientId, refreshing.refresh),
+        );
+        expect(beforeExpiry.status).toBe(200);
+        if (beforeExpiry.tokens === undefined)
+          return yield* Effect.die("The refresh issued no tokens");
+        expect(yield* mcpStatus(beforeExpiry.tokens.access)).toBe(200);
+        yield* advance(40 * minute);
+
+        const outcomes: Array<{
+          readonly name: string;
+          readonly observed: unknown;
+          readonly expected: unknown;
+        }> = [];
+        const record = (name: string, observed: unknown, expected: unknown) =>
+          Effect.sync(() => {
+            outcomes.push({ name, observed, expected });
+          });
+        const refreshAndCall = (
+          name: string,
+          clientId: string,
+          refresh: Redacted.Redacted<string>,
+        ) =>
+          Effect.gen(function* () {
+            const refreshed = yield* refreshGrant(clientId, refresh);
+            yield* record(`${name}: refresh`, refreshed.status, 200);
+            if (refreshed.tokens === undefined) return refresh;
+            yield* record(
+              `${name}: MCP with the refreshed token`,
+              yield* mcpStatus(refreshed.tokens.access),
+              200,
+            );
+            return refreshed.tokens.refresh;
+          });
+        yield* evidence.step(
+          "Ten minutes after the session expired, both clients refresh and call MCP",
+          Effect.gen(function* () {
+            yield* refreshAndCall("idle client", idle.clientId, idle.refresh);
+            yield* record(
+              "refreshing client: MCP with the token issued before the session expired",
+              yield* mcpStatus(beforeExpiry.tokens.access),
+              401,
+            );
+            const next = yield* refreshAndCall(
+              "refreshing client",
+              refreshing.clientId,
+              beforeExpiry.tokens.refresh,
+            );
+            yield* refreshAndCall(
+              "refreshing client, second refresh after expiry",
+              refreshing.clientId,
+              next,
+            );
+          }),
+        );
+        expect(outcomes.map(({ name, observed }) => [name, observed])).toEqual(
+          outcomes.map(({ name, expected }) => [name, expected]),
+        );
+      }),
     ),
   );
 });

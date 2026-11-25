@@ -1,8 +1,9 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 
-/** Runs the rule that decides which Cloud test database volumes a run may sweep. */
 export default defineConfig({
   test: {
+    update: snapshotUpdate(),
     include: ["e2e/tests/cloud-postgres-volumes.spec.ts"],
     testTimeout: 30_000,
   },

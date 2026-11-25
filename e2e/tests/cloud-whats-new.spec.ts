@@ -1,14 +1,3 @@
-/**
- * Cloud's "What's new" in the sidebar, above the resource links, which stay: the notes of the
- * changes that reached Cloud in the 30 days before the deployed commit, which the deploy writes and
- * the dashboard's build takes. The scenarios' local Cloud builds it with fixed notes
- * (e2e/support/cloud-release-notes.ts), so the block, its panel and its layout are checked against
- * the same notes whatever main's history holds; which notes the deploy writes from that history is
- * the release notes cases' to check (`release-notes.spec.ts`), and a build without notes the
- * dashboard build cases' (`dashboard-file-names.spec.ts`). The browser's clock is set, and shown
- * to change nothing. A local Cloud of its own builds the dashboard with an empty notes file, as a
- * deploy whose window has no notes does (`e2e:cloud --empty-release-notes`).
- */
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
 import type { Page } from "playwright";
@@ -23,14 +12,12 @@ const sidebar = (page: Page) => page.locator("aside.sidebar");
 const opener = (page: Page) => sidebar(page).getByRole("button", { name: "Open what's new" });
 const panel = (page: Page) => page.getByRole("dialog", { name: "What's new" });
 
-/** The block's lines, top to bottom. */
 const lines = (page: Page) =>
   sidebar(page)
     .locator(".sidebar-update")
     .innerText()
     .then((text) => text.split("\n").filter((line) => line.trim() !== ""));
 
-/** Which of the sidebar's resource links and its support trigger a person sees. */
 const resources = (page: Page) =>
   Promise.all([
     ...["Docs", "Feedback", "Star on GitHub"].map((name) =>
@@ -39,7 +26,6 @@ const resources = (page: Page) =>
     sidebar(page).getByRole("button", { name: "Get support" }).isVisible(),
   ]);
 
-/** Whether the block sits below the navigation and above the divider over the links. */
 const placement = (page: Page) =>
   page.evaluate(() => {
     const box = (selector: string) =>
@@ -56,7 +42,6 @@ const placement = (page: Page) =>
     };
   });
 
-/** Open the dashboard as it would be at `time` by the browser's clock. */
 const openAt = (page: Page, slug: string, time: string) =>
   page.clock
     .setFixedTime(new Date(time))
@@ -87,7 +72,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
             .then(() => openAt(page, slug, "2026-11-15T12:00:00Z")),
         );
 
-        // Self-host has no Cloud notes: no block and no space kept for one.
         if (target.metadata.target !== "cloud") {
           expect(
             yield* browser.use("Check the sidebar has no notes", (page) =>
@@ -97,9 +81,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
           return;
         }
 
-        // The block: a "What's new" tag and the newest note the allow-list accepts, as one button
-        // with no card around it, below the navigation and above the divider. The resource links
-        // and the support trigger stay under it: only an update takes their place.
         yield* browser.use("Wait for the block", (page) => opener(page).waitFor());
         yield* browser.checkpoint("What's new in the sidebar");
         expect(yield* browser.use("Read the block", lines)).toEqual([
@@ -128,8 +109,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
           true,
         ]);
 
-        // It opens every note by the day it reached Cloud, newest first, as text, without the
-        // refused line, and Escape returns focus to it.
         yield* browser.use("Open what's new", (page) =>
           opener(page)
             .focus()
@@ -160,8 +139,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
         expect(byDay(accepted)).toEqual([
           [
             "Nov 14, 2026",
+            "The apps page no longer shows a blank list first.",
             "Apps open from the sidebar in one click.",
-            "The apps page loads faster for large teams.",
           ],
           ["Nov 12, 2026", "Search finds apps by the tools they offer."],
           ["Nov 3, 2026", "Members can leave an organization themselves."],
@@ -175,7 +154,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
           ),
         ).toBe("Open what's new");
 
-        // The shortest window still shows it, with the links, as the sidebar scrolls.
         yield* browser.use("Shorten the window", (page) =>
           page.setViewportSize({ width: 1280, height: 540 }),
         );
@@ -185,7 +163,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
           ),
         ).toEqual([true, [true, true, true, true]]);
         yield* browser.checkpoint("What's new in a short window");
-        // The collapsed rail has no room for it and keeps its links.
         yield* browser.use("Collapse the rail", (page) =>
           page
             .setViewportSize({ width: 900, height: 800 })
@@ -201,9 +178,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
           ),
         ).toEqual([0, 0, 1]);
 
-        // The browser's clock decides nothing: a deploy writes the notes of the 30 days before its
-        // commit, and Cloud deploys every merge, so the build's notes are what is new. Months
-        // later, or before the notes' own days, the same notes show.
         for (const time of ["2027-03-01T12:00:00Z", "2026-10-01T12:00:00Z"]) {
           yield* browser.use(`Open the dashboard at ${time}`, (page) =>
             page
@@ -224,7 +198,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
           );
         }
 
-        // Every member sees it, not only owners and admins.
         yield* browser.login(actors.member);
         yield* browser.use("Open the member's dashboard", (page) =>
           openAt(page, slug, "2026-11-15T12:00:00Z").then(() => opener(page).waitFor()),
@@ -234,6 +207,58 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
           "Apps open from the sidebar in one click.",
         ]);
       }),
+    ),
+  );
+
+  const fromCommits = (line: string, notes: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const browser = yield* Browser,
+        actors = yield* Actors;
+      yield* browser.login(actors.owner);
+      yield* browser.use("Open the dashboard", (page) =>
+        page
+          .setViewportSize({ width: 1280, height: 800 })
+          .then(() => openAt(page, actors.organization.slug, "2026-11-15T12:00:00Z"))
+          .then(() => opener(page).waitFor()),
+      );
+      yield* browser.checkpoint("What's new in the sidebar");
+      expect(yield* browser.use("Read the block", lines)).toEqual(["What's new", line]);
+      yield* browser.use("Open what's new", (page) =>
+        opener(page)
+          .click()
+          .then(() => panel(page).waitFor()),
+      );
+      yield* browser.checkpoint("What's new panel");
+      const listed = yield* browser.use("Read the panel", (page) =>
+        panel(page).evaluate((element) => ({
+          days: element.querySelectorAll(".release-notes-release").length,
+          notes: [...element.querySelectorAll("li")].map((item) => item.textContent),
+          text: element.textContent ?? "",
+        })),
+      );
+      expect(listed.days).toBe(1);
+      expect(listed.notes).toEqual(notes);
+      expect(listed.text).not.toMatch(/\b(?:Feature|Improvement|Fix):/iu);
+    });
+
+  it.effect(scenarios.cloudWhatsNewFixes.title, (context) =>
+    withHostedCase(
+      context,
+      fromCommits("See recent changes to Executor Cloud.", [
+        "The apps page no longer shows a blank list first.",
+        "Search no longer drops the last result.",
+      ]),
+    ),
+  );
+
+  it.effect(scenarios.cloudWhatsNewFeature.title, (context) =>
+    withHostedCase(
+      context,
+      fromCommits("Apps open from the sidebar in one click.", [
+        "Apps open from the sidebar in one click.",
+        "The apps page no longer shows a blank list first.",
+        "Search finds apps by the tools they offer.",
+      ]),
     ),
   );
 
@@ -250,8 +275,6 @@ layer(HostedLive, { excludeTestServices: true })("Cloud what's new", (it) => {
             .then(() => openAt(page, actors.organization.slug, "2026-11-15T12:00:00Z")),
         );
         yield* browser.checkpoint("No what's new in the sidebar");
-        // A deploy whose window has no notes writes a file with none: no block, and no frame kept
-        // for one, while the resource links and the support trigger stay.
         expect(
           yield* browser.use("Check the sidebar has no notes", (page) =>
             Promise.all([

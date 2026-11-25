@@ -1,6 +1,12 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 
-/** Runs `scripts/releases/release-notes.ts` against scratch main and public repositories, as a publishing run does. */
 export default defineConfig({
-  test: { include: ["e2e/tests/release-notes.spec.ts"], testTimeout: 60_000 },
+  test: {
+    update: snapshotUpdate(),
+    include: ["e2e/tests/release-notes.spec.ts"],
+    testTimeout: 60_000,
+    sequence: { concurrent: true },
+    maxConcurrency: 4,
+  },
 });

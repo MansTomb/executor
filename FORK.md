@@ -14,15 +14,6 @@ The maintained branch is `selfhost`. Local patches:
   structured payload. Distinct text, media, errors and metadata remain, and
   execute programs still receive the original app results. Direct calls remove
   duplicates before applying the existing output budget.
-- Offline MCP grants outlive their approving browser session. Cherry-picked from
-  upstream `d3bbe6820` before the weekly merge: a refresh named the expired browser
-  session on the new access token, so every `offline_access` grant answered 401 about
-  seven days after that session was last used (Claude Code logged "Server returned 401
-  after re-authentication" from 2026-11-20). The oauth-provider patch combines it with
-  the fork's refresh rejection observer; `patches/better-auth-refresh-expired-session.md`
-  explains it. `localMcpOfflineGrantLifetime` and `localMcpExpiredSessionGrant` are in
-  the focused local scenarios. Drop this note when the weekly merge brings the same
-  commit.
 - Search defaults to five matches, input previews keep 600 characters, and
   pages retain the existing quarter-output byte budget, 16,384 bytes by default. Describe returns at most 2,000 Unicode
   characters across descriptions and signatures. Follow its `next` as the
@@ -881,3 +872,23 @@ The light lane gate passed check (34 s), upgrade (40 s, analytics retention not 
 The pre-deploy stopped-volume backup `rustfs:backups/compose-parse-online-port-xjtnok_executor/compose-parse-online-port-xjtnok_executor-v2-data-2026-11-24T20-43-55-350Z.tar` read back 948,357,120 bytes with SHA-256 `a3ef9f3adf55592bdb00732e7ac8771e45fdcc56bce3b597c32dfddd5212713a`. All 17 connected apps passed a read or catalog check before and after the deploy and after the watch. The clickup analytics window matched before and after. The management app was not redeployed because its source did not change.
 
 The 15-minute watch passed 61 samples over 900.2 seconds with no restarts, replacements or OOM events; cgroup memory ranged from 988.1 to 1041.8 MiB and ended at 1001.5 MiB. Evidence is in `~/Work/Research/executor-release-20261124-fc9b068b7`, retained through 2026-12-08.
+
+## Upstream integration on 2026-11-25
+
+Upstream `v2` at `e15cb2fda` adds 60 commits since `48162199b`. Effect
+stays at 4.1.4 and storage stays at 4.0.17. The executable contents of the
+fork's storage schema and migrations, including the shipped 4.0.2 analytics
+baseline, are identical to the previous release.
+
+Upstream adds the MCP Skills extension, automatic renewal of the Executor
+management app's managed key, and asynchronous MCP session teardown after a
+completed tool call. Interrupted calls still notify the remote server. Offline
+MCP grants now follow upstream's refresh policy, including its session binding
+for grants without `offline_access`. The provider patch retains the requesting
+client ID in the fork's refresh rejection observer.
+
+The merge keeps compact delivery including Antigravity's JSON text fallback,
+the 65,536-byte output and approval limit, live summary-first discovery and
+post-read grant checks, callable diagnostics and timeout outcomes, operation
+interceptors and analytics, and the packaged worker cap, GC flags and shutdown
+drain. The fork's offline refresh upgrade regression remains in the gate.

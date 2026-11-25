@@ -1,4 +1,3 @@
-/** Apply one grant at every shared MCP operation; hosts retain their existing resource checks. */
 import type { McpBackend } from "@executor-js/mcp";
 import {
   ElicitationFailed,
@@ -38,7 +37,6 @@ import {
   type GrantRefusal,
 } from "../contracts/grant-enforcement.ts";
 
-/** The exact tool an operation would run, before its live read-only flag is known. */
 interface Invocation {
   readonly app: AppId;
   readonly tool: ToolName;
@@ -47,21 +45,10 @@ interface Invocation {
   readonly kind?: ToolKind | undefined;
 }
 type ToolListInput = Parameters<McpBackend<never>["listTools"]>[0];
-/** A metadata read that is always evaluated again, never served from an earlier one. */
 const liveMetadata = { slowMillis: Number.POSITIVE_INFINITY };
-/**
- * Every user account an operation names: the caller's own accounts, which a grant's targets list.
- * App accounts are bound to the app and authorized by app access, so grants never list them.
- */
 const named = (accounts: AppAccounts | undefined) =>
   accounts === undefined ? [] : [...new Set(Object.values(accounts.user ?? {}).flat())];
 
-/**
- * Re-read authority per operation, including while an execution resumes within one HTTP call.
- * User accounts an operation names must be grant targets; the host checks the accounts it resolves
- * for the rest, narrowing the caller's linked accounts to the targets. App accounts are never
- * targets: app access authorizes them.
- */
 export const restrictMcpBackend = <E extends Error, G extends Error>(
   backend: McpBackend<E>,
   current: Effect.Effect<Grant, G>,
@@ -71,14 +58,12 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
     refusal === undefined ? Effect.void : Effect.fail(new GrantForbidden({ refusal }));
   const appRefusal = (policy: AuthorizationPolicy, app: AppId): GrantRefusal | undefined =>
     permitsApp(policy, app) ? undefined : { reason: "app", app };
-  /** The grant includes the app, but no entry permits these accounts, or none when empty. */
   const targetRefusal = (app: AppId, ids: readonly AccountId[]): GrantRefusal => {
     const [first, ...rest] = ids;
     return first === undefined
       ? { reason: "target", app }
       : { reason: "target", app, accounts: [first, ...rest] };
   };
-  /** The app, then the accounts: the first one the grant excludes, if either is. */
   const accountsRefusal = (
     policy: AuthorizationPolicy,
     app: AppId,
@@ -92,7 +77,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
   };
   const checkApp = (app: AppId, accounts: AppAccounts | undefined) =>
     authority.pipe(Effect.flatMap((policy) => appCheck(policy, app, accounts)));
-  /** The page's tools and routers this policy lets the caller discover. */
   const permittedPage = (policy: AuthorizationPolicy, app: AppId, page: ToolPage): ToolPage => ({
     ...page,
     items: page.items.filter((tool) => discoversTool(policy, { app, tool })),
@@ -100,10 +84,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       permitsRouter(policy, { app, path: router.path }, page.items),
     ),
   });
-  /**
-   * A catalog read as the grant is after the read: its app and the accounts the host resolved,
-   * which one entry must permit together, are checked again, and the result is narrowed with it.
-   */
   const granted = <A extends { readonly accounts: AppAccounts }>(
     policy: AuthorizationPolicy,
     app: AppId,
@@ -115,7 +95,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       yield* refuse(accountsRefusal(policy, app, named(read.accounts)));
       return narrow(policy, app, read);
     });
-  /** The index's tools and routers this policy lets the caller discover. */
   const permittedIndex = (
     policy: AuthorizationPolicy,
     app: AppId,
@@ -127,7 +106,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       permitsRouter(policy, { app, path: router.path }, index.items),
     ),
   });
-  /** Every page of one listing, pinned to the first page's version. */
   const fullListing = (input: ToolListInput, options: ToolListOptions | undefined) =>
     Effect.gen(function* () {
       let page = yield* backend.listTools(input, options);
@@ -139,13 +117,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       }
       return { ...page, items, next: undefined };
     });
-  /**
-   * Read a catalog, then the grant as it is after the read, which every result is narrowed with. A
-   * grant that decides from tool metadata, such as a read-only rule, reads the catalog live: an
-   * earlier slow evaluation the caller would accept may predate a tool's current kind. When the
-   * grant read after the catalog newly decides from metadata, the catalog is read again live and
-   * the grant once more. Grants that decide from names alone keep the caller's retention.
-   */
   const readGranted = <A, E>(
     app: AppId,
     options: ToolListOptions | undefined,
@@ -162,13 +133,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       }
       return { result, policy };
     });
-  /**
-   * The catalog an app's grant entries permit together, when no single entry permits every named
-   * account. Each entry lists the catalog with the named accounts it targets, on one version,
-   * and contributes the tools and routers it permits; a tool keeps the first entry's description.
-   * A plain requirement whose account an entry does not target leaves that entry out. The page
-   * names the requested accounts: calls choose theirs, and one entry must permit each call.
-   */
   const entryCatalogs = (
     policy: AuthorizationPolicy,
     input: ToolListInput & { readonly accounts: AppAccounts },
@@ -182,7 +146,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         const targets = permittedTargets(entry.tools, input.app);
         const user: Record<string, ReadonlyArray<AccountId>> = {};
         let usable = true;
-        // Targets narrow the caller's own accounts only; the app's accounts are kept.
         for (const [slot, ids] of Object.entries(input.accounts.user ?? {})) {
           const kept = targets === undefined ? ids : ids.filter((id) => targets.accounts.has(id));
           const many = Object.hasOwn(linked, slot) && linked[slot]?.cardinality === "many";
@@ -217,8 +180,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         }),
       );
       const { listed } = read;
-      // The grant may have narrowed while the catalogs were read: each page contributes only what
-      // an entry of the grant as it is now permits for that page's accounts.
       yield* refuse(appRefusal(current, input.app));
       const items = new Map<string, ToolPage["items"][number]>();
       const routers = new Map<string, ToolPage["routers"][number]>();
@@ -243,7 +204,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         routers: [...routers.values()],
       } satisfies ToolPage;
     });
-  /** Describe one tool live, as the catalog this invocation would use lists it now. */
   const describe = (input: Invocation) =>
     backend
       .listTools(
@@ -256,22 +216,13 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           return tool === undefined ? undefined : { tool, version: page.version };
         }),
       );
-  /**
-   * Check the invocation against the grant. Exact names and all-tools decide from the name;
-   * a read-only rule reads the live catalog, and the call then runs on that same version, as a
-   * query: the app refuses it when the tool it resolves when called is a mutation. An invocation
-   * that names a mutation is refused when only a read-only rule permits it. Succeeds with the
-   * version and kind the call runs with.
-   */
   const authorize = (policy: AuthorizationPolicy, input: Invocation) =>
     Effect.gen(function* () {
-      // The invocation names every account it runs with; one entry must permit them and the tool.
       const request = {
         app: input.app,
         tool: { name: input.tool },
         accounts: named(input.accounts),
       };
-      // A refused tool names its app or accounts instead when the grant excludes those.
       const toolRefusal = (allowed: boolean): GrantRefusal | undefined =>
         allowed
           ? undefined
@@ -284,7 +235,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         yield* refuse(toolRefusal(permitsTool(policy, request)));
         return { version: input.version, kind: input.kind };
       }
-      // An unknown tool or a missing flag is never read-only.
       const described = yield* describe(input);
       const permission =
         described === undefined
@@ -300,7 +250,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
     });
   const check = (input: Invocation) =>
     Effect.flatMap(authority, (policy) => authorize(policy, input));
-  /** An event needs the app and a grant that names it, or all of the app's events. */
   const checkEvent = (app: AppId, event: string) =>
     authority.pipe(
       Effect.flatMap((policy) =>
@@ -313,7 +262,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         ),
       ),
     );
-  /** All of an app's events need the app in the grant. */
   const checkSelectedApp = (app: AppId) =>
     authority.pipe(
       Effect.flatMap((policy) =>
@@ -322,8 +270,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
     );
   return {
     findEventSubscription: (key) => backend.findEventSubscription(key),
-    // A selection of several events needs only what it names; each delivery then checks the
-    // occurrence's app and event, and drops one the grant does not include.
     subscribeEvent: (input) =>
       (input.target.app === null
         ? authority
@@ -331,7 +277,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           ? checkSelectedApp(input.target.app)
           : checkEvent(input.target.app, input.target.event)
       ).pipe(Effect.andThen(() => backend.subscribeEvent(input))),
-    // Stopping a subscription needs only the app; a grant narrowed since may still clean up.
     unsubscribeEvent: (input) =>
       authority.pipe(
         Effect.flatMap((policy) =>
@@ -346,6 +291,10 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
     listSkills: (input, options) =>
       checkApp(input.app, input.accounts).pipe(
         Effect.andThen(() => backend.listSkills(input, options)),
+      ),
+    bundleSkills: (input, options) =>
+      checkApp(input.app, input.accounts).pipe(
+        Effect.andThen(() => backend.bundleSkills(input, options)),
       ),
     readSkill: (input) =>
       checkApp(input.app, input.accounts).pipe(Effect.andThen(() => backend.readSkill(input))),
@@ -381,10 +330,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           );
           return yield* granted(current, input.app, page, permittedPage);
         }
-        // No entry permits every named account, such as all of a many() requirement's linked
-        // accounts when entries target different ones. List each entry's catalog with the named
-        // accounts it permits, and merge what each entry permits. Each call is still checked
-        // against one entry.
         if (input.cursor !== undefined)
           return yield* new GrantForbidden({ refusal: targetRefusal(input.app, ids) });
         return yield* entryCatalogs(policy, { ...input, accounts: input.accounts }, options);
@@ -406,8 +351,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           );
           return yield* granted(current, input.app, index, permittedIndex);
         }
-        // As for `listTools`, entries that each permit some of the named accounts contribute what
-        // they permit; their merged catalog is listed with schemas, which the index omits.
         const merged = yield* entryCatalogs(
           policy,
           { ...input, accounts: input.accounts },
@@ -425,14 +368,11 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
     searchableTools: (input, options) =>
       Effect.gen(function* () {
         yield* checkApp(input.app, input.accounts);
-        // The rows a search ranks and the grant narrows are written from this read.
         const { result: searchable, policy } = yield* readGranted(input.app, options, (read) =>
           backend.searchableTools(input, read),
         );
         yield* refuse(appRefusal(policy, input.app));
-        // The listing names the accounts the host resolved; one entry must permit all of them.
         yield* refuse(accountsRefusal(policy, input.app, named(searchable.accounts)));
-        // Failed routers list no tools, so the grant decides them without the catalog.
         return {
           ...searchable,
           routers: searchable.routers.filter((router) =>
@@ -440,7 +380,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           ),
         };
       }),
-    // A target the grant no longer permits keeps its place with no tools, so result indexes hold.
     searchTools: (input) =>
       Effect.gen(function* () {
         const policy = yield* authority;
@@ -474,8 +413,6 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
           options,
         );
       }),
-    // A resumed call keeps the kind it was saved with, so a read-only rule permits it only as a
-    // query.
     resumeInvocation: (request, response, options) =>
       Effect.gen(function* () {
         const { invocation } = request;

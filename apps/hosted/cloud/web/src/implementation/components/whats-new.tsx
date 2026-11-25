@@ -1,17 +1,15 @@
 import { useRef, useState } from "react";
 import bundled from "virtual:cloud-release-notes";
-import { isPlainNote } from "@executor-js/utils/release-notes";
+import { isPlainNote, type NoteKind, whatsNewHeadline } from "@executor-js/utils/release-notes";
 import { ReleaseNotesDialog, SidebarNews } from "@executor-js/ui/dashboard/sidebar-news";
 
-/** One of Cloud's notes: the day its change reached main and its text. */
-type CloudNote = { readonly date: string; readonly text: string };
+type CloudNote = {
+  readonly date: string;
+  readonly text: string;
+  readonly kind: NoteKind;
+  readonly lead?: true | undefined;
+};
 
-/**
- * The notes this build holds (`release-notes.ts` beside the Vite config), newest first, that the
- * release notes' allow-list accepts. None for a build given no notes. They are the notes of the
- * 30 days before the deployed commit, and Cloud deploys every merge to main, so there is nothing
- * to filter by the browser's clock.
- */
 export const cloudNotes: ReadonlyArray<CloudNote> =
   bundled === null ? [] : bundled.notes.filter((note) => isPlainNote(note.text));
 
@@ -23,12 +21,8 @@ const day = (date: string) =>
     timeZone: "UTC",
   });
 
-/**
- * Cloud's "What's new", after PlanetScale's sidebar changelog: a "What's new" tag and the newest
- * note, as one button that opens every one of `notes`, by the day it reached Cloud. Every
- * member sees it; it cannot be dismissed, and it goes with the first deploy that has no note new
- * enough. Render it only when `cloudNotes` has one.
- */
+export const whatsNewTitle = "See recent changes to Executor Cloud.";
+
 export function CloudWhatsNew({ notes }: { readonly notes: ReadonlyArray<CloudNote> }) {
   const [open, setOpen] = useState(false);
   const opener = useRef<HTMLButtonElement>(null);
@@ -40,7 +34,7 @@ export function CloudWhatsNew({ notes }: { readonly notes: ReadonlyArray<CloudNo
         open={{ label: "Open what's new", onOpen: () => setOpen(true) }}
         buttonRef={opener}
       >
-        {notes[0]?.text}
+        {whatsNewHeadline(notes)?.text ?? whatsNewTitle}
       </SidebarNews>
       <ReleaseNotesDialog
         open={open}

@@ -1,4 +1,3 @@
-/** Portable workerd app compilation, protocol adapters, and immutable build storage. */
 export * from "./contracts/worker-build.ts";
 export {
   assembleWorkerBundle,
@@ -37,5 +36,9 @@ export {
   type AppEgress,
   type CredentialOutbound,
 } from "./implementation/credential-handles.ts";
-export { NetworkUnreachable, networkUnreachableResponse } from "./implementation/app-network.ts";
+export {
+  NetworkUnreachable,
+  networkUnreachableResponse,
+  outboundGroupHeader,
+} from "./implementation/app-network.ts";
 export { HostApiCheck } from "./contracts/host-api.ts";

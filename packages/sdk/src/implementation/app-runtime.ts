@@ -1,8 +1,3 @@
-/**
- * The product side of app execution, shared by every host. It turns runtime operations into app
- * invocations for the runner, gives each invocation a build loader over the host's build store,
- * and decodes the reply. Hosts differ only in where the runner lives and how builds are stored.
- */
 import { Clock, Effect, Option, Redacted, Result, Schema, type Scope, type Stream } from "effect";
 import {
   analyticsRecords,
@@ -60,10 +55,8 @@ import { invocationElicitation } from "./worker-elicitation.ts";
 import { invocationWorkflowControls } from "./worker-workflow-rpc.ts";
 import { runtimeCallParts } from "./tool-call-overhead.ts";
 
-/** What telemetry records for an error an app's reply carried, beside the error's name. */
 const appErrorRecorded = "The app returned this error; its text is not recorded";
 
-/** The part of a webhook's life each command runs, as its span records it. */
 const webhookOperations = {
   webhooks: "definitions",
   "webhook-validate": "validate",
@@ -73,14 +66,8 @@ const webhookOperations = {
   "webhook-handle": "handle",
 } as const satisfies Record<WebhookCommand["operation"], string>;
 
-/** The span recorded each time a host reads a build, to learn its protocol or cold-start it. */
 export const buildLoadSpan = "runtime.app.build.load";
 
-/**
- * One invocation's build loader over a host's build store. The runner calls it to learn a build's
- * protocol and on a cold start. A build whose protocol this host does not run never starts, so
- * only its load finds that out: `refused` keeps that as the invocation's failure.
- */
 export const invocationBuildLoader = <R>(
   invocation: Pick<AppInvocation, "app" | "build" | "database" | "command" | "accounts" | "run">,
   read: Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable, R>,
@@ -136,20 +123,12 @@ export const invocationBuildLoader = <R>(
     };
   });
 
-/** What one host provides. Everything else about app execution is shared. */
 export interface AppRuntimeHost {
-  /** Span prefix for this host's runtime operations. */
   readonly name: string;
-  /**
-   * Opaque ids of whom the current operation runs for, such as its organization, read from its
-   * context without I/O. Each runtime operation's span records them.
-   */
   readonly actor?: Effect.Effect<Readonly<Record<string, string>>>;
-  /** Read one retained build, with the protocol its framework speaks, from this host's store. */
   readonly loadBuild: (
     build: BuildId,
   ) => Effect.Effect<LoadedWorkerBuild, RuntimeBuildUnavailable, BlobStore>;
-  /** Deliver one invocation to the runner, wherever it runs. */
   readonly invoke: (
     invocation: AppInvocation,
     capabilities: AppCapabilities,
@@ -159,7 +138,6 @@ export interface AppRuntimeHost {
   readonly changes: (app: string) => Stream.Stream<number, RuntimeProtocolFailed>;
 }
 
-/** Assemble runtime operations over one host's runner and build store. */
 export const appRuntime = (host: AppRuntimeHost) =>
   Effect.gen(function* () {
     const forward = yield* makeTelemetryForwarder;
@@ -175,7 +153,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
       output: Schema.Decoder<A>,
       errors: Schema.Decoder<E>,
     ) => {
-      // This call's share of a tool call, reported when it is over.
       let invoked: RuntimeCallTiming["invoked"];
       let parts: RuntimeCallTiming["parts"];
       return Effect.scoped(
@@ -192,7 +169,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
             database: input.database,
             command,
             accounts: Redacted.value(input.accounts),
-            // Workers RPC structured-clones its arguments; Effect headers carry a prototype it rejects.
             headers: Object.fromEntries(Object.entries(yield* traceHeaders)),
             ...(input.hostApi === undefined ? {} : { hostApi: input.hostApi }),
             ...(input.approval === undefined ? {} : { approval: input.approval }),
@@ -200,8 +176,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
             ...(input.deadline === undefined ? {} : { deadline: input.deadline }),
             ...(run === undefined ? {} : { run }),
           };
-          // Only the trusted runner or data supervisor calls the loader. The runner may sit behind
-          // RPC, so the loader keeps an unsupported protocol as this call's typed failure.
           const loader = yield* invocationBuildLoader(invocation, host.loadBuild(build));
           const capabilities: AppCapabilities = {
             load: loader.load,
@@ -216,8 +190,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
             ...(input.workflow === undefined ? {} : { workflow: input.workflow }),
           };
           const from = yield* Clock.currentTimeNanos;
-          // Recorded here, by the host, before the runner receives the invocation: whatever it
-          // reports afterwards came through code the app controls.
           (yield* AppCodeEntered).entered();
           const body = yield* loader.refused(host.invoke(invocation, capabilities)).pipe(
             Effect.ensuring(
@@ -228,7 +200,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
               ),
             ),
           );
-          // Telemetry is an additive transport field. Retained builds keep their original protocol.
           const collected = yield* Schema.decodeUnknownEffect(
             Schema.Struct({
               telemetry: Schema.optional(TelemetryBatch),
@@ -241,10 +212,8 @@ export const appRuntime = (host: AppRuntimeHost) =>
               resent: Schema.optional(Schema.Literal(true)),
             }),
           )(body).pipe(Effect.result);
-          // The call met its data supervisor resetting before it started and was sent again.
           if (Result.isSuccess(collected) && collected.success.resent === true)
             yield* Effect.annotateCurrentSpan("executor.runtime.resent", true);
-          // Each isolate reports its own part on its own clock; see tool-call-overhead.ts.
           if (
             Result.isSuccess(collected) &&
             collected.success.timing !== undefined &&
@@ -264,7 +233,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
               "executor.runner.own_ms": runner.elapsedMs - runner.waitMs,
               "executor.runner.wait_ms": runner.waitMs,
               "executor.runner.gap_ms": parts.gaps.runner,
-              // The runner ran inside the app's data supervisor, which the caller reached directly.
               ...(runner.host === undefined ? {} : { "executor.runner.host": runner.host }),
               ...(supervisor === undefined
                 ? {}
@@ -313,8 +281,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
           if (Result.isSuccess(collected) && collected.success.cacheChanged === true)
             yield* (yield* AppCacheChanges).changed(input.app);
           const reply = yield* Schema.decodeUnknownEffect(HostResponse)(body);
-          // The app wrote these errors. Their text reaches the caller each is for; telemetry
-          // records their names only.
           if (!reply.ok)
             return yield* Schema.decodeUnknownEffect(errors)(reply.error).pipe(
               Effect.flatMap((error) => Effect.fail(recordAs(error, appErrorRecorded))),
@@ -327,7 +293,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
             });
           }
           const value = yield* Schema.decodeUnknownEffect(output)(reply.value);
-          // Only a successful invocation's events are kept; its writes have committed.
           if (reply.events !== undefined && reply.events.length > 0)
             yield* (yield* AppEventSink).emitted({
               app: input.app,
@@ -363,10 +328,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
       );
     };
     const actor: Effect.Effect<Readonly<Record<string, string>>> = host.actor ?? Effect.succeed({});
-    /**
-     * One runtime operation's span. It records the app the operation runs and whom the host says
-     * it runs for, so one app's or organization's failures can be told from the runtime's own.
-     */
     const traced =
       (operation: string, attributes: Readonly<Record<string, string>> = {}) =>
       <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -458,7 +419,6 @@ export const appRuntime = (host: AppRuntimeHost) =>
         ).pipe(traced("checkAccount", app(input))),
       migrate: (input) =>
         dispatch(
-          // Migrations run the build's SQL files only, so they read no cache or API.
           {
             ...input,
             hostApi: undefined,

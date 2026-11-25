@@ -24,10 +24,21 @@ outlives a sign-out. Revoking the grant still ends it. An access token issued
 before the patch keeps naming the expired session and stays refused until the
 client refreshes.
 
-`usableGrants` in `packages/mcp-auth` counts a grant's unexpired, unrevoked
-refresh token whatever its session, to match.
+A refresh token without `offline_access` stays bound to its session, as
+sign-out already revokes it. Once that session has expired, refreshing it is
+refused with `invalid_grant`, and refresh token introspection reports it
+inactive. Our clients hold such a token only after asking for fewer scopes on
+a refresh. This refusal is not reported to `onRefreshRejected`, like the scope
+and resource refusals beside it.
 
-The same change is
+`usableGrants` in `packages/mcp-auth` counts a grant's unexpired, unrevoked
+`offline_access` refresh token whatever its session, to match. A refresh token
+without `offline_access` counts only while its session is live.
+
+The first change is
 [better-auth/better-auth#12723](https://github.com/better-auth/better-auth/pull/12723),
-released in `@better-auth/oauth-provider` 1.7.26. Drop these hunks when
-Executor upgrades to 1.7.26 or later.
+released in `@better-auth/oauth-provider` 1.7.26; drop those hunks when
+Executor upgrades to 1.7.26 or later. The refusal for a refresh token without
+`offline_access` is from
+[better-auth/better-auth#12223](https://github.com/better-auth/better-auth/pull/12223),
+which no release holds yet; keep it until one does.

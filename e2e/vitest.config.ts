@@ -1,10 +1,10 @@
 import { defineConfig } from "vitest/config";
+import { snapshotUpdate } from "./snapshot-updates.ts";
 import { Schema } from "effect";
 import { Target } from "./report-model.ts";
 import { filesForTarget, patternForTarget } from "./test-plan.ts";
 import { hookTimeoutMs, scenarioTimeoutMs } from "./timeouts.ts";
 
-// Vitest's process boundary receives an explicit target and output directory from run.ts.
 const directory = process.env.EXECUTOR_E2E_RUN;
 if (!directory) throw new Error("Use bun run e2e to start an isolated target first.");
 const target = Schema.decodeUnknownSync(Target)(process.env.E2E_TARGET);
@@ -18,21 +18,21 @@ const cloudMode = Schema.decodeUnknownSync(
     "oauth-proxy-preview",
     "revocation-budget",
     "empty-release-notes",
+    "fix-release-notes",
+    "feature-release-notes",
   ]),
 )(process.env.E2E_CLOUD_MODE);
 export default defineConfig({
   test: {
+    update: snapshotUpdate(),
     name: target,
     setupFiles: ["e2e/setup.ts"],
     include: filesForTarget(target, suite, cloudMode, process.env.E2E_TEST_NAME ?? ""),
-    // Every scheduled title the run's filter selects, worked out here rather than passed as an
-    // argument: with no filter it names the whole suite, past the 128 KiB one argument may hold.
     testNamePattern: patternForTarget(target, suite, process.env.E2E_TEST_NAME ?? "", cloudMode),
     fileParallelism: true,
     maxWorkers: Schema.decodeUnknownSync(
       Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 32 })),
     )(Number(process.env.E2E_WORKERS)),
-    // A hang detector sized for slow runners, not a performance bound (timeouts.ts).
     testTimeout: process.env.E2E_INTERACTIVE === "1" ? 0 : scenarioTimeoutMs,
     hookTimeout: hookTimeoutMs,
     teardownTimeout: 30000,

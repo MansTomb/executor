@@ -1,10 +1,3 @@
-/**
- * The self-host server's daily check for a newer release: it asks the npm registry it installs app
- * packages from for the `executor` dist-tags, and shows owners and admins an "Update available"
- * block that opens how to update. Each case starts a fresh instance with a release version and a
- * loopback registry that records what reaches it; other registry paths pass through to the run's
- * own registry, so app builds work as usual.
- */
 import { expect, layer } from "@effect/vitest";
 import { Config, Effect, FileSystem, Option, Schedule } from "effect";
 import { createServer, type IncomingHttpHeaders } from "node:http";
@@ -25,13 +18,8 @@ interface Asked {
   readonly headers: IncomingHttpHeaders;
 }
 
-/** How the registry answers the dist-tags: with the tags, a 503, a body that is no JSON, or never. */
 type Answer = "tags" | "unavailable" | "malformed" | "hold";
 
-/**
- * A registry on loopback that answers the dist-tags as `answer` says, which a case may change, and
- * records each dist-tags request. Anything else goes to `upstream`, the run's registry.
- */
 const registry = (options: {
   readonly tags: Record<string, string>;
   readonly answer?: Answer;
@@ -108,7 +96,6 @@ const registry = (options: {
     (stub) => Effect.sync(() => stub.close()),
   );
 
-/** A proxy on loopback that records the URL of each request through it and answers 502. */
 const proxy = Effect.acquireRelease(
   Effect.callback<{ readonly origin: string; readonly seen: Array<string>; close: () => void }>(
     (resume) => {
@@ -118,7 +105,6 @@ const proxy = Effect.acquireRelease(
         response.writeHead(502);
         response.end();
       });
-      // An HTTPS request through a proxy opens a tunnel first.
       server.on("connect", (request, socket) => {
         seen.push(request.url ?? "");
         socket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n");
@@ -142,7 +128,6 @@ const proxy = Effect.acquireRelease(
   (stub) => Effect.sync(() => stub.close()),
 );
 
-/** A port nothing listens on: an instance with no way out. */
 const closedPort = Effect.callback<number>((resume) => {
   const server = createServer();
   server.listen(0, "127.0.0.1", () => {
@@ -152,7 +137,6 @@ const closedPort = Effect.callback<number>((resume) => {
   });
 });
 
-/** Send a request as the signed-in browser does, with the instance's origin. */
 const send = (origin: string, method: "GET" | "POST", route: string, data?: unknown) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -167,7 +151,6 @@ const send = (origin: string, method: "GET" | "POST", route: string, data?: unkn
     );
   });
 
-/** Set up the fresh instance as its owner, and add an admin and a member by invitation. */
 const people = (origin: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -215,7 +198,6 @@ const people = (origin: string) =>
 const opener = (page: Page) =>
   page.locator("aside.sidebar").getByRole("button", { name: /^How to update to v/ });
 
-/** Open the apps page and give the server's answer time to arrive. */
 const openApps = (origin: string, slug: string) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
@@ -228,15 +210,18 @@ const openApps = (origin: string, slug: string) =>
     );
   });
 
-/** What the instance tells a person about the update. */
 const status = (origin: string, slug: string) =>
   send(origin, "GET", `/api/self-host/update?organization=${slug}`);
 
-/** Wait for the check, which runs in the background after start, to have asked. */
 const askedOnce = (asked: ReadonlyArray<Asked>) =>
   Effect.suspend(() =>
     asked.length > 0 ? Effect.void : Effect.fail(new Error("The registry was not asked")),
   ).pipe(Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }));
+
+const beta = { latest: "1.6.12", beta: "2.0.0-beta.142" };
+const release = { EXECUTOR_BUILD_VERSION: "2.0.0-beta.141" };
+const loopback = { EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: "true" };
+const upstreamRegistry = Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
 
 layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) => {
   it.effect(scenarios.selfHostUpdateCheck.title, (context) =>
@@ -245,14 +230,8 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
       Effect.gen(function* () {
         const browser = yield* Browser;
         const target = yield* Target;
-        const upstream = yield* Config.NonEmptyString("E2E_NPM_REGISTRY").pipe(Config.option);
-        const beta = { latest: "1.6.12", beta: "2.0.0-beta.142" };
-        const release = { EXECUTOR_BUILD_VERSION: "2.0.0-beta.141" };
-        // The operator lets the server reach plain HTTP on loopback, where the mirror listens.
-        const loopback = { EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: "true" };
+        const upstream = yield* upstreamRegistry;
 
-        // A beta instance whose registry names a newer beta: owners and admins see it, members
-        // do not, and the registry is asked once, with nothing about the instance.
         yield* Effect.scoped(
           Effect.gen(function* () {
             const stub = yield* registry({ tags: beta, upstream });
@@ -339,13 +318,9 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
             yield* browser.use("Sign out the member", (page) => page.context().clearCookies());
             expect((yield* status(origin, slug)).status).toBe(401);
 
-            // Three people opened the dashboard; the server asked the registry once, by itself.
             expect(stub.asked).toHaveLength(1);
             const [question] = stub.asked;
             expect([question!.method, question!.url]).toEqual(["GET", distTags]);
-            // The apps Worker sends it as it sends app installs' requests: the Host header alone,
-            // none of the server's own: no cookie, no credential, no trace (b3, traceparent), not
-            // even a user agent, nothing that names the instance.
             const sent = JSON.stringify(question!.headers);
             expect(Object.keys(question!.headers).toSorted(), sent).toEqual(["host"]);
             expect(question!.headers.host).toBe(new URL(stub.origin).host);
@@ -353,8 +328,18 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
               expect(sent, revealing).not.toContain(revealing);
           }),
         );
+      }),
+    ),
+  );
 
-        // A stable instance never moves to a beta, even one the `latest` tag names: nothing to show.
+  it.effect(scenarios.selfHostUpdateCheckChannels.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const browser = yield* Browser;
+        const target = yield* Target;
+        const upstream = yield* upstreamRegistry;
+
         yield* Effect.scoped(
           Effect.gen(function* () {
             const stub = yield* registry({
@@ -375,7 +360,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
           }),
         );
 
-        // A beta instance moves to a newer stable release as well as a newer beta.
         yield* Effect.scoped(
           Effect.gen(function* () {
             const stub = yield* registry({
@@ -395,10 +379,18 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
             });
           }),
         );
+      }),
+    ),
+  );
 
-        // Every attempt counts toward the day, whatever the answer: a refused or malformed answer
-        // is not asked again on a restart, and the next day's start asks once more. The
-        // instance's clock moves a day while it is stopped.
+  it.effect(scenarios.selfHostUpdateCheckDaily.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const browser = yield* Browser;
+        const target = yield* Target;
+        const upstream = yield* upstreamRegistry;
+
         yield* Effect.scoped(
           Effect.gen(function* () {
             const stub = yield* registry({ tags: beta, answer: "unavailable", upstream });
@@ -411,7 +403,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
             yield* askedOnce(stub.asked);
             const { slug, signIn } = yield* people(origin);
             const day = { milliseconds: 25 * 60 * 60 * 1000 };
-            /** Restart the instance, sign in again and read its answer as the owner. */
             const restart = (moveClock: boolean) =>
               Effect.gen(function* () {
                 yield* serverControl("stop");
@@ -428,16 +419,13 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
                   : Effect.fail(new Error(`The registry was asked ${stub.asked.length} times`)),
               ).pipe(Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 100 }));
 
-            // A 503: shown as nothing, and the same day's restart does not ask.
             expect(yield* restart(false)).toEqual({ update: null });
             expect(stub.asked).toHaveLength(1);
-            // The next day asks once; the answer is no JSON, and a restart does not ask again.
             stub.answer = "malformed";
             expect(yield* restart(true)).toEqual({ update: null });
             yield* asks(2);
             expect(yield* restart(false)).toEqual({ update: null });
             expect(stub.asked).toHaveLength(2);
-            // The day after, the registry answers, and the update shows: three questions in all.
             stub.answer = "tags";
             yield* restart(true);
             yield* asks(3);
@@ -448,8 +436,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
               update: { current: "2.0.0-beta.141", available: "2.0.0-beta.142" },
             });
             expect(stub.asked).toHaveLength(3);
-            // The next day the registry is down again: the release it named still exists, so the
-            // owner still sees it.
             stub.answer = "unavailable";
             yield* restart(true);
             yield* asks(4);
@@ -462,12 +448,17 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
             expect(stub.asked).toHaveLength(4);
           }),
         );
+      }),
+    ),
+  );
 
-        // When the server cannot record an attempt, it does not ask: nothing would keep a restart
-        // from asking again. Its record in the data directory is replaced by a directory, which can
-        // be neither read nor written; on the next day's start and a restart, nothing is asked. Each
-        // start says so once, as a warning an operator sees without asking for debug logs, naming
-        // the record. Once the record can be written again, the next start asks.
+  it.effect(scenarios.selfHostUpdateCheckRecord.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const target = yield* Target;
+        const upstream = yield* upstreamRegistry;
+
         yield* Effect.scoped(
           Effect.gen(function* () {
             const stub = yield* registry({ tags: beta, upstream });
@@ -494,8 +485,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
             const fs = yield* FileSystem.FileSystem;
             yield* fs.remove(record);
             yield* fs.makeDirectory(record);
-            // The check runs in the background after a start; each start's line is awaited before
-            // the next stop.
             const warnings = fs
               .readFileString(`${instance.directory}/server.log`)
               .pipe(
@@ -533,29 +522,17 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
             expect(stub.asked).toHaveLength(2);
           }),
         );
+      }),
+    ),
+  );
 
-        // Turned off: the server never asks, and shows nothing.
-        yield* Effect.scoped(
-          Effect.gen(function* () {
-            const stub = yield* registry({ tags: beta, upstream });
-            const origin = yield* startFreshSelfHost(target, {
-              ...release,
-              ...loopback,
-              EXECUTOR_NPM_REGISTRY: stub.origin,
-              EXECUTOR_NO_UPDATE_CHECK: "1",
-            });
-            const { slug, signIn } = yield* people(origin);
-            yield* signIn("owner");
-            yield* openApps(origin, slug);
-            expect(yield* browser.use("Check off", (page) => opener(page).count())).toBe(0);
-            expect(JSON.parse((yield* status(origin, slug)).body)).toEqual({ update: null });
-            expect(stub.asked).toHaveLength(0);
-          }),
-        );
+  it.effect(scenarios.selfHostUpdateCheckMirror.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const target = yield* Target;
+        const upstream = yield* upstreamRegistry;
 
-        // A mirror on a private address over plain HTTP, which the URL policy for addresses users
-        // give refuses but app installs read: the check reads it as installs do, and the owner sees
-        // the update it names.
         yield* Effect.scoped(
           Effect.gen(function* () {
             const stub = yield* registry({ tags: beta, upstream });
@@ -574,8 +551,6 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
           }),
         );
 
-        // The server has proxy variables, for loopback too. App installs reach the registry directly,
-        // without them, and so does the check: the mirror is asked, and nothing reaches the proxy.
         yield* Effect.scoped(
           Effect.gen(function* () {
             const stub = yield* registry({ tags: beta, upstream });
@@ -601,8 +576,46 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
             expect(through.seen.filter((url) => url.includes("dist-tags"))).toEqual([]);
           }),
         );
+      }),
+    ),
+  );
 
-        // Air-gapped: the registry cannot be reached at all. Nothing is shown and nothing fails.
+  it.effect(scenarios.selfHostUpdateCheckOff.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const browser = yield* Browser;
+        const target = yield* Target;
+        const upstream = yield* upstreamRegistry;
+
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const stub = yield* registry({ tags: beta, upstream });
+            const origin = yield* startFreshSelfHost(target, {
+              ...release,
+              ...loopback,
+              EXECUTOR_NPM_REGISTRY: stub.origin,
+              EXECUTOR_NO_UPDATE_CHECK: "1",
+            });
+            const { slug, signIn } = yield* people(origin);
+            yield* signIn("owner");
+            yield* openApps(origin, slug);
+            expect(yield* browser.use("Check off", (page) => opener(page).count())).toBe(0);
+            expect(JSON.parse((yield* status(origin, slug)).body)).toEqual({ update: null });
+            expect(stub.asked).toHaveLength(0);
+          }),
+        );
+      }),
+    ),
+  );
+
+  it.effect(scenarios.selfHostUpdateCheckAirGapped.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const browser = yield* Browser;
+        const target = yield* Target;
+
         yield* Effect.scoped(
           Effect.gen(function* () {
             const port = yield* closedPort;
@@ -623,9 +636,18 @@ layer(TestLive, { excludeTestServices: true })("Self-host update check", (it) =>
             expect(JSON.parse((yield* status(origin, slug)).body)).toEqual({ update: null });
           }),
         );
+      }),
+    ),
+  );
 
-        // A registry that never answers delays neither startup nor a page: the instance starts,
-        // sets up and serves while the question is still open.
+  it.effect(scenarios.selfHostUpdateCheckUnanswered.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const browser = yield* Browser;
+        const target = yield* Target;
+        const upstream = yield* upstreamRegistry;
+
         yield* Effect.scoped(
           Effect.gen(function* () {
             const stub = yield* registry({ tags: beta, answer: "hold", upstream });

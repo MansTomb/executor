@@ -1,4 +1,3 @@
-/** A result cut by the execute output limit says so before the cut value, in both MCP forms. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
@@ -9,7 +8,6 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 
 const outputLimitBytes = 65_536;
-// Pi and other agent harnesses keep only this many leading characters of a tool result.
 const callerPrefixChars = 30_000;
 
 const Response = Schema.Struct({
@@ -93,7 +91,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP output truncation", (it) =
           expect(result.text).not.toContain("Output incomplete");
         };
 
-        // A string whose JSON is exactly the limit is complete; one more byte is not.
         const atLimit = yield* execute(
           "At the limit",
           `return "x".repeat(${outputLimitBytes - 2});`,
@@ -106,12 +103,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP output truncation", (it) =
         );
         expectIncomplete(overLimit);
 
-        // The limit counts UTF-8 bytes, so 40,000 two-byte characters exceed it.
         const multibyte = yield* execute("Multibyte text", `return "é".repeat(40000);`);
         expectIncomplete(multibyte);
         expect(String(multibyte.execution.value)).toContain("80002 bytes");
 
-        // A truncated object comes back as part of its JSON in a string.
         const object = yield* execute(
           "Oversized object",
           `return Array.from({ length: 2000 }, (_, id) => ({ id, text: "y".repeat(40) }));`,
@@ -119,7 +114,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP output truncation", (it) =
         expectIncomplete(object);
         expect(typeof object.execution.value).toBe("string");
 
-        // Logs share the budget: the value fits, the log line does not.
         const logs = yield* execute(
           "Logs over the budget",
           `console.log("z".repeat(40000));
@@ -129,7 +123,6 @@ return "v".repeat(30000);`,
         expect(logs.execution.value).toBe("v".repeat(30000));
         expect(logs.execution.logs?.some((line) => line.startsWith("[logs truncated"))).toBe(true);
 
-        // A narrowed read inside execute returns the part the truncated result omitted.
         const narrowed = yield* execute(
           "Narrowed read",
           `const all = Array.from({ length: 70000 }, (_, i) => String(i % 10)).join("");

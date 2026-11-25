@@ -305,7 +305,6 @@ try {
   });
 
   selection = {};
-  /** The copy the upgrade makes for the second account set, once its data step has run. */
   const profileCopy = async () => {
     for (let attempt = 0; attempt < 120; attempt++) {
       const { data: listed } = await request(`${prefix}/apps`);

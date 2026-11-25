@@ -1,19 +1,9 @@
-/**
- * The `site` job runs `apps/hosted/cloud/scripts/worker-sizes.ts` to hold a pull request to what
- * it adds to each Cloud Worker's upload. These cases run the script as a process on uploads
- * written beforehand (`--uploads`), as it reads a build's, beside main's (`--base`) and the pull
- * request's description (`--description`), and read its exit code, annotations and step summary.
- */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as skipCheck from "../ci-skip-check.ts";
 
-/**
- * One Worker's upload: its bytes, its budget, the sources the bytes come from, and the bytes its
- * entry imports statically.
- */
 interface Upload {
   readonly bytes: number;
   readonly budget?: number;
@@ -29,18 +19,11 @@ const main: Readonly<Record<string, Upload>> = {
 const description = (...lines: ReadonlyArray<string>) =>
   ["Adds a sign-in method.", "", "```worker-growth", ...lines, "```", ""].join("\n");
 
-/**
- * One run of the check: `uploads` is what the pull request builds. Main's uploads are `main`
- * unless `base` gives others, or none when main's CI run saved none. Without `description` the
- * run is a push to main.
- */
 const check = (input: {
   readonly uploads: Readonly<Record<string, Upload>>;
   readonly base?: Readonly<Record<string, Upload>> | "missing";
   readonly description?: string;
-  /** A push to main's merged pull requests, as worker-baseline.ts `merged` writes them. */
   readonly merged?: ReadonlyArray<{ readonly number: number; readonly body: string }>;
-  /** What the base is, as the report names it (scripts/ci/worker-baseline.ts's `label`). */
   readonly baseline?: string;
 }) =>
   Effect.gen(function* () {
@@ -89,7 +72,6 @@ const check = (input: {
         { env: { GITHUB_STEP_SUMMARY: summary }, extendEnv: true },
       ),
     );
-    // The runtime logs a failure to stdout, so the cases read both streams together.
     const [log, exitCode] = yield* Effect.all(
       [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
       { concurrency: "unbounded" },
@@ -140,7 +122,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker upload growth",
       ]);
       expect(result.summary).toContain("| api | 5,450,001 | +50,001 **needs an allowance** |");
       expect(result.summary).toContain("```worker-growth\napi +50,001:\n```");
-      // What grew is named, so the author knows what to trim or justify.
       expect(result.summary).toContain("| `saml` | +50,001 |");
       expect(result.summary).toContain("| dashboard | 3,900,000 | 0 |");
     }),
@@ -160,7 +141,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker upload growth",
           ),
         ]);
         expect(failed.log).toContain(`\`\`\`worker-growth\n${line}\n\`\`\``);
-        // Pasted as printed, the placeholder is not a reason.
         const pasted = yield* check({ uploads, description: description(line) });
         expect(pasted.exitCode, pasted.log).toBe(1);
         expect(pasted.summary).toContain(
@@ -173,7 +153,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker upload growth",
           ),
         });
         expect(reasoned.exitCode, reasoned.log).toBe(0);
-        // A real reason may itself start and end with angle brackets.
         const bracketed = yield* check({
           uploads,
           description: description("api +50,001: <Suspense> around <Editor>"),
@@ -324,7 +303,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker upload growth",
   );
 });
 
-/** Main's dashboard Worker, whose entry imports only its runtime and loads the renderer on use. */
 const lazyDashboard: Readonly<Record<string, Upload>> = {
   dashboard: { bytes: 3_900_000, budget: 4_300_000, staticBytes: 240_000 },
 };
@@ -354,8 +332,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker static imports"
     "pulling the dashboard renderer back into the entry fails though the upload grows 1,904 bytes",
     () =>
       Effect.gen(function* () {
-        // Real figures: the dashboard Worker with its renderer behind import() (the base), and the
-        // same Worker after Effect 4.1 pulled the renderer into the entry's chunk.
         const result = yield* check({
           uploads: { dashboard: { bytes: 3_778_051, budget: 4_300_000, staticBytes: 3_778_051 } },
           base: { dashboard: { bytes: 3_776_147, budget: 4_300_000, staticBytes: 394_571 } },
@@ -416,21 +392,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker static imports"
   );
 });
 
-/**
- * A `gh` for scripts/ci/worker-baseline.ts that answers from `answers`: open pull requests by head
- * branch (`open`), merge bases by branch (`merge`; a branch missing from it is not found), main's
- * push runs by commit (`runs`), recorded sizes by artifact name (`artifacts`), the run each was
- * recorded by (`runSources`; by default a CI run of this repository's pull request), the uploads
- * each download writes (`downloads`, by artifact name) and the commit a recorded build names
- * (`builtFrom`; by default the one in its name, null for none). For `above`: the pull requests on
- * the branch (`uppers`), the CI runs on each head (`upperRuns`) and each run's record (`records`,
- * shown after `after` reads). `failPullRequests` and `failCompare` fail for good; `flaky` fails a
- * call containing a key that many times first. Each call is logged.
- */
 interface Upper {
   readonly number: number;
   readonly headRefOid: string;
   readonly isCrossRepository?: boolean;
+  readonly isDraft?: boolean;
 }
 
 interface StubRecord {
@@ -453,7 +419,6 @@ interface GitHubAnswers {
     Record<string, { path?: string; event?: string; repository?: string | null }>
   >;
   readonly uppers?: ReadonlyArray<Upper>;
-  /** The pull requests above as each successive read finds them; the last one stays. */
   readonly upperSnapshots?: ReadonlyArray<ReadonlyArray<Upper>>;
   readonly upperRuns?: Readonly<
     Record<
@@ -467,29 +432,23 @@ interface GitHubAnswers {
       }>
     >
   >;
-  /** Each run's records, listed once the run's artifacts have been read more than `after` times. */
   readonly records?: Readonly<Record<string, StubRecord | ReadonlyArray<StubRecord>>>;
   readonly otherArtifacts?: Readonly<Record<string, ReadonlyArray<{ id: number; name: string }>>>;
-  /** A run's select job, for a run whose status is not completed. */
   readonly selectJobs?: Readonly<Record<string, { status: string; waitingAbove?: boolean }>>;
+  readonly runJobs?: Readonly<
+    Record<string, ReadonlyArray<{ name: string; status: string; conclusion?: string | null }>>
+  >;
+  readonly matrixJobs?: Readonly<Record<string, number>>;
   readonly failPullRequests?: boolean;
   readonly failCompare?: ReadonlyArray<string>;
-  /**
-   * The skip check's ancestry compare, by \`<lower head>...<tested>\`: GitHub's status, or \`fail\`.
-   * Unlisted pairs answer 404, as a commit GitHub does not know would.
-   */
   readonly contains?: Readonly<Record<string, string>>;
   readonly flaky?: Readonly<Record<string, number>>;
-  /** A push to main: the commits it adds, each one's merged pull requests, and their bodies. */
   readonly pushCommits?: ReadonlyArray<string>;
   readonly commitPulls?: Readonly<Record<string, ReadonlyArray<number>>>;
   readonly pullBodies?: Readonly<Record<string, string>>;
   readonly failPush?: boolean;
-  /** A call containing a key never answers, that many times. */
   readonly hangs?: Readonly<Record<string, number>>;
-  /** A call containing a key answers that many milliseconds late. */
   readonly slow?: Readonly<Record<string, number>>;
-  /** Each commit's message, author, parents and changed files, by SHA. */
   readonly commits?: Readonly<
     Record<
       string,
@@ -503,7 +462,7 @@ interface GitHubAnswers {
   >;
 }
 
-const stubGh = `#!/usr/bin/env node
+const stubGh = `#!/usr/bin/env bun
 const fs = require("node:fs");
 const path = require("node:path");
 const answers = JSON.parse(fs.readFileSync(path.join(__dirname, "answers.json"), "utf8"));
@@ -550,7 +509,7 @@ if (args[0] === "pr" && args[1] === "list") {
 } else if (args[0] === "api" && /\\/pulls\\?base=/.test(pathArg)) {
   if (answers.failPullRequests) fail("gh: Server Error (HTTP 502)");
   const uppers = answers.upperSnapshots ? at(answers.upperSnapshots, "/pulls?base=") : answers.uppers || [];
-  reply(uppers.map((pull) => ({ number: pull.number, head: { sha: pull.headRefOid, repo: { full_name: pull.isCrossRepository ? "someone/fork" : "owner/repository" } } })));
+  reply(uppers.map((pull) => ({ number: pull.number, draft: pull.isDraft === true, head: { sha: pull.headRefOid, repo: { full_name: pull.isCrossRepository ? "someone/fork" : "owner/repository" } } })));
 } else if (args[0] === "api" && /\\/actions\\/runs\\?/.test(pathArg)) {
   const headSha = pathArg.replace(/^.*head_sha=/, "").replace(/&.*$/, "");
   const runs = ((answers.upperRuns || {})[headSha] || []).map((run) => ({ path: ".github/workflows/ci.yml", status: "completed", conclusion: "success", html_url: "https://github.com/owner/repository/actions/runs/" + run.id, head_repository: { full_name: run.repository || "owner/repository" }, ...run }));
@@ -559,11 +518,19 @@ if (args[0] === "pr" && args[1] === "list") {
   const run = pathArg.replace(/^.*\\/runs\\//, "").replace(/\\/.*$/, "");
   const reads = calls("/runs/" + run + "/artifacts");
   const listed = [].concat((answers.records || {})[run] || []).filter((record) => reads > (record.after || 0));
-  reply({ artifacts: [...listed.map((record, index) => ({ id: record.id || Number(run) * 10 + index, name: record.name })), ...((answers.otherArtifacts || {})[run] || [])] });
+  // As GitHub lists them: newest first (the records, uploaded by select, are the oldest), 100 a
+  // page, with the run's count.
+  const page = Number((pathArg.match(/[?&]page=(\\d+)/) || [])[1] || 1);
+  const all = [...((answers.otherArtifacts || {})[run] || []), ...listed.map((record, index) => ({ id: record.id || Number(run) * 10 + index, name: record.name }))];
+  reply({ total_count: all.length, artifacts: all.slice((page - 1) * 100, page * 100) });
 } else if (args[0] === "api" && /\\/actions\\/runs\\/\\d+\\/jobs/.test(pathArg)) {
   const run = pathArg.replace(/^.*\\/runs\\//, "").replace(/\\/.*$/, "");
   const select = (answers.selectJobs || {})[run] || { status: "in_progress" };
-  reply({ jobs: [{ name: "checks / select", status: select.status, steps: [{ name: "Check that the layer above was computed on this layer", status: select.waitingAbove ? "in_progress" : "pending" }] }] });
+  // A page of at most 100, as GitHub lists them, with the run's count of jobs.
+  const page = Number((pathArg.match(/[?&]page=(\\d+)/) || [])[1] || 1);
+  const matrix = Array.from({ length: (answers.matrixJobs || {})[run] || 0 }, (_, index) => ({ name: "checks / e2e-self-host (" + (index + 1) + ")", status: "completed", conclusion: "success" }));
+  const all = [{ name: "checks / select", status: select.status, steps: [{ name: "Check that the layer above was computed on this layer", status: select.waitingAbove ? "in_progress" : "pending" }] }, ...matrix, ...((answers.runJobs || {})[run] || [])];
+  reply({ total_count: all.length, jobs: all.slice((page - 1) * 100, page * 100) });
 } else if (args[0] === "api" && /\\/compare\\//.test(args[1]) && value("--jq") === ".status") {
   const pair = args[1].replace(/^.*\\/compare\\//, "").replace(/\\?.*$/, "");
   const status = (answers.contains || {})[pair];
@@ -619,7 +586,6 @@ if (args[0] === "pr" && args[1] === "list") {
 } else fail("unexpected gh " + command);
 `;
 
-/** One run of scripts/ci/worker-baseline.ts with `env`, against a stub `gh` answering `answers`. */
 const baseline = (
   command: ReadonlyArray<string>,
   env: Readonly<Record<string, string>>,
@@ -683,7 +649,6 @@ const baseline = (
 
 const sha = (character: string) => character.repeat(40);
 
-/** The files and diffs of a beta release commit, as 940e411b6 (beta.53) changed them. */
 const releaseFiles = (version: string) => {
   const before = `2.0.0-beta.${Number(version) - 1}`;
   const after = `2.0.0-beta.${version}`;
@@ -707,7 +672,6 @@ const head = sha("f");
 layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline", (it) => {
   it.effect("a stack that ends on main is compared with main, as before", () =>
     Effect.gen(function* () {
-      // A pull request into main: main at its base commit, without reading the stack.
       const onMain = yield* baseline(["resolve"], {
         BASE_REF: "main",
         BASE_SHA: sha("1"),
@@ -719,10 +683,8 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         id: `main@${sha("1")}`,
       });
       expect(onMain.calls).toEqual([]);
-      // A push to main: the commit before it.
       const push = yield* baseline(["resolve"], { BASE_REF: "", BASE_SHA: sha("2") });
       expect(push.outputs).toMatchObject({ branch: "main", commit: sha("2") });
-      // An upper layer: its base is the head of an open pull request into main, two layers down.
       const layered = yield* baseline(
         ["resolve"],
         { BASE_REF: "layer-2", BASE_SHA: sha("3"), HEAD_SHA: head },
@@ -740,7 +702,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     "a stack that ends on another branch is compared with that branch at its merge base",
     () =>
       Effect.gen(function* () {
-        // A pull request into the long-lived branch, and one stacked on such a pull request.
         const answers: GitHubAnswers = {
           open: { "eapps-layer": [{ baseRefName: "effect-apps" }] },
           merge: { "effect-apps": sha("5"), main: sha("6") },
@@ -759,14 +720,12 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             label: "effect-apps at 555555555",
           });
         }
-        // The long-lived branch's own pull request into main is a stack on main: charged its total.
         const merge = yield* baseline(
           ["resolve"],
           { BASE_REF: "main", BASE_SHA: sha("8"), HEAD_SHA: head },
           answers,
         );
         expect(merge.outputs).toMatchObject({ branch: "main", commit: sha("8") });
-        // Another repository's pull request from a branch of the same name is not this stack.
         const fork = yield* baseline(
           ["resolve"],
           { BASE_REF: "effect-apps", BASE_SHA: sha("7"), HEAD_SHA: head },
@@ -782,12 +741,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
   it.effect("whatever cannot be read, or could end on main, is compared with main", () =>
     Effect.gen(function* () {
       const env = { BASE_REF: "effect-apps", BASE_SHA: sha("7"), HEAD_SHA: head };
-      // The base branch was deleted, or force-pushed so it shares no history with the head.
       const gone = yield* baseline(["resolve"], env, { merge: { main: sha("6") } });
       expect(gone.exitCode, gone.log).toBe(0);
       expect(gone.outputs).toMatchObject({ branch: "main", commit: sha("6") });
       expect(gone.outputs.note).toContain("effect-apps could not be read");
-      // The stack below could not be listed.
       const unlisted = yield* baseline(
         ["resolve"],
         { ...env, BASE_REF: "eapps-layer" },
@@ -798,7 +755,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       );
       expect(unlisted.outputs).toMatchObject({ branch: "main", commit: sha("6") });
       expect(unlisted.outputs.note).toContain("could not be read");
-      // A branch with open pull requests into main and into another branch could end on main.
       const both = yield* baseline(
         ["resolve"],
         { ...env, BASE_REF: "shared" },
@@ -808,7 +764,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         },
       );
       expect(both.outputs).toMatchObject({ branch: "main", commit: sha("6") });
-      // A branch whose stack could end on two branches, neither of them main: no one baseline.
       const two = yield* baseline(
         ["resolve"],
         { ...env, BASE_REF: "shared" },
@@ -818,7 +773,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         },
       );
       expect(two.outputs).toMatchObject({ branch: "main", commit: sha("6") });
-      // --main resolves main whatever the stack ends on.
       const forced = yield* baseline(["resolve", "--main"], env, {
         merge: { main: sha("6"), "effect-apps": sha("5") },
       });
@@ -842,8 +796,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           label: "effect-apps at 555555555",
         });
         expect(recorded.sizes.toSorted()).toEqual(["api.json", "baseline-commit.txt"]);
-        // Nothing recorded, or only an expired record (which GitHub may still serve): the job
-        // builds the commit.
         for (const artifacts of [{}, { [name]: JSON.stringify([{ expired: true, run: 76 }]) }]) {
           const missing = yield* baseline(["fetch", "<sizes>"], branch, {
             artifacts,
@@ -852,7 +804,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           expect(missing.outputs).toMatchObject({ found: "false", build: "true" });
           expect(missing.sizes).toEqual([]);
         }
-        // Main's sizes come from main's own CI run at the commit, never from a recorded build.
         const main = yield* baseline(
           ["fetch", "<sizes>"],
           { BASELINE_BRANCH: "main", BASELINE_COMMIT: sha("6") },
@@ -870,7 +821,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           label: "main at 666666666",
         });
         expect(main.calls.some((call) => call.includes("actions/artifacts"))).toBe(false);
-        // Without the branch's sizes, the fallback compares with main's.
         const fallback = yield* baseline(
           ["fallback", "<sizes>"],
           { BASE_REF: "effect-apps", BASE_SHA: sha("7"), HEAD_SHA: head },
@@ -897,7 +847,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         });
         const sizes = { "worker-uploads": { api: { bytes: 5_400_000 } } };
         const at = (commit: string) => ({ BASELINE_BRANCH: "main", BASELINE_COMMIT: commit });
-        // 9cbea0adc's shape: one release commit on top of a commit main's CI ran.
         const one = yield* baseline(["fetch", "<sizes>"], at(sha("a")), {
           commits: { [sha("a")]: release("54", sha("b")) },
           runs: { [sha("b")]: "88" },
@@ -907,17 +856,12 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(one.log).toContain(
           `main's sizes for ${sha("a")} are those of ${sha("b")}, the nearest earlier commit with sizes: ${sha("a")} is a release commit, which changes no Worker.`,
         );
-        // Two release commits in a row are both stepped over.
         const two = yield* baseline(["fetch", "<sizes>"], at(sha("a")), {
           commits: { [sha("a")]: release("54", sha("c")), [sha("c")]: release("53", sha("b")) },
           runs: { [sha("b")]: "88" },
           downloads: sizes,
         });
         expect(two.outputs).toMatchObject({ found: "true", label: "main at bbbbbbbbb" });
-        // A commit that is not a release commit is not stepped over: one with other files, another
-        // author, another title (or the title further in), more than one parent, no files, or a
-        // lockfile or manifest change beyond the CLI's version; its own sizes are simply not there
-        // yet, as before.
         const files = releaseFiles("54");
         const changed = (name: string, patch: string | null) =>
           files.map((file) => (file.name === name ? { name, patch } : file));
@@ -973,7 +917,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             `main's sizes for ${sha("a")} are not available yet, so no change is shown.`,
           );
         }
-        // No sizes within five release commits: as before, and it says which it looked past.
         const chain = Object.fromEntries(
           ["a", "c", "d", "e", "1", "2"].map((name, index, names) => [
             sha(name),
@@ -993,11 +936,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       }),
   );
 
-  /**
-   * Three pull requests into effect-apps whose descriptions allowed the branch's growth over main
-   * while adding nothing themselves: #4552, #4549 and #4538, with their real commits and the growth
-   * their runs measured against main.
-   */
   const effectApps = [
     {
       pull: 4552,
@@ -1042,7 +980,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             branch: "effect-apps",
             commit: base,
           });
-          // Against effect-apps it adds nothing: no allowance.
           const own = yield* check({
             uploads: branchSizes,
             base: branchSizes,
@@ -1050,7 +987,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             baseline: resolved.outputs.label!,
           });
           expect(own.exitCode, `#${pull}: ${own.log}`).toBe(0);
-          // Against main, as before, it was charged the branch's lead.
           const before = yield* check({
             uploads: branchSizes,
             base: mainSizes,
@@ -1065,7 +1001,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     "growth of a pull request's own still fails, named against its baseline, and budgets hold off main",
     () =>
       Effect.gen(function* () {
-        // #4344: +60 KB of its own to api, into main, fails without its allowance.
         const v1 = yield* check({
           uploads: { ...main, api: { bytes: 5_460_000, budget: 6_000_000 } },
           description: "Serves v1's MCP URLs.",
@@ -1077,7 +1012,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             "::error title=api Worker grew without an allowance::+60,000 bytes over main at 3f59c3bb0",
           ),
         ]);
-        // A pull request on effect-apps that grows a Worker 50 KB past the branch fails, naming the branch.
         const grown = yield* check({
           uploads: { ...branchSizes, api: { bytes: 5_405_001, budget: 6_000_000 } },
           base: branchSizes,
@@ -1089,7 +1023,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           expect.stringContaining("+50,001 bytes over effect-apps at 555555555"),
         ]);
         expect(grown.summary).toContain("Change from effect-apps at 555555555");
-        // effect-apps' own pull request into main is charged its total against main.
         const merge = yield* check({
           uploads: branchSizes,
           base: mainSizes,
@@ -1098,7 +1031,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         });
         expect(merge.exitCode).toBe(1);
         expect(merge.errors.join("\n")).toContain("+141,000 bytes over main at 3f59c3bb0");
-        // A budget fails whatever the baseline, with no growth at all.
         const over = yield* check({
           uploads: { ...branchSizes, api: { bytes: 6_000_001, budget: 6_000_000 } },
           base: { ...branchSizes, api: { bytes: 6_000_001, budget: 6_000_000 } },
@@ -1118,9 +1050,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const checks = yield* fs.readFileString(".github/workflows/checks.yml");
-        // The size gate's record names the baseline, in select (what a later run expects) and in
-        // site (what this run's gate read), so a run compared with one baseline is not reported for
-        // another.
         expect(checks).toContain(
           'sized=$(node e2e/ci-key.ts record "$tree" "$base" sized "$WORKER_GROWTH" "$BASELINE")',
         );
@@ -1133,7 +1062,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(checks).toContain(
           'key=$(node e2e/ci-key.ts record "$tree" "$base" "$SELECTION" "$WORKER_GROWTH")',
         );
-        // A branch build that fails falls back to main's sizes; nothing skips the comparison.
         expect(checks).toContain(
           "if: steps.baseline-sizes.outputs.build == 'true' && steps.baseline-build.outcome != 'success'",
         );
@@ -1148,7 +1076,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     "sizes are used only from a source this repository's own code wrote, for the commit asked for",
     () =>
       Effect.gen(function* () {
-        // Main's sizes: only from main's push runs (the stub answers no other event).
         const main = yield* baseline(
           ["fetch", "<sizes>"],
           { BASELINE_BRANCH: "main", BASELINE_COMMIT: sha("6") },
@@ -1156,8 +1083,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         );
         expect(main.outputs).toMatchObject({ found: "true" });
         expect(main.calls.find((call) => call.startsWith("run list"))).toContain("--event push");
-        // A branch's sizes: only from CI runs of this repository's own pull requests, and only
-        // when they name the commit they were built from.
         const branch = { BASELINE_BRANCH: "effect-apps", BASELINE_COMMIT: sha("5") };
         const name = `worker-uploads-at-${sha("5")}`;
         const recorded = {
@@ -1181,7 +1106,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           expect(refused.outputs, why).toMatchObject({ found: "false", build: "true" });
           expect(refused.sizes, why).toEqual([]);
         }
-        // An older trusted record after a refused one is still used.
         const second = yield* baseline(["fetch", "<sizes>"], branch, {
           ...recorded,
           artifacts: {
@@ -1209,7 +1133,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           open: { "eapps-layer": [{ baseRefName: "effect-apps" }] },
           merge: { "effect-apps": sha("5"), main: sha("6") },
         };
-        // Two failures, then an answer: the stack is read as if nothing had failed.
         const flaky = yield* baseline(["resolve"], env, {
           ...answers,
           flaky: { "pr list": 2, "compare/effect-apps": 2 },
@@ -1217,7 +1140,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(flaky.exitCode, flaky.log).toBe(0);
         expect(flaky.outputs).toMatchObject({ branch: "effect-apps", commit: sha("5"), note: "" });
         expect(flaky.calls.filter((call) => call.startsWith("pr list"))).toHaveLength(4);
-        // Still failing after the retries: compared with main, with a notice, never a failed job.
         const down = yield* baseline(["resolve"], env, { ...answers, failPullRequests: true });
         expect(down.exitCode, down.log).toBe(0);
         expect(down.outputs).toMatchObject({ branch: "main", commit: sha("6") });
@@ -1225,7 +1147,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           "::notice title=Worker sizes::the stack below eapps-layer could not be read, so this compares with main.",
         );
         expect(down.calls.filter((call) => call.startsWith("pr list"))).toHaveLength(4);
-        // Not even main's commit can be read: main with no sizes, so no change is shown.
         const blind = yield* baseline(["resolve"], env, {
           ...answers,
           failPullRequests: true,
@@ -1239,7 +1160,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           label: "main",
         });
         expect(blind.log).toContain("so no change is shown");
-        // A refusal (not found) is an answer, not a failure: it is not tried again.
         const gone = yield* baseline(
           ["resolve"],
           { ...env, BASE_REF: "effect-apps" },
@@ -1248,7 +1168,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           },
         );
         expect(gone.calls.filter((call) => call.includes("compare/effect-apps"))).toHaveLength(1);
-        // Fetching sizes is tried again too.
         const sizes = yield* baseline(
           ["fetch", "<sizes>"],
           { BASELINE_BRANCH: "main", BASELINE_COMMIT: sha("6") },
@@ -1262,15 +1181,14 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       }),
   );
 
-  /** A `skip` layer `lower` at `head`, its stack ending on `bottom`, and one layer above. */
   const lowerHead = sha("c");
-  // A thousandth of the rule's time: a 240-second bound takes a quarter of a second.
-  const skipLayer = (bottom = "main") => ({
+  const skipLayer = (bottom = "main", ready = false) => ({
     HEAD_REF: "lower",
     HEAD_SHA: lowerHead,
     BASELINE_BRANCH: bottom,
     GITHUB_RUN_ID: "500",
-    SKIP_ABOVE_TIME_SCALE: "0.001",
+    SKIP_ABOVE_TIME_SCALE: "0",
+    LOWER_DRAFT: ready ? "false" : "true",
   });
   const upperHead = sha("d");
   const record = (base: string, baseline: string, format = "2", tested?: string) =>
@@ -1283,7 +1201,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     records: { "600": { name: "ci-tested-pr11-key", text } },
     ...more,
   });
-  /** The decision line a run logged. */
   const decided = (log: string) =>
     JSON.parse(log.match(/^skip-check (\{.*\})$/m)?.[1] ?? "null") as {
       mode: string;
@@ -1294,6 +1211,153 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       reason: string;
       message: string;
     } | null;
+
+  it.effect(
+    "a ready skip layer passes only on a ready layer's green merge gate above, and fails the step otherwise",
+    () =>
+      Effect.gen(function* () {
+        const gated = (gate: string, above = "none") =>
+          `format 4\npull request 11\nmerge tree ${sha("e")}\nbase ${lowerHead}\ntested ${sha("e")}\nselection x\nworker-growth y\nbaseline main@${sha("6")}\nabove ${above}\ngate ${gate}\n`;
+        const jobs = (check: string | null, e2e: string | null) => ({
+          runJobs: {
+            "600": [
+              {
+                name: "checks / check",
+                status: check === null ? "in_progress" : "completed",
+                conclusion: check,
+              },
+              {
+                name: "checks / e2e",
+                status: e2e === null ? "queued" : "completed",
+                conclusion: e2e,
+              },
+            ],
+          },
+        });
+        const ready = skipLayer("main", true);
+        const oldFormats = [
+          record(lowerHead, `main@${sha("6")}`, ""),
+          record(lowerHead, `main@${sha("6")}`, "3", sha("e")),
+        ] as const;
+        const runs = yield* Effect.all(
+          {
+            running: baseline(["above"], ready, upper(gated("full"), jobs(null, null))),
+            green: baseline(["above"], ready, upper(gated("full"), jobs("success", "success"))),
+            narrowed: baseline(
+              ["above"],
+              ready,
+              upper(gated("narrowed"), jobs("success", "success")),
+            ),
+            draft: baseline(["above"], ready, upper(gated("draft"), jobs("success", "success"))),
+            red: baseline(["above"], ready, upper(gated("full"), jobs("success", "failure"))),
+            oldUnformatted: baseline(
+              ["above"],
+              ready,
+              upper(oldFormats[0], jobs("success", "success")),
+            ),
+            oldFormat3: baseline(
+              ["above"],
+              ready,
+              upper(oldFormats[1], jobs("success", "success")),
+            ),
+            stacked: baseline(["above"], ready, upper(gated("stack", "pass"))),
+            stackedFailed: baseline(["above"], ready, upper(gated("stack", "fail"))),
+            moved: baseline(
+              ["above"],
+              ready,
+              upper(gated("full").replace(`base ${lowerHead}`, `base ${sha("b")}`), {
+                ...jobs("success", "success"),
+                contains: { [`${lowerHead}...${sha("e")}`]: "diverged" },
+              }),
+            ),
+            observed: baseline(
+              ["above"],
+              skipLayer(),
+              upper(gated("draft"), jobs("success", "success")),
+            ),
+            draftAgain: baseline(["above"], ready, {
+              ...upper(gated("full"), jobs("success", "success")),
+              uppers: [{ number: 11, headRefOid: upperHead, isDraft: true }],
+            }),
+            stackedDraft: baseline(["above"], ready, {
+              ...upper(gated("stack", "pass")),
+              uppers: [{ number: 11, headRefOid: upperHead, isDraft: true }],
+            }),
+            paged: baseline(["above"], ready, {
+              ...upper(gated("full"), jobs("success", "success")),
+              matrixJobs: { "600": 120 },
+            }),
+            pagedRed: baseline(["above"], ready, {
+              ...upper(gated("full"), jobs("success", "failure")),
+              matrixJobs: { "600": 230 },
+            }),
+          },
+          { concurrency: 4 },
+        );
+        const green = runs.green;
+        expect(green.exitCode, green.log).toBe(0);
+        expect(decided(green.log)).toMatchObject({
+          mode: "enforce",
+          decision: "pass",
+          rule: "gate",
+        });
+        expect(green.outputs.decision).toBe("pass");
+        const narrowed = runs.narrowed;
+        expect(narrowed.exitCode, narrowed.log).toBe(0);
+        const draft = runs.draft;
+        expect(draft.exitCode).not.toBe(0);
+        expect(decided(draft.log)).toMatchObject({ mode: "enforce", decision: "fail" });
+        expect(decided(draft.log)!.reason).toContain(
+          "is a draft's, which runs only its block's selection",
+        );
+        expect(decided(draft.log)!.message).toContain("mark #11 ready for review (gh pr ready 11)");
+        const red = runs.red;
+        expect(red.exitCode).not.toBe(0);
+        expect(decided(red.log)!.reason).toContain(
+          "ended with checks / check success and checks / e2e failure",
+        );
+        const running = runs.running;
+        expect(running.exitCode).not.toBe(0);
+        expect(running.log).toContain("runs the full suite for a merge and has not finished");
+        expect(decided(running.log)!.waited).toBeGreaterThanOrEqual(skipCheck.bounds.testing);
+        for (const [text, old] of [
+          [oldFormats[0], runs.oldUnformatted],
+          [oldFormats[1], runs.oldFormat3],
+        ] as const) {
+          expect(old.exitCode, text).not.toBe(0);
+          expect(decided(old.log)!.reason).toContain("recorded no merge gate");
+        }
+        const stacked = runs.stacked;
+        expect(stacked.exitCode, stacked.log).toBe(0);
+        const stackedFailed = runs.stackedFailed;
+        expect(stackedFailed.exitCode).not.toBe(0);
+        const moved = runs.moved;
+        expect(moved.exitCode).not.toBe(0);
+        const observed = runs.observed;
+        expect(observed.exitCode, observed.log).toBe(0);
+        expect(decided(observed.log)).toMatchObject({ mode: "observe", decision: "would pass" });
+        const draftAgain = runs.draftAgain;
+        expect(draftAgain.exitCode).not.toBe(0);
+        expect(decided(draftAgain.log)).toMatchObject({ mode: "enforce", decision: "fail" });
+        expect(decided(draftAgain.log)!.reason).toContain(
+          "this layer is ready for review, and #11 is a draft now, so no run of it gates a merge",
+        );
+        expect(decided(draftAgain.log)!.message).toContain("gh pr ready 11");
+        const stackedDraft = runs.stackedDraft;
+        expect(stackedDraft.exitCode).not.toBe(0);
+        const paged = runs.paged;
+        expect(paged.exitCode, paged.log).toBe(0);
+        expect(decided(paged.log)).toMatchObject({ decision: "pass", rule: "gate" });
+        expect(
+          paged.calls.some((call) => call.includes("/runs/600/jobs?per_page=100&page=2")),
+        ).toBe(true);
+        const pagedRed = runs.pagedRed;
+        expect(pagedRed.exitCode).not.toBe(0);
+        expect(decided(pagedRed.log)!.reason).toContain(
+          "ended with checks / check success and checks / e2e failure",
+        );
+      }),
+  );
 
   it.effect(
     "observing, the skip check logs what it would decide and passes, as a skip layer always did",
@@ -1310,8 +1374,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         });
         expect(fits.outputs.decision).toBe("pass");
         expect(fits.log).toContain("the token's rate limit: core 120 used of 1000, 880 left");
-        // The laundering case: X into effect-apps ran against effect-apps; then effect-apps was
-        // opened into main with skip. It would fail, and the job still passes.
         const fails = yield* baseline(["above"], skipLayer(), upper(laundered));
         expect(fails.exitCode, fails.log).toBe(0);
         const failure = decided(fails.log)!;
@@ -1322,23 +1384,19 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(failure.message).toContain(
           "To fix it, run it again: gh run rerun 600 --repo owner/repository (a re-run reads the stack afresh); once that run has started, run this one again: gh run rerun 500 --repo owner/repository",
         );
-        // A stale record is waited on for its bound before it is called stale.
         expect(failure.waited).toBeGreaterThanOrEqual(240);
         expect(fails.outputs.decision).toBe("fail");
-        // Looked at again while it waited, the same record is downloaded once.
         expect(fails.calls.filter((call) => call.includes("/pulls?base="))).not.toHaveLength(1);
         expect(fails.calls.filter((call) => call.startsWith("run download"))).toHaveLength(1);
-        // This layer moved and the layer above did not: a re-run keeps its old base, so push.
         const moved = decided(
           (yield* baseline(["above"], skipLayer(), upper(record(sha("b"), `main@${sha("6")}`))))
             .log,
         )!;
         expect(moved.reason).toContain("was built on bbbbbbbbb, not this layer's head ccccccccc");
         expect(moved.message).toContain("gh stack rebase, then gh stack push");
-        // A record in this format without a baseline proves nothing; a later format is not read.
         for (const [text, why] of [
           [good.replace(/baseline .*\n/, ""), "a baseline it did not record"],
-          [record(lowerHead, `main@${sha("6")}`, "4"), "wrote a record in format 4"],
+          [record(lowerHead, `main@${sha("6")}`, "5"), "wrote a record in format 5"],
           [good.replace("above none", "above fail"), "its own check of the layer above it fails"],
           [good.replace("above none", "above error"), "its own check of the layer above it fails"],
         ] as const)
@@ -1352,8 +1410,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     "a record in the format from before the check is judged by the old rule and passes, with a notice",
     () =>
       Effect.gen(function* () {
-        // The upper's run used the workflow of its merge into a lower branch from before this
-        // check, main's: no format and no baseline, and often no base.
         for (const text of [
           record(sha("b"), "", "").replace(/baseline .*\n/, ""),
           "pull request 11\nmerge tree x\nselection x\n",
@@ -1365,8 +1421,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             "::notice title=Skip check::The layer above runs a workflow from before the skip check. Rebasing the stack onto main turns the check on.",
           );
         }
-        // A baseline without a format came only from this check's own pull requests before the
-        // format line (#4586's upper): it is judged by what it says.
         const unformatted = yield* baseline(
           ["above"],
           skipLayer(),
@@ -1388,8 +1442,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             ...decided(run.log)!,
             calls: run.calls,
           }));
-        // Any run on the head whose record fits passes: an older fitting run tested this layer's
-        // head against the right bottom, whatever a newer one recorded.
         expect(
           (yield* verdict({
             upperRuns: { [upperHead]: [{ id: 600 }, { id: 599 }] },
@@ -1399,8 +1451,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             },
           })).decision,
         ).toBe("would pass");
-        // The live input (#4575, 16 Nov): a stack push started two runs on the top's head in the
-        // same second, and the newer recorded the bottom's previous head.
         const raced = yield* verdict({
           upperRuns: { [upperHead]: [{ id: 43809112880 }, { id: 43809112745 }] },
           records: {
@@ -1413,9 +1463,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         });
         expect(raced.decision).toBe("would pass");
         expect(raced.reason).toContain("runs/43809112745 was built on ccccccccc");
-        // This stack's own push (16 Nov, 7ffb3f6f4): the duplicate that fits was still queued
-        // behind the other, whose record had the bottom's previous head. A run still choosing is
-        // waited for with its own bound, past the 4 minutes of a stale record.
         const queued = decided(
           (yield* baseline(
             ["above"],
@@ -1440,7 +1487,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         )!;
         expect(queued).toMatchObject({ decision: "would pass" });
         expect(queued.waited).toBeGreaterThan(240);
-        // With none fitting, the newest run that recorded says why.
         expect(
           (yield* verdict({
             upperRuns: { [upperHead]: [{ id: 600 }, { id: 599 }] },
@@ -1450,8 +1496,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             },
           })).reason,
         ).toContain("runs/600, was built on aaaaaaaaa");
-        // Another workflow's run, a cancelled run, a fork's run on the same commit and a newer run
-        // still choosing are passed over for the newest run that recorded.
         const passedOver = yield* verdict({
           upperRuns: {
             [upperHead]: [
@@ -1474,8 +1518,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(passedOver.calls.filter((call) => call.startsWith("run download"))).toEqual([
           expect.stringMatching(/^run download 600 /),
         ]);
-        // A newer run whose select finished without recording does not hide an older fitting
-        // record; with none, it says nothing was chosen.
         expect(
           (yield* verdict({
             upperRuns: { [upperHead]: [{ id: 601, conclusion: "failure" }, { id: 600 }] },
@@ -1487,7 +1529,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             records: { "600": { name: "ci-tested-pr11-old", text: laundered } },
           })).reason,
         ).toContain("recorded nothing (its select failed)");
-        // A re-run that chose differently leaves two records: the newest is what it chose.
         const twice = yield* verdict({
           records: {
             "600": [
@@ -1498,7 +1539,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           },
         });
         expect(twice.decision).toBe("would pass");
-        // Only this pull request's records: not another's, nor the size gate's.
         const others = yield* verdict({
           otherArtifacts: {
             "600": [
@@ -1508,13 +1548,24 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           },
         });
         expect(others.decision).toBe("would pass");
-        // A fork's pull request above runs the fork's code, which could write any record.
+        const paged = yield* verdict({
+          otherArtifacts: {
+            "600": Array.from({ length: 120 }, (_, index) => ({
+              id: 9100 + index,
+              name: `e2e-self-host-resources-evidence-${index}-attempt-4`,
+            })),
+          },
+        });
+        expect(paged.decision).toBe("would pass");
+        expect(paged.calls.filter((call) => call.includes("/runs/600/artifacts"))).toEqual([
+          expect.stringContaining("page=1"),
+          expect.stringContaining("page=2"),
+        ]);
         expect(
           (yield* verdict({
             uppers: [{ number: 11, headRefOid: upperHead, isCrossRepository: true }],
           })).reason,
         ).toBe("no open pull request in this repository has lower as its base");
-        // Only the runs on the current head count.
         expect((yield* verdict({ upperRuns: { [sha("9")]: [{ id: 600 }] } })).reason).toBe(
           "#11 has no CI run on its head ddddddddd",
         );
@@ -1533,8 +1584,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           }));
         const tested = sha("f");
         const pair = `${lowerHead}...${tested}`;
-        // A duplicate event of a stack push: its base is this layer's previous head, and the merge
-        // commit GitHub built already holds this layer's head. It passes at once, by what it tested.
         const stale = yield* run(record(sha("b"), `main@${sha("6")}`, "3", tested), {
           contains: { [pair]: "ahead" },
         });
@@ -1550,7 +1599,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             contains: { [pair]: "identical" },
           })).rule,
         ).toBe("tested");
-        // A merge commit that does not contain this layer's head is not built on it.
         for (const status of ["behind", "diverged"]) {
           const not = yield* run(record(sha("b"), `main@${sha("6")}`, "3", tested), {
             contains: { [pair]: status },
@@ -1561,11 +1609,8 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             "#11's latest run on its head, https://github.com/owner/repository/actions/runs/600, was built on bbbbbbbbb and tested fffffffff, which does not contain this layer's head ccccccccc",
           );
           expect(not.exitCode).toBe(0);
-          // Asked once, and remembered while the check waits.
           expect(not.calls.filter((call) => call.includes("/compare/"))).toHaveLength(1);
         }
-        // A compare that cannot be read is no answer: the check waits, asks again each look, and
-        // at its bound says it could not tell. Observing, the step still passes.
         const unread = yield* run(record(sha("b"), `main@${sha("6")}`, "3", tested), {
           contains: { [pair]: "fail" },
         });
@@ -1574,11 +1619,9 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           "tested fffffffff, and whether that contains this layer's head ccccccccc could not be read",
         );
         expect(unread.calls.filter((call) => call.includes("/compare/")).length).toBeGreaterThan(1);
-        // Its event's base naming this layer's head is enough, as in format 2, with no compare.
         const based = yield* run(record(lowerHead, `main@${sha("6")}`, "3", tested));
         expect(based).toMatchObject({ decision: "would pass", rule: "base" });
         expect(based.calls.filter((call) => call.includes("/compare/"))).toEqual([]);
-        // A format 2 record names no tested commit: judged by its base alone, as before.
         expect(yield* run(record(lowerHead, `main@${sha("6")}`, "2"))).toMatchObject({
           decision: "would pass",
           rule: "base",
@@ -1588,15 +1631,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             contains: { [`${lowerHead}...${sha("b")}`]: "ahead" },
           })).reason,
         ).toContain("was built on bbbbbbbbb, not this layer's head ccccccccc");
-        // Containing this layer's head is not enough: the Worker sizes must have been compared with
-        // the base this stack ends on.
         expect(
           (yield* run(record(sha("b"), `effect-apps@${sha("5")}`, "3", tested), {
             contains: { [pair]: "ahead" },
           })).reason,
         ).toContain("compared its Worker sizes with effect-apps, not main");
-        // The upper's re-run: its first record compared sizes with the wrong base; the re-run,
-        // which keeps the event's stale base, records again later and passes by what it tested.
         const rerun = yield* run(record(sha("b"), `main@${sha("6")}`, "3", tested), {
           records: {
             "600": [
@@ -1624,8 +1663,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     "the five would-fail decisions of 16 Nov, replayed through the rule that reads what was tested",
     () =>
       Effect.gen(function* () {
-        // The heads and bases of the live runs; the merge commits the uppers checked out were not
-        // recorded then, so each upper's head stands for it (a merge commit contains its head).
         const layer = (head: string, bottom = "effect-apps") => ({
           ...skipLayer(bottom),
           HEAD_SHA: head,
@@ -1640,8 +1677,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           `format 3\npull request 11\nmerge tree ${sha("e")}\nbase ${base}\ntested ${tested}\nselection x\nworker-growth y\nbaseline ${bottom}@${sha("6")}\nabove none\n`;
         const verdict = (env: Record<string, string>, answers: GitHubAnswers) =>
           Effect.map(baseline(["above"], env, answers), (result) => decided(result.log)!);
-        // #4717 under #4718: the upper's first run recorded the lower's previous head 1b8f78414 as
-        // its base; its head 66f85fc61 contains the lower's head 4ad0afbc3 (git, offline).
         const gatewayLower = "4ad0afbc33d43392c0bc2f42b2b9ba94b5e8cc46";
         const gatewayUpper = "66f85fc61cf5b4954e43441a7951f782f249efc6";
         expect(
@@ -1654,8 +1689,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             ),
           ),
         ).toMatchObject({ decision: "would pass", rule: "tested" });
-        // #4692 under #4652: the upper's run recorded effect-apps' head 958abd22a as its base; its
-        // head 4565abc0d contains the lower's head d2a3db73d (git, offline).
         const scaleLower = "d2a3db73d8d8f4d2eb4e9bc069afe0a5dc4ad51c";
         const searchUpper = "4565abc0d02794b172a53b6eda419e3a2be5c999";
         expect(
@@ -1668,8 +1701,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             ),
           ),
         ).toMatchObject({ decision: "would pass", rule: "tested" });
-        // #4691 under #4692: #4692 is itself a skip layer; with its check passing it records
-        // `above pass`, and its base is #4691's head 6fcd6f179.
         const grantLower = "6fcd6f179a7f94ce4754075d8183a33af14ddca8";
         expect(
           yield* verdict(
@@ -1680,7 +1711,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             ),
           ),
         ).toMatchObject({ decision: "would pass", rule: "base" });
-        // ... and with #4692's check failing, as it did, #4691 still fails: the cascade is kept.
         expect(
           (yield* verdict(
             layer(grantLower),
@@ -1690,8 +1720,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             ),
           )).decision,
         ).toBe("would fail");
-        // #4592 under #4593: both of the upper's runs on its head failed in select and recorded
-        // nothing; the re-runs came later. That was right, and stays right.
         const sqlLower = "7d64b6538eab858e3b9cd58f2826dbf3599a1a46";
         const sqlUpper = sha("9");
         const sql = yield* verdict(layer(sqlLower), {
@@ -1712,8 +1740,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     "the check waits by what it sees, reads again only what changed, and takes a failed read for no answer",
     () =>
       Effect.gen(function* () {
-        // The run above records after a few looks: waited for, and each look after the first asks
-        // GitHub only for what changed; the record is downloaded once.
         const late = yield* baseline(
           ["above"],
           skipLayer(),
@@ -1727,8 +1753,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(late.calls.filter((call) => call.includes("If-None-Match"))).not.toHaveLength(0);
         expect(late.calls.filter((call) => call.startsWith("run download"))).toHaveLength(1);
         expect(late.log).toMatch(/this check made \d+ counted requests and [1-9]\d* unchanged/);
-        // While the run above is still choosing, the wait is `selecting` (15 minutes), not the
-        // 4 of a stale record: a record at about 5 minutes still passes.
         const choosing = {
           upperRuns: { [upperHead]: [{ id: 600, status: "in_progress", conclusion: null }] },
           records: { "600": { name: "ci-tested-pr11-key", text: good, after: 7 } },
@@ -1736,8 +1760,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         const slow = decided((yield* baseline(["above"], skipLayer(), upper(good, choosing))).log)!;
         expect(slow).toMatchObject({ decision: "would pass" });
         expect(slow.waited).toBeGreaterThan(240);
-        // A run above that is itself waiting on the layer above it gets `chained` (20 minutes): a
-        // record at about 16 minutes still passes.
         const chained = decided(
           (yield* baseline(
             ["above"],
@@ -1751,7 +1773,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         )!;
         expect(chained).toMatchObject({ decision: "would pass" });
         expect(chained.waited).toBeGreaterThan(900);
-        // ...and without it, the same record is too late.
         expect(
           decided(
             (yield* baseline(
@@ -1764,7 +1785,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             )).log,
           ),
         ).toMatchObject({ decision: "would fail" });
-        // A stale record is waited on: a push to the layer above within the bound passes.
         const pushed = yield* baseline(
           ["above"],
           skipLayer(),
@@ -1782,8 +1802,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           }),
         );
         expect(decided(pushed.log)).toMatchObject({ decision: "would pass" });
-        // A read that fails after its tries, or a download that fails, is no answer: the check
-        // looks again, and only the deadline decides.
         const flaky = yield* baseline(
           ["above"],
           skipLayer(),
@@ -1804,40 +1822,39 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     "no read can hang the check: each has its own time limit, and one that passes is no answer",
     () =>
       Effect.gen(function* () {
-        // Stalled twice, then answering: the check looks again and passes.
-        const stalled = yield* baseline(
-          ["above"],
-          skipLayer(),
-          upper(good, { hangs: { "/pulls?base=": 2 } }),
+        const { stalled, download, slow, never } = yield* Effect.all(
+          {
+            stalled: baseline(
+              ["above"],
+              skipLayer(),
+              upper(good, { hangs: { "/pulls?base=": 2 } }),
+            ),
+            download: baseline(
+              ["above"],
+              skipLayer(),
+              upper(good, { hangs: { "run download": 1 } }),
+            ),
+            slow: baseline(
+              ["above"],
+              skipLayer(),
+              upper(good, { slow: { "/actions/runs": 700, "run download": 700 } }),
+            ),
+            never: baseline(
+              ["above"],
+              skipLayer(),
+              upper(good, { hangs: { "/pulls?base=": 1000 } }),
+            ),
+          },
+          { concurrency: "unbounded" },
         );
         expect(decided(stalled.log)).toMatchObject({ decision: "would pass" });
         expect(stalled.log).toContain("Waiting: the pull requests above could not be read (");
-        // The read that stalled is named: each has its own limit (20 s; 1 s in this spec).
         expect(stalled.log).toContain(
           "repos/owner/repository/pulls?base=lower&state=open&per_page=100: no answer within 1 s",
         );
-        // A download that stalls is no answer either.
-        const download = yield* baseline(
-          ["above"],
-          skipLayer(),
-          upper(good, { hangs: { "run download": 1 } }),
-        );
         expect(decided(download.log)).toMatchObject({ decision: "would pass" });
-        // Reads that each answer in time but together outlast the look: the look itself has a limit
-        // (a minute; 2 s in this spec), and ends as no answer.
-        const slow = yield* baseline(
-          ["above"],
-          skipLayer(),
-          upper(good, { slow: { "/actions/runs": 700, "run download": 700 } }),
-        );
         expect(decided(slow.log)).toMatchObject({ decision: "would fail" });
         expect(decided(slow.log)?.reason).toContain("the look got no answer within 2 s");
-        // Never answering: the deadline decides, and the step ends.
-        const never = yield* baseline(
-          ["above"],
-          skipLayer(),
-          upper(good, { hangs: { "/pulls?base=": 1000 } }),
-        );
         expect(never.exitCode).toBe(0);
         expect(decided(never.log)).toMatchObject({ decision: "would fail" });
         expect(decided(never.log)?.reason).toContain("no answer within");
@@ -1848,13 +1865,13 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     "observing, nothing in the check can fail the step; enforcing, a defect still fails it",
     () =>
       Effect.gen(function* () {
-        // A judge that throws: an error outcome while observing, a failure while enforcing.
         const lower = {
           ref: "lower",
           head: lowerHead,
           bottom: "main",
           repository: "o/r",
           runId: "5",
+          ready: false,
         };
         const throwing = Effect.sync(() =>
           skipCheck.next(
@@ -1882,8 +1899,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(skipCheck.summarySentence(observed, false)).toContain("It passes while observing.");
         const enforced = yield* Effect.exit(skipCheck.guarded(throwing, true));
         expect(enforced._tag).toBe("Failure");
-        // In the step: a missing variable, and a summary that cannot be written, leave it passing
-        // with the decision line.
         const missing = yield* baseline(["above"], { ...skipLayer(), HEAD_SHA: "" }, upper(good));
         expect(missing.exitCode, missing.log).toBe(0);
         expect(decided(missing.log)).toMatchObject({ mode: "observe", decision: "error" });
@@ -1937,7 +1952,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             );
             return { log, exitCode: Number(exitCode), output: yield* fs.readFileString(output) };
           }).pipe(Effect.scoped);
-        // The script crashes (here: a variable it needs is missing).
         const crashed = yield* run({
           GITHUB_REPOSITORY: "owner/repository",
           BASE_REF: "effect-apps",
@@ -1989,7 +2003,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
               const directory = yield* fs.makeTempDirectoryScoped({
                 prefix: "executor-site-step-",
               });
-              // A node that crashes, as any defect in the script would.
               const bin = path.join(directory, "bin");
               yield* fs.makeDirectory(bin);
               yield* fs.writeFileString(
@@ -1997,7 +2010,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
                 "#!/bin/sh\necho crashed >&2\nexit 7\n",
               );
               yield* fs.chmod(path.join(bin, "node"), 0o755);
-              // What a partial download left behind.
               yield* fs.makeDirectory(path.join(directory, ".local/worker-uploads-base"), {
                 recursive: true,
               });
@@ -2025,7 +2037,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           const push = yield* run("push");
           expect(push.exitCode, `${step}: ${push.log}`).toBe(0);
           expect(push.log, step).toContain("so this push's growth is reported and not checked.");
-          // A fetch that failed leaves no half-fetched sizes to compare with.
           if (step === "Fetch the baseline's Worker sizes") expect(push.left).toBe(false);
           const pull = yield* run("pull_request");
           expect(pull.exitCode, step).toBe(1);
@@ -2033,7 +2044,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       }),
   );
 
-  /** The run: body of a named step in a workflow's text, dedented. */
   const stepScript = (workflow: string, step: string) => {
     const text = workflow.slice(workflow.indexOf(`      - name: ${step}\n`));
     return text
@@ -2064,7 +2074,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       expect(steps.length).toBe(5);
       for (const step of steps) {
         const condition = step.match(/^(?: {6}- | {8})if: (.*)$/m)?.[1] ?? "";
-        // On a pull request: skipped, by the event or by an output only a push's step sets.
         expect(
           condition.includes("github.event_name == 'push'") ||
             /steps\.(build-kept|startup)\.outputs\.path != ''/.test(condition),
@@ -2074,11 +2083,9 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(step, step.slice(0, 80)).toContain("        continue-on-error: true\n");
         expect(step, step.slice(0, 80)).toMatch(/^ {8}timeout-minutes: \d+$/m);
       }
-      // site's own limit leaves room for every step's: the build takes about a minute today.
       const limit = Number(site.match(/^ {4}timeout-minutes: (\d+)$/m)?.[1]);
       const steps_ = steps.map((step) => Number(step.match(/^ {8}timeout-minutes: (\d+)$/m)?.[1]));
       expect(limit - steps_.reduce((sum, minutes) => sum + minutes, 0)).toBeGreaterThanOrEqual(0);
-      // The measurement is stopped, workerd with it, before its step's own limit.
       expect(stepScript(site, timingStep)).toContain('timeout -s KILL "$LIMIT" node "$HARNESS"');
       expect(site).toContain('          LIMIT: "360"\n');
     }),
@@ -2161,7 +2168,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             };
           }).pipe(Effect.scoped);
         const printing = `import fs from "node:fs";\nfs.writeFileSync(process.env.ARGS_FILE, process.argv.slice(2).join(" "));\nconsole.log(${JSON.stringify(JSON.stringify(measured))});\n`;
-        // The previous build was found: the record names both commits and the difference.
         const compared = yield* run(printing, {});
         expect(compared.exitCode, compared.log).toBe(0);
         expect(compared.args).toBe(`--base ${compared.base} --head apps/hosted/cloud`);
@@ -2181,7 +2187,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           },
         });
         expect(compared.outputs).toMatch(/^path=.*\/worker-startup\/record$/m);
-        // No previous build: the head is measured against itself and recorded alone.
         const alone = yield* run(printing, { BASE_COMMIT: "" });
         expect(alone.exitCode, alone.log).toBe(0);
         expect(alone.args).toBe("--base apps/hosted/cloud --head apps/hosted/cloud");
@@ -2190,7 +2195,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           base: null,
           workers: { api: { evaluate: { base: null, difference: null } } },
         });
-        // A crash: a notice, no record, the step passes.
         const crashed = yield* run("process.exit(3);\n", {});
         expect(crashed.exitCode, crashed.log).toBe(0);
         expect(crashed.log).toContain(
@@ -2198,7 +2202,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         );
         expect(crashed.record).toBeUndefined();
         expect(crashed.outputs).not.toContain("path=");
-        // A hang: stopped at its limit, with what it started, and the step passes.
         const hung = yield* run(
           `import { spawn } from "node:child_process";\nspawn("sleep", ["637"], { stdio: "ignore" });\nsetInterval(() => {}, 1000);\n`,
           {},
@@ -2206,7 +2209,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(hung.exitCode, hung.log).toBe(0);
         expect(hung.log).toContain("did not finish (exit 137");
         expect(hung.seconds).toBeLessThan(15);
-        // What it started is stopped with it (timeout -s KILL signals the whole group).
         const left = yield* processes.spawn(ChildProcess.make("pgrep", ["-f", "sleep 637"]));
         const [found] = yield* Effect.all(
           [left.stdout.pipe(Stream.decodeText(), Stream.mkString), left.exitCode],
@@ -2232,7 +2234,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(found.exitCode, found.log).toBe(0);
         expect(found.outputs).toEqual({ found: "true", commit: sha("a") });
         expect(found.calls.find((call) => call.startsWith("run list"))).toContain("--event push");
-        // An artifact that names another commit, or none, is not used.
         for (const named of [sha("9"), null]) {
           const other = yield* baseline(["fetch-build", "<sizes>"], env, {
             runs: { [sha("a")]: "88" },
@@ -2243,7 +2244,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           expect(other.sizes, String(named)).toEqual([]);
           expect(other.log).toContain("so it is not used.");
         }
-        // A release commit has no run: the build of the commit before it.
         const stepped = yield* baseline(["fetch-build", "<sizes>"], env, {
           commits: {
             [sha("a")]: {
@@ -2258,7 +2258,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           builtFrom: { "worker-build": sha("b") },
         });
         expect(stepped.outputs).toEqual({ found: "true", commit: sha("b") });
-        // None: recorded alone, with a notice, and the step goes on.
         const none = yield* baseline(["fetch-build", "<sizes>"], env, {});
         expect(none.exitCode).toBe(0);
         expect(none.outputs).toEqual({ found: "false", commit: "" });
@@ -2266,17 +2265,270 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       }),
   );
 
+  it.effect(
+    "a duplicate queued behind a run that is testing for a merge waits as long as the testing, and names the other run's answer",
+    () =>
+      Effect.sync(() => {
+        const lower = {
+          ref: "lower",
+          head: lowerHead,
+          bottom: "main",
+          repository: "o/r",
+          runId: "5",
+          ready: true,
+        };
+        const gated = skipCheck.parseRecord(
+          `format 4\npull request 11\nmerge tree ${sha("e")}\nbase ${lowerHead}\ntested ${sha("e")}\nselection x\nworker-growth y\nbaseline main@${sha("6")}\nabove none\ngate full\n`,
+        );
+        const look = (gates: { check?: string; e2e?: string }) =>
+          skipCheck.judge(
+            {
+              _tag: "Read",
+              uppers: [
+                {
+                  pull: 11,
+                  head: upperHead,
+                  draft: false,
+                  runs: [
+                    { id: 1, url: "u1", selectDone: false, waitingAbove: false },
+                    {
+                      id: 2,
+                      url: "u2",
+                      record: gated,
+                      selectDone: true,
+                      waitingAbove: false,
+                      gates,
+                    },
+                  ],
+                },
+              ],
+            },
+            lower,
+          );
+        const testing = look({});
+        expect(testing).toMatchObject({ _tag: "Wait", bound: "testing" });
+        if (testing._tag !== "Wait") return;
+        expect(testing.why).toContain("u1, has not chosen what it tests yet");
+        expect(testing.why).toContain("u2, runs the full suite for a merge and has not finished");
+        expect(skipCheck.next(testing, lower, skipCheck.bounds.selecting + 1, 9)._tag).toBe("Poll");
+        expect(look({ check: "success", e2e: "success" })).toMatchObject({
+          _tag: "Pass",
+          run: "u2",
+        });
+        const failed = look({ check: "success", e2e: "failure" });
+        expect(failed).toMatchObject({ _tag: "Fail" });
+        if (failed._tag !== "Fail") return;
+        expect(failed.why).toContain("ended with checks / check success and checks / e2e failure");
+        expect(failed.remedy).toContain("fix #11");
+        expect(failed.why).toContain("run u1 on the same head has not chosen yet");
+      }),
+  );
+
+  it.effect(
+    "a ready skip layer fails at once when a required check above has failed, passes only when both passed, and waits only while neither has failed and one runs",
+    () =>
+      Effect.sync(() => {
+        const lower = {
+          ref: "lower",
+          head: lowerHead,
+          bottom: "main",
+          repository: "o/r",
+          runId: "5",
+          ready: true,
+        };
+        const gated = skipCheck.parseRecord(
+          `format 4\npull request 11\nmerge tree ${sha("e")}\nbase ${lowerHead}\ntested ${sha("e")}\nselection x\nworker-growth y\nbaseline main@${sha("6")}\nabove none\ngate full\n`,
+        );
+        type Gates = { check?: string | undefined; e2e?: string | undefined };
+        const gatedRun = (id: number, gates: Gates) => ({
+          id,
+          url: `u${id}`,
+          record: gated,
+          selectDone: true,
+          waitingAbove: false,
+          gates,
+        });
+        const queuedDuplicate = { id: 9, url: "u9", selectDone: false, waitingAbove: false };
+        const look = (
+          runs: ReadonlyArray<skipCheck.RunSeen>,
+          more: ReadonlyArray<skipCheck.UpperSeen> = [],
+        ) =>
+          skipCheck.judge(
+            {
+              _tag: "Read",
+              uppers: [{ pull: 11, head: upperHead, draft: false, runs }, ...more],
+            },
+            lower,
+          );
+        const atOnce = (verdict: skipCheck.Verdict) => skipCheck.next(verdict, lower, 0, 0);
+        const failsAtOnce = (verdict: skipCheck.Verdict, named: ReadonlyArray<string>) => {
+          expect(verdict._tag).toBe("Fail");
+          const step = atOnce(verdict);
+          expect(step).toMatchObject({ _tag: "Done", decision: { decision: "fail", waited: 0 } });
+          if (step._tag !== "Done") return;
+          for (const text of named) expect(step.decision.reason).toContain(text);
+          expect(step.decision.message).toContain("fix #11");
+        };
+        const waitsTesting = (verdict: skipCheck.Verdict) => {
+          expect(verdict).toMatchObject({ _tag: "Wait", bound: "testing" });
+          expect(skipCheck.next(verdict, lower, skipCheck.bounds.selecting + 1, 9)._tag).toBe(
+            "Poll",
+          );
+          expect(skipCheck.next(verdict, lower, skipCheck.bounds.testing - 1, 9)._tag).toBe("Poll");
+          expect(skipCheck.next(verdict, lower, skipCheck.bounds.testing, 9)).toMatchObject({
+            _tag: "Done",
+            decision: { decision: "fail" },
+          });
+        };
+
+        for (const ended of ["failure", "cancelled"])
+          for (const running of ["queued", "in_progress", undefined])
+            for (const runs of [
+              [gatedRun(2, { check: ended, e2e: running })],
+              [queuedDuplicate, gatedRun(2, { check: ended, e2e: running })],
+            ])
+              failsAtOnce(look(runs), ["u2", `checks / check ended ${ended}`, "cannot pass"]);
+
+        const failedStates = ["failure", "cancelled", "skipped", "timed_out", "missing"];
+        const undecided = ["queued", "in_progress", undefined];
+        const states = ["success", ...failedStates, ...undecided];
+        for (const check of states)
+          for (const e2e of states) {
+            const verdict = look([gatedRun(2, { check, e2e })]);
+            const label = `check ${check}, e2e ${e2e}`;
+            if (failedStates.includes(check!) || failedStates.includes(e2e!)) {
+              expect(verdict._tag, label).toBe("Fail");
+              const [name, state, other] = failedStates.includes(check!)
+                ? ["checks / check", check, e2e]
+                : ["checks / e2e", e2e, check];
+              failsAtOnce(verdict, [
+                undecided.includes(other) ? `${name} ended ${state} while` : `${name} ${state}`,
+              ]);
+            } else if (check === "success" && e2e === "success")
+              expect(verdict, label).toMatchObject({ _tag: "Pass", run: "u2", rule: "gate" });
+            else waitsTesting(verdict);
+          }
+        failsAtOnce(look([gatedRun(2, { check: "failure", e2e: "cancelled" })]), [
+          "ended with checks / check failure and checks / e2e cancelled",
+        ]);
+
+        const cancelled = {
+          id: 3,
+          url: "u3",
+          selectDone: true,
+          waitingAbove: false,
+          cancelled: true,
+        };
+        const whole = look([cancelled]);
+        expect(whole._tag).toBe("Fail");
+        expect(atOnce(whole)).toMatchObject({ _tag: "Done", decision: { waited: 0 } });
+        if (whole._tag === "Fail") {
+          expect(whole.why).toContain("u3, was cancelled");
+          expect(whole.remedy).toContain("gh run rerun 3 --repo o/r");
+        }
+        waitsTesting(look([gatedRun(4, {}), cancelled]));
+        expect(look([cancelled, gatedRun(4, { check: "success", e2e: "success" })])).toMatchObject({
+          _tag: "Pass",
+          run: "u4",
+        });
+
+        expect(look([])).toMatchObject({ _tag: "Wait", bound: "noRun" });
+        expect(look([queuedDuplicate])).toMatchObject({ _tag: "Wait", bound: "selecting" });
+
+        const old = gatedRun(1, { check: "failure", e2e: "failure" });
+        waitsTesting(look([gatedRun(2, { check: "in_progress" }), old]));
+        waitsTesting(look([old, gatedRun(2, { check: "in_progress" })]));
+        expect(look([gatedRun(2, { check: "success", e2e: "success" }), old])).toMatchObject({
+          _tag: "Pass",
+          run: "u2",
+        });
+        failsAtOnce(look([gatedRun(2, { check: "success", e2e: "failure" }), old]), ["u2", "u1"]);
+        failsAtOnce(look([queuedDuplicate, old]), ["u1", "run u9 on the same head has not chosen"]);
+
+        const other = (runs: ReadonlyArray<skipCheck.RunSeen>) => ({
+          pull: 12,
+          head: sha("8"),
+          draft: false,
+          runs,
+        });
+        const mixed = look([old], [other([gatedRun(5, { e2e: "in_progress" })])]);
+        waitsTesting(mixed);
+        if (mixed._tag === "Wait")
+          expect(mixed.why).toContain("u1, ended with checks / check failure");
+        expect(
+          look([old], [other([gatedRun(5, { check: "success", e2e: "success" })])]),
+        ).toMatchObject({ _tag: "Pass", run: "u5" });
+        failsAtOnce(look([old], [other([gatedRun(5, { check: "cancelled" })])]), ["u1", "u5"]);
+      }),
+  );
+
+  it.effect(
+    "a ready skip layer reads a failed required check above at its first look, while the run still goes, and a run cancelled as a whole",
+    () =>
+      Effect.gen(function* () {
+        const gated = `format 4\npull request 11\nmerge tree ${sha("e")}\nbase ${lowerHead}\ntested ${sha("e")}\nselection x\nworker-growth y\nbaseline main@${sha("6")}\nabove none\ngate full\n`;
+        const ready = skipLayer("main", true);
+        const job = (name: string, state: string) =>
+          ["queued", "in_progress"].includes(state)
+            ? { name, status: state, conclusion: null }
+            : { name, status: "completed", conclusion: state };
+        const live = { [upperHead]: [{ id: 600, status: "in_progress", conclusion: null }] };
+        for (const [check, e2e] of [
+          ["failure", "queued"],
+          ["cancelled", "in_progress"],
+        ] as const) {
+          const early = yield* baseline(["above"], ready, {
+            ...upper(gated, {
+              runJobs: { "600": [job("checks / check", check), job("checks / e2e", e2e)] },
+            }),
+            upperRuns: {
+              [upperHead]: [{ id: 601, status: "queued", conclusion: null }, ...live[upperHead]!],
+            },
+            selectJobs: { "601": { status: "queued" } },
+          });
+          expect(early.exitCode).not.toBe(0);
+          expect(decided(early.log)).toMatchObject({
+            mode: "enforce",
+            decision: "fail",
+            waited: 0,
+          });
+          expect(decided(early.log)!.reason).toContain(
+            `runs/600, has failed: checks / check ended ${check} while checks / e2e is ${e2e}`,
+          );
+          expect(decided(early.log)!.message).toContain("once that run has ended, run it again");
+        }
+        const missing = yield* baseline(["above"], ready, {
+          ...upper(gated, { runJobs: { "600": [job("checks / check", "success")] } }),
+        });
+        expect(missing.exitCode).not.toBe(0);
+        expect(decided(missing.log)).toMatchObject({ decision: "fail", waited: 0 });
+        expect(decided(missing.log)!.reason).toContain(
+          "ended with checks / check success and checks / e2e missing",
+        );
+        const cancelled = yield* baseline(["above"], ready, {
+          ...upper(gated),
+          upperRuns: { [upperHead]: [{ id: 600, conclusion: "cancelled" }] },
+        });
+        expect(cancelled.exitCode).not.toBe(0);
+        expect(decided(cancelled.log)).toMatchObject({ decision: "fail", waited: 0 });
+        expect(decided(cancelled.log)!.reason).toContain("runs/600, was cancelled");
+        expect(decided(cancelled.log)!.message).toContain("gh run rerun 600");
+        expect(cancelled.calls.some((call) => call.startsWith("run download"))).toBe(false);
+      }),
+  );
+
   it.effect("one constant decides observe or enforce, and the bounds compose", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      // Observing until a day of decisions has been counted; flipping it is a one-line change.
-      expect(skipCheck.enforce).toBe(false);
+      expect(skipCheck.enforcing({ ready: true })).toBe(true);
+      expect(skipCheck.enforcing({ ready: false })).toBe(false);
       const lower = {
         ref: "lower",
         head: lowerHead,
         bottom: "main",
         repository: "o/r",
         runId: "5",
+        ready: false,
       };
       const stale = skipCheck.judge(
         {
@@ -2285,6 +2537,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             {
               pull: 11,
               head: upperHead,
+              draft: false,
               runs: [
                 {
                   id: 1,
@@ -2299,13 +2552,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         },
         lower,
       );
-      // A stale record waits its bound for a push or a re-run, and only then fails.
       expect(skipCheck.next(stale, lower, 239, 9)._tag).toBe("Poll");
       const done = skipCheck.next(stale, lower, 240, 9);
       expect(done._tag).toBe("Done");
       if (done._tag !== "Done") return;
       expect(done.decision.decision).toBe("fail");
-      // Enforcing fails the step on a decision to fail; observing never does; a pass never does.
       const decided = { _tag: "Decided" as const, decision: done.decision };
       expect(skipCheck.fails(decided, true)).toBe(true);
       expect(skipCheck.fails(decided, false)).toBe(false);
@@ -2315,7 +2566,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           true,
         ),
       ).toBe(false);
-      // A failed read keeps the bound of the last answer.
       expect(
         skipCheck.judge({ _tag: "Unread", why: "x" }, lower, {
           _tag: "Wait",
@@ -2323,20 +2573,22 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           why: "y",
         }),
       ).toMatchObject({ _tag: "Wait", bound: "selecting" });
-      // No look sooner than 20 seconds after the last, backing off to a minute.
       const polls = Array.from({ length: 30 }, (_, index) => skipCheck.pollAfter(index));
       expect(polls.slice(0, 5)).toEqual([20, 30, 45, 60, 60]);
       expect(Math.min(...polls)).toBeGreaterThanOrEqual(20);
-      // The bounds, and how they compose: a layer under a waiting layer waits five polls longer
-      // than that layer can wait for the top, and select has room for the longest wait after the
-      // description's 3 minutes.
-      expect(skipCheck.bounds).toEqual({ stale: 240, noRun: 240, selecting: 900, chained: 1200 });
+      expect(skipCheck.bounds).toEqual({
+        stale: 240,
+        noRun: 240,
+        selecting: 900,
+        chained: 1200,
+        testing: 3000,
+      });
       expect(skipCheck.bounds.chained - skipCheck.bounds.selecting).toBeGreaterThanOrEqual(5 * 60);
+      expect(skipCheck.bounds.testing - skipCheck.bounds.chained).toBeGreaterThanOrEqual(5 * 60);
       const checks = yield* fs.readFileString(".github/workflows/checks.yml");
       const select = checks.slice(checks.indexOf("  select:"), checks.indexOf("\n  static:"));
       const timeout = Number(select.match(/^ {4}timeout-minutes: (\d+)$/m)?.[1]);
-      expect(timeout * 60).toBeGreaterThanOrEqual(180 + skipCheck.bounds.chained + 5 * 60);
-      // The record format the workflow writes is the one the check reads.
+      expect(timeout * 60).toBeGreaterThanOrEqual(180 + skipCheck.bounds.testing + 5 * 60);
       expect(select).toContain(`          RECORD_FORMAT: "${skipCheck.recordFormat}"\n`);
     }),
   );
@@ -2361,9 +2613,6 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           "          BASELINE_BRANCH: ${{ steps.baseline.outputs.branch }}\n",
         );
         expect(select).toContain("        run: node scripts/ci/worker-baseline.ts above\n");
-        // The record runs only when every step before it succeeded (no status function in its
-        // condition), so enforcing, a skip layer whose check failed writes none, and the layer
-        // below it finds nothing to pass on. It carries the format and the check's decision.
         const tested = select.slice(select.indexOf("        id: tested\n"));
         const condition = tested.match(/^ {8}if: (.*)$/m)?.[1] ?? "";
         expect(condition).toBe(
@@ -2372,19 +2621,18 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(tested).toContain(
           "          ABOVE: ${{ steps.above.outputs.decision || 'none' }}\n",
         );
-        // What the run tested, for the layer below: the merge commit this checkout holds.
+        expect(tested).toContain("          GATE: ${{ steps.select.outputs.gate }}\n");
+        expect(select).toContain("          LOWER_DRAFT: ${{ steps.select.outputs.draft }}\n");
         expect(tested).toContain("          tested=$(git rev-parse HEAD)\n");
         expect(select).toContain(
-          `printf 'format %s\\npull request %s\\nmerge tree %s\\nbase %s\\ntested %s\\nselection %s\\nworker-growth %s\\nbaseline %s\\nabove %s\\n' "$RECORD_FORMAT" "$PULL" "$tree" "$BASE_SHA" "$tested" "$SELECTION" "$WORKER_GROWTH" "$BASELINE" "$ABOVE"`,
+          `printf 'format %s\\npull request %s\\nmerge tree %s\\nbase %s\\ntested %s\\nselection %s\\nworker-growth %s\\nbaseline %s\\nabove %s\\ngate %s\\n' "$RECORD_FORMAT" "$PULL" "$tree" "$BASE_SHA" "$tested" "$SELECTION" "$WORKER_GROWTH" "$BASELINE" "$ABOVE" "$GATE"`,
         );
-        // A recorded build names its commit.
         expect(checks).toContain(
           'git rev-parse HEAD > "$GITHUB_WORKSPACE/.local/worker-uploads-base/baseline-commit.txt"',
         );
       }),
   );
 
-  /** A push to main that grows api by `added` bytes over the commit before it. */
   const pushed = (added: number, merged?: ReadonlyArray<{ number: number; body: string }>) =>
     check({
       uploads: { ...main, api: { bytes: main.api!.bytes + added, budget: 6_000_000 } },
@@ -2397,26 +2645,22 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     "a push to main is held to the rule, each Worker allowed what the pull requests it merges allow",
     () =>
       Effect.gen(function* () {
-        // Growth within the rule passes; growth past it passes when a merged description allows it.
         expect((yield* pushed(50_000, [{ number: 1, body: "No block." }])).exitCode).toBe(0);
         const allowed = yield* pushed(60_000, [
           { number: 4344, body: allows("api +60,000: v1's MCP URLs") },
         ]);
         expect(allowed.exitCode, allowed.log).toBe(0);
         expect(allowed.summary).toContain("Allowed up to 60,000: #4344: v1's MCP URLs");
-        // A stack merge pushes several: their allowances add up, by Worker.
         const stack = yield* pushed(90_000, [
           { number: 2, body: allows("api +40,000: the first half") },
           { number: 3, body: allows("api +50,000: the second half") },
         ]);
         expect(stack.exitCode, stack.log).toBe(0);
-        // Unallowed growth fails, naming the Worker, the bytes, the pull requests and what to do.
         const grew = yield* pushed(60_001, [{ number: 4583, body: "No block." }]);
         expect(grew.exitCode).toBe(1);
         expect(grew.errors).toEqual([
           "::error title=api Worker grew on main without an allowance::This push adds +60,001 bytes to api over main at 82eda7c59, about 2 ms on each cold start; the pull requests it merges (#4583) allow none. Put the line `api +60,001: <why it is worth the cold-start time>` in a worker-growth block of the merged pull request's description, with your reason, and run this failed job again, which reads the descriptions afresh; or shrink api in a new pull request. See the job summary for what grew.",
         ]);
-        // Too small an allowance, and a direct push that merges no pull request.
         expect(
           (yield* pushed(70_000, [{ number: 5, body: allows("api +60,000: most of it") }]))
             .errors[0],
@@ -2429,22 +2673,18 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
 
   it.effect("a push to main never fails for a reason that is not growth", () =>
     Effect.gen(function* () {
-      // The commit before has no sizes: no change is shown, nothing fails.
       const missing = yield* check({
         uploads: { ...main, api: { bytes: main.api!.bytes + 200_000, budget: 6_000_000 } },
         base: "missing",
         merged: [],
       });
       expect(missing.exitCode, missing.log).toBe(0);
-      // A revert shrinks.
       expect((yield* pushed(-120_000, [])).exitCode).toBe(0);
-      // A merged description's allowance this cannot read is a notice on main.
       const unread = yield* pushed(10_000, [{ number: 6, body: allows("api: no size") }]);
       expect(unread.exitCode, unread.log).toBe(0);
       expect(unread.log).toContain(
         "::notice title=Worker sizes::A merged pull request's allowance: `#6: api: no size` is not a Worker, a size and a reason",
       );
-      // The pull requests could not be read: no --merged, so growth is reported only, as before.
       expect((yield* pushed(200_000)).exitCode).toBe(0);
     }),
   );
@@ -2469,19 +2709,16 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(read.log).toContain(
           "::notice title=Worker sizes::555555555 is a commit no pull request merged, so it allows no growth.",
         );
-        // GitHub unreadable after its retries: no file, a notice, and the job goes on.
         const down = yield* baseline(["merged", "<file>"], env, { ...answers, failPush: true });
         expect(down.exitCode, down.log).toBe(0);
         expect(down.outputs).toEqual({ read: "false" });
         expect(down.file).toBeUndefined();
         expect(down.log).toContain("could not be read, so its growth is reported and not checked");
-        // A body that cannot be read is the same.
         const body = yield* baseline(["merged", "<file>"], env, {
           ...answers,
           pullBodies: { "4574": "skip layer" },
         });
         expect(body.outputs).toEqual({ read: "false" });
-        // The workflow: on a push only, its failure never fails site, and the gate reads its file.
         const fs = yield* FileSystem.FileSystem;
         const checks = yield* fs.readFileString(".github/workflows/checks.yml");
         expect(checks).toContain(
@@ -2489,18 +2726,12 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         );
         expect(checks).toContain("          MERGED: ${{ steps.merged.outputs.file }}\n");
         expect(checks).toContain('${MERGED:+--merged "$MERGED"}');
-        // And CI takes no `edited` events: a description edit starts nothing.
         const ci = yield* fs.readFileString(".github/workflows/ci.yml");
         expect(ci).not.toContain("edited");
         expect(ci).not.toContain("run-name");
       }),
   );
 
-  /**
-   * The 40 lower-layer pushes of 15 and 16 Nov (e2e/skip-check-replay.json): what each layer
-   * above showed over time, from GitHub's runs, jobs and records, in seconds from the moment the
-   * lower layer's check would have started. Each is replayed through the rule as the step runs it.
-   */
   it.effect("the last 40 lower-layer pushes, replayed", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -2537,7 +2768,6 @@ interface Push {
   }>;
 }
 
-/** What the rule decides for a push, looking when the step would and seeing what was there then. */
 const replay = (push: Push) => {
   const lower = {
     ref: push.ref,
@@ -2545,33 +2775,52 @@ const replay = (push: Push) => {
     bottom: push.bottom,
     repository: "UsefulSoftwareCo/executor-next",
     runId: String(push.run),
+    ready: false,
   };
   const look = (at: number): skipCheck.Observation => ({
     _tag: "Read",
-    uppers: push.uppers.map((upper) => ({
-      pull: upper.pull,
-      head: upper.head,
-      runs: push.runs
+    uppers: push.uppers.map((upper) => {
+      const started = push.runs
         .filter(
           (run) =>
             run.pull === upper.pull &&
             run.head === upper.head &&
             run.fork !== true &&
-            run.phases[0]!.at <= at &&
-            (run.cancelledAt === undefined || run.cancelledAt > at),
+            run.phases[0]!.at <= at,
         )
-        .toSorted((a, b) => b.id - a.id)
-        .map((run) => {
-          const phase = run.phases.findLast((each) => each.at <= at)!;
-          return {
-            id: run.id,
-            url: String(run.id),
-            record: phase.record === undefined ? undefined : skipCheck.parseRecord(phase.record),
-            selectDone: phase.selectDone,
-            waitingAbove: false,
-          };
-        }),
-    })),
+        .toSorted((a, b) => b.id - a.id);
+      const cancelled = (run: (typeof started)[number]) =>
+        run.cancelledAt !== undefined && run.cancelledAt <= at;
+      const live = started.filter((run) => !cancelled(run));
+      const newest = started[0];
+      return {
+        pull: upper.pull,
+        head: upper.head,
+        draft: false,
+        runs:
+          live.length === 0 && newest !== undefined
+            ? [
+                {
+                  id: newest.id,
+                  url: String(newest.id),
+                  selectDone: true,
+                  waitingAbove: false,
+                  cancelled: true,
+                },
+              ]
+            : live.map((run) => {
+                const phase = run.phases.findLast((each) => each.at <= at)!;
+                return {
+                  id: run.id,
+                  url: String(run.id),
+                  record:
+                    phase.record === undefined ? undefined : skipCheck.parseRecord(phase.record),
+                  selectDone: phase.selectDone,
+                  waitingAbove: false,
+                };
+              }),
+      };
+    }),
   });
   let previous: skipCheck.Verdict | undefined;
   for (let at = 0, polls = 0; ; polls += 1) {
@@ -2584,14 +2833,6 @@ const replay = (push: Push) => {
   }
 };
 
-/**
- * What the replay decides, push by push (pull request, run and attempt). 37 uppers wrote main's
- * old format and pass with the notice. #4574's upper at 03:16 wrote this check's record and passes.
- * #4586 is the laundering case (its upper compared with the scratch branch it was based on) and
- * fails. #4565 fails: its upper #4566's first select failed (a deployed-stage line was missing from
- * its description), and only a re-run nine minutes later recorded; nothing above had chosen
- * anything when the lower would have been checked.
- */
 const replayed: Record<string, string> = {
   "#4364 43793324814/1": "old format at 20 s",
   "#4364 43799666868/2": "old format at 20 s",

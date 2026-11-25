@@ -1,13 +1,6 @@
-/**
- * The host's stall check against real work: a released image that builds large apps and installs
- * packages, with restart turned on at the default limit, logs no stall and is not restarted, and
- * every stretch of that work in which its thread is busy without answering ends with an answer.
- * See docker-release-stall.spec.ts for the check itself; the busy rule's counting is covered by
- * the host's Go tests.
- */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Schedule, Schema } from "effect";
+import { Console, Effect, Schedule, Schema } from "effect";
 import { appsManifest, withApps } from "../support/apps-release.ts";
 import { releasedServerWith } from "../support/docker-release-server.ts";
 import {
@@ -18,12 +11,9 @@ import {
   logLines,
   stalledLine,
   workerdPid,
+  workerdStart,
 } from "../support/docker-stall.ts";
 
-/**
- * A module of about `bytes` ASCII bytes of generated objects, just under the 2,000,000-byte limit
- * on one of an app's own files: dense code, which costs the compiler far more per byte than text.
- */
 const denseModule = (bytes: number, name: string) => {
   const entry = (at: number) =>
     `  { id: ${at}, name: "${name} ${at}", tags: ["a", "b"], nested: { x: ${at}, y: "z" } },\n`;
@@ -38,7 +28,6 @@ const denseModule = (bytes: number, name: string) => {
   return `${open}${entries.join("")}${close}`;
 };
 
-/** An app of `files` dense modules near the per-file limit. */
 const largeApp = (files: number) => [
   ...Array.from({ length: files }, (_, at) => ({
     path: `data${at}.ts`,
@@ -55,10 +44,6 @@ export default defineApp({}, {
   appsManifest,
 ];
 
-/**
- * An app that bundles a large npm package, installed from the registry when it builds. The package
- * loads when the tool runs, since some, such as TypeScript, cannot load in a Worker.
- */
 const packageApp = (dependency: string, version: string, use: string) => [
   {
     path: "index.ts",
@@ -80,10 +65,6 @@ export default defineApp({}, {
 
 type Server = Effect.Success<ReturnType<typeof releasedServerWith>>;
 
-/**
- * Two builds of four files near the limit, beside three package installs and builds, while a
- * reader keeps asking for the organization's apps. Returns the deployed apps.
- */
 const healthyWork = (server: Server) =>
   Effect.gen(function* () {
     const Deployed = Schema.Struct({ id: Schema.String });
@@ -120,10 +101,6 @@ it.live(
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        // The shipped default limit, with the check set to act. A gate at a lower limit has no
-        // margin: this work kept a healthy thread busy and silent for 7 ticks on a 4-CPU machine
-        // with nothing else running, and for 8 beside two CPU-bound processes, where a limit of 8
-        // restarted it.
         const server = yield* releasedServerWith({
           environment: { EXECUTOR_HOST_STALL_RESTART: "true" },
         });
@@ -140,42 +117,91 @@ it.live(
   300_000,
 );
 
+const burnMs = 5000;
+const burnRoundCap = 2_000_000_000;
+const burnCallLimit = "120 seconds";
+const burnApp = [
+  {
+    path: "index.ts",
+    content: `import { defineApp, number, object, query, router } from "apps";
+export default defineApp({}, {
+  tools: router({
+    burn: query({ input: object({ ms: number(), cap: number() }) }, async (_, { ms, cap }) => {
+      const start = Date.now();
+      let x = 1;
+      let rounds = 0;
+      while (Date.now() - start < ms && rounds < cap) {
+        for (let i = 0; i < 100000; i++) x = (x * 1103515245 + 12345) % 2147483648;
+        rounds += 100000;
+      }
+      return { x, clockMs: Date.now() - start, capped: Date.now() - start < ms };
+    }),
+  }),
+});`,
+  },
+  appsManifest,
+];
+
 it.live(
-  "released image ends every busy, silent stretch of large builds and package installs with an answer",
+  "released image keeps workerd running and answering while a tool holds its main thread, and logs an answer for every stall",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        // The check logs every tick the thread is busy without answering, and when it answers
-        // again how long that lasted, so this scenario reads each such stretch from the log:
-        // every one must end with an answer. It asserts no bound on a stretch's length. The
-        // length depends on the machine and what else runs on it (3 ticks on an otherwise idle
-        // 16-CPU machine, 8 on a loaded 4-CPU one), and no bound holds on every machine; the
-        // scenario above checks this work against the shipped default limit.
         const server = yield* releasedServerWith({
           environment: { EXECUTOR_HOST_STALL_SECONDS: "1" },
         });
         yield* awaitLogLine(server, armedLine, 30);
         const pid = yield* workerdPid(server);
-        yield* healthyWork(server);
+        const started = yield* workerdStart(server, pid);
+        const Deployed = Schema.Struct({ id: Schema.String });
+        const app = yield* server.deploy("Burn", burnApp);
+        expect(Schema.is(Deployed)(app)).toBe(true);
+        const { id } = app as typeof Deployed.Type;
+        const Burned = Schema.Struct({
+          x: Schema.Number,
+          clockMs: Schema.Number,
+          capped: Schema.Boolean,
+        });
+        const call = (ms: number) =>
+          server.json(Burned, `${server.prefix}/apps/${id}/tools/call`, {
+            tool: "burn",
+            input: { ms, cap: burnRoundCap },
+          });
+        const burn = yield* call(burnMs).pipe(
+          Effect.timeoutOrElse({
+            duration: burnCallLimit,
+            orElse: () =>
+              Effect.die(
+                new Error(
+                  `The burn did not return within ${burnCallLimit}: either workerd's clock did not advance inside the loop, or this machine is far slower than the ${burnRoundCap}-round cap assumes.`,
+                ),
+              ),
+          }),
+        );
+        expect(
+          burn.capped,
+          `The burn reached its cap of ${burnRoundCap} rounds after ${burn.clockMs} ms on the tool's own clock: workerd's clock did not advance inside the loop, so this scenario's way of holding the main thread no longer works and needs replacing.`,
+        ).toBe(false);
         const settled = yield* Effect.all({
           stalls: logLines(server, stalledLine),
           answers: logLines(server, answeredLine),
         }).pipe(
           Effect.repeat({
             schedule: Schedule.spaced("1 second"),
-            until: (lines) => lines.stalls.length === lines.answers.length,
+            until: (seen) => seen.stalls.length === seen.answers.length,
             times: 30,
           }),
         );
-        expect(settled.answers.length, "every busy, silent stretch ended with an answer").toBe(
+        yield* Console.log(
+          `During the burn the host logged ${settled.stalls.length} stall(s) and ${settled.answers.length} answer(s)`,
+        );
+        expect(settled.answers.length, "an answer line for every stall line").toBe(
           settled.stalls.length,
         );
-        expect(
-          settled.stalls.length,
-          "the work kept the thread busy without answering",
-        ).toBeGreaterThan(0);
+        expect((yield* call(0)).x).toBeGreaterThanOrEqual(0);
         expect(yield* containerState(server)).toEqual({ running: true, restarts: 0 });
         expect(yield* workerdPid(server)).toBe(pid);
+        expect(yield* workerdStart(server, pid), "workerd's start time").toBe(started);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   300_000,

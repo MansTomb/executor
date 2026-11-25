@@ -155,10 +155,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP app discovery", (it) => {
           expect((yield* execute(code)).execution, code).toMatchObject({ ok: true, value: 1 });
         }
         expect(fixture.calls(), "A literal search namespace must not load other apps").toBe(0);
-        // Programs that reach an app by any name load it on first use, and only it: reaching the
-        // fast app dynamically, listing app names, or searching a namespace given at run time
-        // leaves the unrelated slow app unevaluated, while searching or calling the slow app, or
-        // searching every app, evaluates it.
         for (const { code, reachesSlow } of [
           {
             code: `const selected = tools; return await selected[${JSON.stringify(fast.slug)}].queries.version({})`,
@@ -214,7 +210,6 @@ layer(HostedLive, { excludeTestServices: true })("MCP app discovery", (it) => {
           if (reachesSlow) expect(fixture.calls(), code).toBeGreaterThan(previous);
           else expect(fixture.calls(), code).toBe(previous);
         }
-        // A program that does not run evaluates no app.
         for (const code of [
           `const { [${JSON.stringify(fast.slug)}]: selected } = tools; return await selected.queries.version({})`,
           "return tools[",

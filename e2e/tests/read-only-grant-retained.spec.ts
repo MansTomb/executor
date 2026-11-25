@@ -16,13 +16,8 @@ import { Evidence } from "../support/evidence.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { McpClient } from "../support/mcp-client.ts";
 
-/** Longer than discovery's 10-second wait, so a completed evaluation is kept as a slow one. */
 const slowCatalogMs = 12_000;
 
-/**
- * A remote catalog of one tool, `toggle`, whose kind the scenario changes. While `slow` is set,
- * every catalog read answers after `slowCatalogMs`, with the metadata it had when it arrived.
- */
 const catalogFixture = Effect.gen(function* () {
   let slow = false;
   let readOnly = true;
@@ -188,8 +183,6 @@ layer(HostedLive, { excludeTestServices: true })("Read-only grant retained metad
               return grant;
             });
           const target = (id: string) => ({ kind: "account", id });
-          // One read-only entry permits both accounts; the merged grant has a read-only entry for
-          // each account, so its catalog is read per entry and merged.
           const single = yield* narrowed([
             { app: app.id, tools: { kind: "readOnly" }, targets: [target(first), target(second)] },
           ]);
@@ -224,8 +217,6 @@ layer(HostedLive, { excludeTestServices: true })("Read-only grant retained metad
               Effect.map(({ items }) => items.map((item) => item.path)),
             );
 
-          // A slow evaluation for the owner's accounts finishes after discovery stops waiting, and
-          // is kept as a slow one.
           fixture.slow(true);
           const warm = yield* execute(owner, "Warm the slow catalog", "warm-owner.json", search);
           expect(warm.unavailableApps.map((entry) => entry.app)).toEqual([app.id]);
@@ -247,7 +238,6 @@ layer(HostedLive, { excludeTestServices: true })("Read-only grant retained metad
             }),
           );
 
-          // The tool becomes a mutation while those slow results are still retained.
           fixture.slow(false);
           fixture.becomeMutation();
           const retained = yield* execute(
@@ -258,7 +248,6 @@ layer(HostedLive, { excludeTestServices: true })("Read-only grant retained metad
           );
           expect(yield* searched(retained)).toEqual([toggle]);
 
-          // A read-only grant decides from the tool's kind, so it reads the catalog live.
           const singleSearch = yield* execute(
             singleClient,
             "Search under the read-only grant",
@@ -280,9 +269,6 @@ layer(HostedLive, { excludeTestServices: true })("Read-only grant retained metad
             items: [],
             missing: [expect.objectContaining({ path: toggle })],
           });
-          // No entry of the merged grant permits both linked accounts, which hosted discovery
-          // refuses rather than merging, so its retained slow catalog never reaches the caller and
-          // the tool, now a mutation, is not described.
           const mergedDescribe = yield* execute(
             mergedClient,
             "Describe under the merged read-only grant",

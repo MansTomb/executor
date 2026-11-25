@@ -92,7 +92,6 @@ const placed = (
 
 /** A result whose successful `structuredContent` matches `schema`, with `root` beside its envelope. */
 const envelope = (schema: JsonObject, root: JsonObject = {}, draft?: JsonValue): JsonObject => ({
-  // The envelope's keywords mean the same in every draft, so the server's draft applies.
   ...(draft === undefined ? {} : { $schema: draft }),
   ...root,
   anyOf: [
@@ -133,10 +132,6 @@ const adaptTool = <Context extends McpToolContext, E>(
     const decoder = yield* jsonSchemaDecoder(tool.inputSchema).pipe(
       Effect.mapError(() => new McpError({ phase: "schema", reason: "invalid_response" })),
     );
-    // One schema both describes and checks the result: the host decodes every call's
-    // returned value with `output`, and catalogs render the same decoder's document. A server
-    // schema that cannot be placed is described as generic structured content, and the call
-    // compiles the server's own schema first, so it fails before anything is sent.
     const result = resultSchema(tool.outputSchema);
     const output = preparedJsonSchemaDecoder(result ?? envelope({ type: "object" }));
     const compile =
@@ -158,8 +153,6 @@ const adaptTool = <Context extends McpToolContext, E>(
             Effect.flatMap(Schema.decodeUnknownEffect(JsonObject)),
             Effect.mapError(() => new McpError({ phase: "call", reason: "invalid_input" })),
           );
-          // Compile the output schema before sending a potentially mutating
-          // call, so an unsupported schema cannot fail after its effects.
           yield* compile.pipe(
             Effect.mapError(() => new McpError({ phase: "schema", reason: "invalid_response" })),
           );
@@ -171,8 +164,6 @@ const adaptTool = <Context extends McpToolContext, E>(
               "error.type": "McpToolError",
             });
           }
-          // A result that breaks the tool's declared contract, from its server or an interceptor,
-          // is the server's invalid response, not the app's own error.
           return yield* Schema.decodeUnknownEffect(output.decoder)(result).pipe(
             Effect.as(result),
             Effect.mapError(() => new McpError({ phase: "call", reason: "invalid_response" })),
@@ -195,7 +186,6 @@ export const adaptMcpOperation = (
       ? client.call(tool.name, input, context)
       : Effect.gen(function* () {
           const runtime = yield* Effect.context<never>();
-          // The interceptor is the app's code; the upstream call it makes through `next` is not.
           const result = yield* fromPromise(
             intercept,
             "handler",
