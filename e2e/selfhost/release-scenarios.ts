@@ -15,6 +15,16 @@ export const scenariosInFile = (file: string): ReadonlyArray<ScenarioKey> =>
     (key) => scenarios[key].file === file && runTarget(key) !== undefined,
   );
 
+export const differsOnSelfhostFork: ReadonlyArray<ScenarioKey> = [
+  "mcpAgedRowsFailedRenewal",
+  "mcpAgedSearchRows",
+  "mcpLargeResult",
+  "mcpLargeResultHosted",
+  "mcpLargeResultMemoryLimit",
+  "mcpListingInputs",
+  "toolsIndexCache",
+];
+
 export const focused: ReadonlyArray<ScenarioKey> = [
   "appWorkerLifetime",
   "oauthRegistrationApplicationType",

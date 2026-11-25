@@ -1,5 +1,7 @@
 import path from "node:path";
+import ts from "typescript-5";
 import {
+  differsOnSelfhostFork,
   focused,
   pathRules,
   runTarget,
@@ -56,7 +58,36 @@ const show = async (worktree: string, revision: string, file: string) => {
 };
 
 const runnable = (keys: ReadonlyArray<ScenarioKey>) =>
-  keys.filter((key) => runTarget(key) !== undefined);
+  keys.filter((key) => runTarget(key) !== undefined && !differsOnSelfhostFork.includes(key));
+
+const changedSpecs = async (
+  worktree: string,
+  production: string,
+  candidate: string,
+  files: ReadonlyArray<string>,
+) => {
+  const changed = new Set<string>();
+  const printer = ts.createPrinter({ removeComments: true });
+  const executable = (file: string, source: string) =>
+    printer.printFile(ts.createSourceFile(file, source, ts.ScriptTarget.ESNext));
+  for (let start = 0; start < files.length; start += 8) {
+    const changes = await Promise.all(
+      files.slice(start, start + 8).map(async (file) => {
+        const [before, after] = await Promise.all([
+          show(worktree, production, file),
+          show(worktree, candidate, file),
+        ]);
+        return before === undefined ||
+          after === undefined ||
+          executable(file, before) !== executable(file, after)
+          ? file
+          : undefined;
+      }),
+    );
+    for (const file of changes) if (file !== undefined) changed.add(file);
+  }
+  return changed;
+};
 
 const manifest = async (
   worktree: string,
@@ -130,18 +161,21 @@ const classify = async (
   production: string,
   candidate: string,
   file: string,
+  specsWithChanges: ReadonlySet<string>,
 ): Promise<PathDecision> => {
   const rule = ruleFor(file);
   if (rule === undefined)
     return { path: file, kind: "unclassified", reason: "no rule maps this path", scenarios: [] };
   if (rule.kind === "manifest") return manifest(worktree, production, candidate, file);
   if (rule.kind === "spec")
-    return {
-      path: file,
-      kind: "spec",
-      reason: rule.reason,
-      scenarios: scenariosInFile(path.basename(file)),
-    };
+    return specsWithChanges.has(file)
+      ? {
+          path: file,
+          kind: "spec",
+          reason: rule.reason,
+          scenarios: runnable(scenariosInFile(path.basename(file))),
+        }
+      : { path: file, kind: "untested", reason: "scenario comments only", scenarios: [] };
   if (rule.kind === "plan") {
     const plan = await planScenarios(worktree, production, candidate);
     return {
@@ -174,8 +208,14 @@ export const decide = async (options: {
   )
     .split("\n")
     .filter((line) => line !== "");
+  const specsWithChanges = await changedSpecs(
+    worktree,
+    production,
+    candidate,
+    files.filter((file) => ruleFor(file)?.kind === "spec"),
+  );
   const paths = await Promise.all(
-    files.map((file) => classify(worktree, production, candidate, file)),
+    files.map((file) => classify(worktree, production, candidate, file, specsWithChanges)),
   );
   const descends =
     (await run("git", ["-C", worktree, "merge-base", "--is-ancestor", production, candidate]))
@@ -213,7 +253,7 @@ export const decide = async (options: {
   const own = paths.flatMap((entry) => entry.scenarios);
   const tested = paths.some((entry) => ["scenarios", "spec", "plan"].includes(entry.kind));
   const selected = [
-    ...new Set(lane === "full" ? [...focused, ...own] : tested ? [...own, ...smoke] : []),
+    ...new Set(runnable(lane === "full" ? [...focused, ...own] : tested ? [...own, ...smoke] : [])),
   ];
   return {
     production,

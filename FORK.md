@@ -379,7 +379,9 @@ The command:
    each path's classification. `e2e/selfhost/release-scenarios.ts` holds the path
    rules, the smoke set and the full focused list; the first matching rule wins.
    - The full lane runs `prepare`, `check`, the full focused list plus the change's
-     own scenarios, `go`, `upgrade` and `soak`. It applies to storage schema or
+     own scenarios, `go`, `upgrade` and `soak`. Comment-only spec changes select no
+     scenarios. Scenarios that assert behavior this fork deliberately changes stay
+     outside automatic release selection. The full lane applies to storage schema or
      migration paths, a changed storage version, `bun.lock`, `patches/`, package
      manifest changes other than `scripts`, the Dockerfile, the entrypoint, the
      native host, the packaging scripts, workerd configuration, the collector, the
