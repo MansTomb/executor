@@ -899,3 +899,13 @@ the 65,536-byte output and approval limit, live summary-first discovery and
 post-read grant checks, callable diagnostics and timeout outcomes, operation
 interceptors and analytics, and the packaged worker cap, GC flags and shutdown
 drain. The fork's offline refresh upgrade regression remains in the gate.
+
+## Production rollout on 2026-11-25
+
+Dokploy deployment `yOZ8B7hVBoMj4j5fSZuXL` runs source `f9ef7735a` at immutable image `sha256:b488c7cf8cba71f67646b0e9843d9555e805ff23e3615f3e83596123abf3ab66`, released with `bun run selfhost:release` in the full lane (merge commits 40cf44468, 3a3006b81; the default Executor management app source differs from its active deployment; .agents/skills/executor-e2e/SKILL.md: no rule maps this path). Storage is unchanged, so image-only rollback to `sha256:4dc9760389e4be4323ea47da62d3220acbb067b70b5a8779114faa09120db966` is valid.
+
+The full lane gate passed prepare (1 s), check (28 s), focused-self-host (1091 s, 184 scenarios passed), focused-local (127 s, 20 scenarios passed), go (37 s), upgrade (37 s, analytics retention not verified: the previous framework exposes no authored analytics), soak (140 s, 60 deployments, 200 sessions, 500 searches; session DELETE answered {"405":200}).
+
+The pre-deploy stopped-volume backup `rustfs:backups/compose-parse-online-port-xjtnok_executor/compose-parse-online-port-xjtnok_executor-v2-data-2026-11-25T11-35-36-793Z.tar` read back 974,376,960 bytes with SHA-256 `4046a6143dd708688a86693768a1e71d08596a45a6fcd7725677804e9b031757`. All 17 connected apps passed a read or catalog check before and after the deploy and after the watch. The clickup analytics window matched before and after. The management app advanced from `dpl_8662ceeb-b1b1-4ea0-8e51-34eb927400e1` to `dpl_99aeb248-aff4-4a5d-8f19-434b1833bfdf`; a fresh MCP session found 106 management operations and loaded both skills.
+
+The 15-minute watch passed 61 samples over 900.1 seconds with no restarts, replacements or OOM events; cgroup memory ranged from 903.5 to 1182.9 MiB and ended at 1130.8 MiB. Evidence is in `~/Work/Research/executor-release-20261125-f9ef7735a-2`, retained through 2026-12-09.
