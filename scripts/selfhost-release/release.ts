@@ -274,9 +274,18 @@ const release = async () => {
   await takeLock(`${dryRun ? "dry run" : "release"} of ${candidate.slice(0, 9)}`, {
     pid: process.pid,
   });
-  const running = (await must("docker", ["ps", "--format", "{{.Names}}"])).split("\n");
-  if (running.some((name) => name.startsWith("agent-test-")))
-    throw new Error("An agent-test gate is running on this host; run one gate at a time");
+  const running = await must("docker", ["ps", "--format", "{{.Names}}\t{{.Networks}}"]);
+  const conflictingTest = running.split("\n").find((line) => {
+    const [name, networks] = line.split("\t");
+    return (
+      name?.startsWith("agent-test-executor-") ||
+      (name?.startsWith("agent-test-") && networks === "host")
+    );
+  });
+  if (conflictingTest !== undefined)
+    throw new Error(
+      `Test container ${conflictingTest.split("\t")[0]} may share Executor gate ports; run one gate at a time`,
+    );
   const config = readConfig(values.config);
   const dokploy = dokployClient(access);
   const executor = executorClient(access);
