@@ -264,14 +264,15 @@ layer(HostedLive, { excludeTestServices: true })("Workflow controls", (it) => {
           input: Schema.Json,
         ) =>
           Effect.gen(function* () {
-            const armed = yield* send("POST", storageFault, { commit, within: ["workflow.start"] });
+            const transaction = ["storage.transaction", "workflow.start"];
+            const armed = yield* send("POST", storageFault, { commit, within: transaction });
             expect(armed.status).toBe(200);
             const settled = yield* call(tool, input);
             const faulted = yield* body(Faulted, yield* send("GET", storageFault));
             yield* evidence.json(`commit-${commit}-${tool}.json`, { settled, faulted });
             expect(faulted, "The fault reached the start's transaction").toEqual({
               failed: true,
-              spans: expect.arrayContaining(["storage.transaction", "workflow.start"]),
+              spans: expect.arrayContaining(transaction),
             });
             return settled;
           });
