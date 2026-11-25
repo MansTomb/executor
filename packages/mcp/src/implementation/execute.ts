@@ -360,7 +360,7 @@ const describer = (backend: McpBackend<Error>): Describe => {
               Effect.mapError(() => toolError("Tool metadata is invalid")),
             );
       });
-    }).pipe(Effect.withSpan("mcp.discovery.schemas"));
+    }).pipe(withOperationSpan("mcp.discovery.schemas"));
 };
 
 const signatureOf = (

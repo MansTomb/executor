@@ -2315,8 +2315,8 @@ try { return await call(); } catch (error) {
         const { message, response } = (yield* Schema.decodeUnknownEffect(ToolFailed)(
           executed.structured,
         )).execution.error;
-        expect(siteless(message)).toMatch(
-          /^ToolCallFailed \(HTTP 502\): The app’s MCP server did not answer the tool call in time, so Executor stopped waiting\. The server may still finish it\. Recovery: You may retry once\. If it times out again, investigate before repeating it\. Retryable \(unchanged call\): yes\./,
+        expect(siteless(message)).toBe(
+          `${app.slug}.peek: ToolCallFailed (HTTP 502): The app’s MCP server did not answer the tool call in time, so Executor stopped waiting. The server may still finish it. Recovery: You may retry once. If it times out again, investigate before repeating it. Retryable (unchanged call): yes.`,
         );
         expect(response).toMatchObject({
           code: "ToolCallFailed",

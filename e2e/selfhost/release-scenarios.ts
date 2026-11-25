@@ -34,6 +34,7 @@ export const focused: ReadonlyArray<ScenarioKey> = [
   "accountCheckFailureDetail",
   "mcpDiscoverySelection",
   "mcpDiscoverySchemas",
+  "mcpOrganizationSpans",
   "mcpSlowListing",
   "mcpSlowRouter",
   "mcpSlowRouterSummaries",

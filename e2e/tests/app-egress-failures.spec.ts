@@ -223,7 +223,7 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
           expect(fetched.failure, `${isolate}.fetched`).toEqual({
             source: "app",
             errorName: "HttpClientError",
-            message: `Transport error (GET ${upstream.closedOrigin}/) (caused by TypeError: ${networkMessage})`,
+            message: `Transport error (GET [redacted]) (caused by TypeError: ${networkMessage})`,
           });
         }
         expect(

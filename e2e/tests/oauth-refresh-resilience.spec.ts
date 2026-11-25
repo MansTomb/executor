@@ -855,7 +855,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           written,
         );
         expect(failed.message).toBe(
-          `${name} records rejected the credentials for account “Synthetic records account” (HTTP 401) while calling a tool. Renewing the account’s access failed: Executor could not renew this account’s access. The sign-in endpoint may be unavailable or unreachable. The saved sign-in is kept; this error does not require reconnecting.`,
+          `${name} records rejected the credentials for account “Synthetic records account” (HTTP 401) while calling a tool. Renewing the account’s access failed: Executor could not renew this account’s access. The sign-in endpoint may be unavailable or unreachable. The saved sign-in is kept; this error does not require reconnecting. Account: "Synthetic records account" (${session}).`,
         );
         expectUnknownOutcome(failed.recovery);
         expect(failed.recovery).toEqual(unknownOutcomeRecovery(renewalInsideWrite));
